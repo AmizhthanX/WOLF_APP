@@ -94,7 +94,7 @@ bitrate, then the frame rate, then the resolution to keep the picture moving, ra
 again slowly, and says which of the two ends is the reason whenever it is running below the
 profile you asked for.
 
-395 tests pass (256 Node, 139 .NET), including a full web-to-agent end-to-end suite that runs
+395 tests pass (256 Node, 139 .NET), plus a performance suite of 7 run on demand, including a full web-to-agent end-to-end suite that runs
 against a real Postgres engine in-process and needs no external services, and a Windows
 suite that runs against the real display, GPU, input stack, and a live WebRTC peer.
 

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The ordinary test run excludes the performance suite.
+
+  Those tests measure the real GPU, display, and input stack: they take about half a minute,
+  they briefly put a window on screen to give capture something to do, and on a hosted CI
+  runner with no graphics hardware they would measure nothing at all. None of that belongs in
+  the run somebody does after changing a line of code.
+
+  Run them deliberately with the settings file beside this one, which selects only them.
+  A filter passed on the command line is combined with this one rather than replacing it, so
+  "Category=Performance" on its own would select nothing.
+-->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category!=Performance</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

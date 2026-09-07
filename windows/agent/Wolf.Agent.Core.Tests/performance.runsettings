@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Runs only the performance suite.
+
+  A second settings file rather than a command-line filter: a filter passed on the command
+  line is combined with the one in the project's settings, and "Category=Performance" AND
+  "Category!=Performance" selects nothing at all. Passing this file replaces that default.
+
+      dotnet test windows/Wolf.sln -s windows/agent/Wolf.Agent.Core.Tests/performance.runsettings
+-->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category=Performance</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

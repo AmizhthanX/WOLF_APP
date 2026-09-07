@@ -166,13 +166,24 @@ The largest single piece, and the reason the capability handshake exists.
 Every capability this milestone set out to build now works: watch a PC, hear it, drive it,
 share a clipboard with it, and switch between its monitors — adapting to the link as it goes.
 
+**Done — a performance suite**
+
+- Measures what somebody experiences: time to first picture, encode cost including the tail,
+  sustained frame rate, bandwidth against each profile's ceiling, what a resolution change
+  costs in freeze time, and how fast input is handled
+- Excluded from the ordinary run and from CI, which has no GPU: `npm run test:windows:perf`
+- Budgets live in one file. They are derived from what the architecture already commits to,
+  not transcribed from the PRD's matrix, which is not recorded in this repository
+- Measured on an RTX 3060 at 2560×1440: first picture 751 ms, encode mean 0.55 ms and p99
+  4.64 ms, 55 fps sustained with nothing dropped, a resolution change costing a 15 ms gap,
+  and input handled at 1222 batches a second
+
 **Still open, and worth doing before this is called finished**
 
 - The whole loop has never run against a browser. Every layer is verified independently and
   the contracts between them are asserted at both ends, but nothing has yet put a real
   Chrome in front of a real agent
 - Manual overrides for bitrate, frame rate, and resolution
-- A dedicated performance suite covering the PRD's test matrix
 - Desktop Duplication fallback for builds without Windows Graphics Capture
 - Switching between two physical monitors is untested: the development machine has one
 

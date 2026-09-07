@@ -232,6 +232,26 @@ A key frame is requested the moment the peer connects. A client that has just jo
 reference picture, so without one it sees nothing until the encoder's own interval comes
 round.
 
+### What it costs, measured
+
+Numbers from the performance suite on the development machine — an RTX 3060 driving a
+2560×1440 display. They are measurements, not targets; the budgets the suite asserts are
+looser, because a test that passes only on the machine it was written on gets deleted the
+first time somebody runs it on a laptop.
+
+| | Measured | Budget |
+| --- | --- | --- |
+| Request to first picture | 751 ms | 2000 ms |
+| Encode, mean | 0.55 ms | 8 ms |
+| Encode, 99th percentile | 4.64 ms | 16 ms |
+| Sustained frame rate | 55 fps, 0 dropped | 20 fps |
+| Freeze across a resolution change | 15 ms | 500 ms |
+| Input handling | 1222 batches/s | 500 batches/s |
+
+The tail is budgeted separately from the mean on purpose. A stream that encodes in half a
+millisecond and then takes forty once a second feels broken while its average looks
+excellent, so the ninety-ninth percentile is what decides whether it is smooth.
+
 ### Recovering from loss
 
 A client that loses part of a key frame cannot decode anything until it gets another one. It

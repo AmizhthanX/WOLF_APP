@@ -22,6 +22,22 @@ npm test
 
 That builds every workspace and runs the full suite. Nothing external is required.
 
+## Measuring performance
+
+```bash
+npm run test:windows:perf
+```
+
+Runs the performance suite, which the ordinary run excludes. It measures the real GPU,
+display, and input stack, so it needs a Windows machine with a screen — on a hosted CI runner
+it would measure nothing. It takes about half a minute and briefly shows a small window in
+the corner of the screen, which is there to give screen capture something to do: an idle
+desktop produces almost no frames, and a pipeline measured against one is not being measured
+at all.
+
+Every number it prints is a measurement, and every budget it asserts lives in one file,
+`windows/agent/Wolf.Agent.Core.Tests/Performance/PerformanceBudgets.cs`.
+
 ## Running the cloud locally
 
 ```bash

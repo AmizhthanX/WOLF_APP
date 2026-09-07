@@ -22,7 +22,8 @@
     "dev:api": "npm run dev -w @wolf/api",
     "dev:web": "npm run dev -w @wolf/web",
     "check:secrets": "node scripts/check-secrets.mjs",
-    "test:windows": "dotnet test windows/Wolf.sln"
+    "test:windows": "dotnet test windows/Wolf.sln",
+    "test:windows:perf": "dotnet test windows/Wolf.sln -s windows/agent/Wolf.Agent.Core.Tests/performance.runsettings --logger \"console;verbosity=detailed\""
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

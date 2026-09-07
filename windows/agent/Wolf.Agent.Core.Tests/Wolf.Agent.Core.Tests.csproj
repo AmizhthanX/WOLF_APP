@@ -9,6 +9,8 @@
     <NoWarn>$(NoWarn);CA1707;CA1861;CA2007;CA1711</NoWarn>
     <!-- The audio tests render a test tone straight into a WASAPI buffer. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Keeps the performance suite out of an ordinary run; see the file for why. -->
+    <RunSettingsFilePath>$(MSBuildProjectDirectory)\default.runsettings</RunSettingsFilePath>
   </PropertyGroup>
 
   <ItemGroup>
