@@ -1,0 +1,54 @@
+{
+  "name": "@wolf/realtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "start": "node dist/server.js",
+    "dev": "node --watch dist/server.js",
+    "test": "tsc -b && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@wolf/auth": "0.1.0",
+    "@wolf/protocol": "0.1.0",
+    "@wolf/server-core": "0.1.0",
+    "@wolf/shared-types": "0.1.0",
+    "@wolf/telemetry-schema": "0.1.0",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.5.13"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./agent-link": {
+      "types": "./dist/agent-link.d.ts",
+      "default": "./dist/agent-link.js"
+    },
+    "./registry": {
+      "types": "./dist/registry.d.ts",
+      "default": "./dist/registry.js"
+    },
+    "./client-link": {
+      "types": "./dist/client-link.d.ts",
+      "default": "./dist/client-link.js"
+    },
+    "./client-registry": {
+      "types": "./dist/client-registry.d.ts",
+      "default": "./dist/client-registry.js"
+    },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "default": "./dist/context.js"
+    }
+  }
+}

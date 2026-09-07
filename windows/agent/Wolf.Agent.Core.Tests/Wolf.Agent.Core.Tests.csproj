@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Wolf.Agent.Core.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- Test method names read as sentences; the analyzer's naming rules do not fit. -->
+    <!-- CA1711: xUnit collection-definition classes conventionally end in 'Collection'. -->
+    <NoWarn>$(NoWarn);CA1707;CA1861;CA2007;CA1711</NoWarn>
+    <!-- The audio tests render a test tone straight into a WASAPI buffer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Wolf.Agent.Core\Wolf.Agent.Core.csproj" />
+    <!-- The display and encoder probes live in the session host, and are tested against
+         the real machine rather than a mock. -->
+    <ProjectReference Include="..\..\session-host\Wolf.Agent.SessionHost\Wolf.Agent.SessionHost.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="testdata\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

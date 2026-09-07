@@ -1,0 +1,26 @@
+<Project>
+  <PropertyGroup>
+    <!-- Built against a newer Windows SDK than it runs on: some capture APIs only exist on
+         Windows 11, and the platform-compatibility analyzer enforces a guard on every one
+         of them because SupportedOSPlatformVersion stays at the Windows 10 floor. -->
+    <TargetFramework>net9.0-windows10.0.22621.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <!-- CA1848 (LoggerMessage source-generated delegates) and CA1859 (concrete collection
+         types) are throughput micro-optimisations aimed at hot paths. The agent logs a
+         handful of lines a minute and reads process tables a few times a session, so the
+         readability cost is not worth it here. Everything else stays an error. -->
+    <NoWarn>$(NoWarn);CA1848;CA1859</NoWarn>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Company>WOLF</Company>
+    <Product>WOLF</Product>
+    <Version>0.1.0</Version>
+    <!-- The agent runs as a Windows service; a stack trace in a log is fine, a crash is not. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>

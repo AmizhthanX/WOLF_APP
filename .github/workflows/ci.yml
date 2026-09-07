@@ -1,0 +1,103 @@
+name: CI
+
+# The pipeline the PRD asks for: lint and typecheck, unit tests, security checks, build,
+# integration and end-to-end tests. The Windows agent builds on its own runner but from the
+# same repository and the same commit.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cloud:
+    name: Cloud services and packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build --workspaces --if-present
+
+      # Unit, integration, and end-to-end suites. The integration tests run against an
+      # in-process Postgres, so no service container is needed.
+      - name: Test
+        run: npm test --workspaces --if-present
+
+      # Fails the build on a known vulnerability in anything that ships.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Check for committed secrets
+        run: node scripts/check-secrets.mjs
+
+  web:
+    name: Web app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The web build depends on the shared packages' declaration output.
+      - run: npm run build --workspaces --if-present --ignore-scripts=false
+        env:
+          NEXT_PUBLIC_WOLF_API_URL: https://api.amizhthan.app
+
+  windows-agent:
+    name: Windows agent
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore windows/Wolf.sln
+
+      - name: Build
+        run: dotnet build windows/Wolf.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test windows/Wolf.sln -c Release --no-build --logger "trx;LogFileName=agent-tests.trx"
+
+      - name: Publish agent
+        run: >-
+          dotnet publish apps/windows-agent/Wolf.Agent.Host/Wolf.Agent.Host.csproj
+          -c Release -r win-x64 --self-contained false -o artifacts/agent
+
+      # The session host ships alongside the service and into the same directory: the
+      # supervisor looks for it next to itself.
+      - name: Publish session host
+        run: >-
+          dotnet publish windows/session-host/Wolf.Agent.SessionHost/Wolf.Agent.SessionHost.csproj
+          -c Release -r win-x64 --self-contained false -o artifacts/agent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wolf-agent
+          path: artifacts/agent
+          retention-days: 14

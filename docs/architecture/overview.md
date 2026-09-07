@@ -1,0 +1,136 @@
+# WOLF architecture
+
+## The shape of the system
+
+```
+  Web / PWA            Android (later)          WOLF Control Panel (later)
+      |                       |                            |
+      |  HTTPS + WebSocket    |                            | local
+      v                       v                            v
++---------------------------------------------+     +------------------+
+|                  WOLF cloud                 |     |   Windows PC     |
+|                                             |     |                  |
+|  services/api        REST, auth, commands   |     |  WOLF Agent      |
+|  services/realtime   agent links, telemetry |<----+   (service)      |
+|                      WebRTC signaling       | out |  Session host    |
+|  services/relay      TURN fallback (later)  |bound|  Privileged      |
+|                                             |     |   helper (later) |
+|         PostgreSQL   -- LISTEN/NOTIFY -->   |     +------------------+
++---------------------------------------------+
+       ^                                                   ^
+       |                                                   |
+       +-- signaling only ----- WebRTC media --------------+
+                (media and input never enter the cloud)
+```
+
+The PC always dials out. No inbound port is ever opened on a managed machine, which
+removes the largest attack surface a remote-management tool normally has.
+
+Remote desktop signaling lives in the realtime service rather than in a separate deployable:
+that service already holds the agent's socket, so a standalone signaling service would have
+to proxy every message through it anyway. Media takes a different path entirely — directly
+between the PC's session host and the client, encrypted end to end, never entering the
+cloud.
+
+## Repository layout
+
+| Path | What lives there |
+| --- | --- |
+| `packages/shared-types` | Domain types, ids, risk levels, connection states, the error model |
+| `packages/validation` | Runtime validation, Windows path safety, log redaction |
+| `packages/protocol` | Typed commands, the command envelope, agent link messages, result schemas |
+| `packages/telemetry-schema` | Telemetry samples, aggregates, retention policy |
+| `packages/auth` | Password hashing, access tokens, refresh rotation, PC/device identity, lockout |
+| `packages/server-core` | Config, database, migrations, repositories, shared jobs |
+| `services/api` | HTTPS API: authentication, PCs, sessions, commands, telemetry, audit |
+| `services/realtime` | WebSocket agent links, telemetry ingest, command delivery |
+| `services/e2e` | End-to-end tests spanning API, realtime, and a protocol-level fake agent |
+| `apps/web` | Next.js dashboard and PWA |
+| `apps/windows-agent` | Windows Service host for the agent |
+| `windows/agent` | Agent implementation, IPC, and its .NET tests |
+| `windows/session-host` | Capture, encode, and WebRTC, running in the interactive session |
+
+## Why the pieces are split this way
+
+**`server-core` exists so the API and the realtime service can share one data layer.**
+Both need the same repositories, the same migrations, and the same configuration contract.
+Duplicating them would let the two services drift apart on the meaning of a command row,
+which is exactly the kind of divergence that produces a command that one service thinks is
+pending and the other thinks is done.
+
+**The API never talks to an agent directly.** It writes a durable command row and issues a
+Postgres `NOTIFY`. Whichever realtime instance holds that PC's link claims the command with
+a single `UPDATE ... RETURNING` and delivers it. Two consequences follow:
+
+- Delivery survives a lost notification, because a periodic sweep re-checks the queue.
+- Two instances cannot deliver the same command, because claiming is atomic.
+
+**Postgres carries the queue rather than a broker.** WOLF is a personal product with one
+owner; adding Pub/Sub or Redis for a workload of a few commands a minute would buy
+scalability nobody needs and cost an extra service to operate, secure, and pay for.
+`LISTEN/NOTIFY` exists on Cloud SQL and on RDS, so this choice does not block the AWS
+migration described in the PRD.
+
+## Request path for a command
+
+```
+1. Browser  ── POST /api/v1/pcs/:id/commands ──►  API
+2. API      validates the payload against the shared protocol schema
+3. API      classifies risk from the *payload*, not the caller's claim
+4. API      enforces capability, confirmation, re-authentication, privileged grant
+5. API      refuses if the agent never advertised support for the command type
+6. API      writes the command row + a "pending" audit record in one transaction
+7. API      NOTIFY wolf_command
+8. Realtime claims the row and sends it over the agent's authenticated link
+9. Agent    checks expiry and idempotency, runs it, returns a typed result
+10. Realtime validates the result against the schema, completes the row, audits it
+```
+
+Steps 3 to 5 all happen before anything is written. A refused command never appears as
+pending work on a PC.
+
+## State that matters
+
+**Presence.** A PC is online only while its link is live. The link's `close` handler marks
+it offline immediately, and a sweep marks silent PCs offline after ~90 seconds. The
+dashboard never claims a machine is reachable once its link is gone.
+
+**Sessions and capabilities.** An account token can browse. Acting on a PC requires a
+session, which grants named capabilities (`processes`, `power`, …) and yields a token
+scoped to one PC and one session. Privileged capabilities are never granted at session
+start; they are obtained per action through a single-use grant.
+
+**Exclusive resources.** Input, terminal, file operations, power, and configuration are
+arbitrated independently per PC. Holding a capability does not imply holding the resource:
+a lease has to be taken, only one session can hold each, and an expired lease can be taken
+over so an idle operator cannot hold input forever.
+
+## Telemetry storage
+
+Raw samples land in `telemetry_samples`, partitioned by day. Retention drops whole
+partitions rather than deleting rows, so expiry is instant and leaves nothing to vacuum.
+Longer windows are answered from `telemetry_aggregates` at 5-minute, hourly, and daily
+resolution; the API picks the coarsest tier that covers the requested window rather than
+letting a caller ask for a year of one-second samples.
+
+## Cloud portability
+
+Everything cloud-specific stays behind an interface. The application depends on Postgres,
+an HTTP server, and a WebSocket server — all of which exist identically on GCP and AWS. The
+mapping the PRD calls for (Cloud Run → ECS/App Runner, Cloud SQL → RDS, Secret Manager →
+Secrets Manager) requires no change to business logic.
+
+## What is deliberately not built yet
+
+Milestone 1 covers the foundation and core management. These are *reported as unavailable*
+by the agent's capability handshake rather than stubbed, so the cloud refuses commands for
+them instead of queueing work that would never run:
+
+- Remote desktop capture, audio, and input
+- The privileged helper, and everything that depends on it (remote lock, remote unlock,
+  secure-desktop capture, SMART disk health)
+- Terminal, file manager, services, scheduled tasks, startup items
+- Wake-on-LAN
+- GPU telemetry, CPU package power, thermal sensors
+
+See [the roadmap](../development/roadmap.md) for the order these land in.

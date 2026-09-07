@@ -1,0 +1,31 @@
+{
+  "name": "wolf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WOLF - Remote PC Control & Management Platform",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run typecheck --workspaces --if-present",
+    "clean": "node scripts/clean.mjs",
+    "db:migrate": "npm run db:migrate -w @wolf/api",
+    "dev:api": "npm run dev -w @wolf/api",
+    "dev:web": "npm run dev -w @wolf/web",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "test:windows": "dotnet test windows/Wolf.sln"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

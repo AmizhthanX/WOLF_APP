@@ -1,0 +1,5 @@
+{
+  "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE4aRD-8mwIBzi-SMcCQytM1W38yptzI0FXPPagMvyj-zflnTypUQIiqh8i703bJYzDbm6yy7YPUDgYsNu8LsKQA",
+  "payload": "wolf-agent-auth v1 01J9ZQK7T0000000000000000A NONCE-NODE-42",
+  "signature": "MEUCIQC-ydHcpIjsHNPneQzTsLsMlcbbg-qCGaTmbITkzYfGIgIgKBWXFGWhdsxvGzJM1pt6__53u2Jn2lGEhRx-CNkOaIA"
+}

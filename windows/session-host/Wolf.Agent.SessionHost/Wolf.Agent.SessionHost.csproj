@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>Wolf.Agent.SessionHost</RootNamespace>
+    <AssemblyName>Wolf.Agent.SessionHost</AssemblyName>
+    <!-- Interop for display enumeration and Media Foundation encoder discovery. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.EventLog" Version="9.0.0" />
+    <!-- Direct3D 11 and Media Foundation bindings. Hand-writing the COM vtables for
+         IMFTransform, IMFDXGIDeviceManager, and ID3D11VideoProcessor would be several
+         hundred lines of interop whose failure mode is silent memory corruption. -->
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
+    <!-- WebRTC: ICE, DTLS-SRTP, SCTP data channels, and RTP packetisation for H.264.
+         Implementing DTLS-SRTP by hand is not a thing to do in a process that carries
+         somebody's screen. -->
+    <PackageReference Include="SIPSorcery" Version="10.0.16" />
+    <!-- Opus, in pure managed code. WebRTC audio is Opus in practice, Media Foundation has
+         no Opus encoder, and a native codec would mean shipping a binary into the process
+         that holds someone's screen and audio. -->
+    <PackageReference Include="Concentus" Version="2.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\agent\Wolf.Agent.Core\Wolf.Agent.Core.csproj" />
+  </ItemGroup>
+
+</Project>

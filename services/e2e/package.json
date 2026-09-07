@@ -1,0 +1,24 @@
+{
+  "name": "@wolf/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "tsc -b && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@wolf/api": "0.1.0",
+    "@wolf/auth": "0.1.0",
+    "@wolf/protocol": "0.1.0",
+    "@wolf/realtime": "0.1.0",
+    "@wolf/server-core": "0.1.0",
+    "@wolf/shared-types": "0.1.0",
+    "pino": "^9.5.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "@wolf/server-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/pglite.d.ts",
+      "default": "./dist/testing/pglite.js"
+    }
+  },
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "tsc -b && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@wolf/auth": "0.1.0",
+    "@wolf/protocol": "0.1.0",
+    "@wolf/shared-types": "0.1.0",
+    "@wolf/telemetry-schema": "0.1.0",
+    "@wolf/validation": "0.1.0",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/pg": "^8.11.10"
+  }
+}

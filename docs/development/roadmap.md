@@ -1,0 +1,216 @@
+# Roadmap
+
+WOLF is built in vertical slices, and the build stays working after each one. A capability
+the agent has not implemented is *advertised as unavailable*, so the cloud refuses those
+commands rather than queueing work that would never run — a half-finished slice is inert,
+not dangerous.
+
+## Milestone 1 — Foundation and core management (done)
+
+- Monorepo, shared types, protocol, validation, telemetry schema
+- Authentication: owner account, scrypt hashing, access tokens, rotating refresh tokens,
+  device trust, lockout
+- PC enrolment with per-machine key pairs; authenticated outbound agent link
+- Typed command protocol with payload-based risk classification and enforcement
+- Sessions, per-capability grants, exclusive resource arbitration, privileged grants
+- Telemetry ingest, day-partitioned storage, aggregate tiers, retention policy
+- Processes: list, tree, details, terminate (PID-reuse guarded), priority
+- Power: lock, sign out, sleep, hibernate, restart, shut down, schedule, cancel
+- Kill switch, one-way from the cloud
+- Forensic audit log with structural redaction
+- Web dashboard and PC workspace (overview, processes, power, audit), PWA manifest
+- Windows agent as a Windows Service, with local SQLite state and offline buffering
+- Tests: a full web-to-agent end-to-end suite, plus unit and schema coverage
+
+## Milestone 2 — Remote desktop (feature-complete)
+
+The largest single piece, and the reason the capability handshake exists.
+
+**Done — protocol and cloud**
+
+- Stream types, profiles with built-ins, codec negotiation that refuses rather than guesses
+- Typed, bounded input events; normalised coordinates; virtual-key codes, not strings
+- Signaling relay in the realtime service, with per-message session, capability, and
+  direction checks
+- ICE endpoint with short-lived TURN credentials, and an honest `lan-only` answer when no
+  STUN or TURN is configured
+- Stream records holding what was negotiated and how it performed — never a frame
+
+**Done — session host detection**
+
+- `Wolf.Agent.SessionHost`, launched into the interactive session by the service and
+  supervised there, because session 0 has no desktop
+- ACL'd named pipe between the two, reachable only by SYSTEM and the signed-in user
+- Real display enumeration and Media Foundation encoder discovery, verified against actual
+  hardware
+- `remoteDesktopAvailable` reported directly rather than inferred, with reason codes
+
+**Done — capture and encode**
+
+- Windows Graphics Capture into a hardware H.264 encoder, frames staying on the GPU from
+  capture through colour conversion to encode
+- Per-monitor DPI awareness, so the reported resolution, the captured frame, and pointer
+  coordinates describe the same pixels
+- On-demand key frames and live bitrate control through `ICodecAPI`, with both capabilities
+  measured on the actual encoder rather than taken from its self-description
+- Verified on an RTX 3060 at 2560×1440: 30 fps sustained, 0 frames dropped, 0.47 ms per
+  frame of encode time, key frame 46 ms after a request
+
+**Done — WebRTC on the host**
+
+- A real peer connection in the session host, offering H.264 on a send-only video track,
+  with a control data channel for the input that arrives in the next slice
+- `profile-level-id` read from the encoder's own SPS, so the offer describes the pictures
+  that are actually coming rather than a constant that is wrong on somebody's machine
+- ICE servers minted by the cloud and attached to the relayed stream request; a client
+  cannot choose the relay its PC's media will use
+- Route reported from the nominated candidate pair — `lan`, `p2p`, or `relay`
+- Live statistics: frame rate, resolution, encoder, encode time per frame, key frames.
+  Round-trip time, jitter, and loss are reported as *not measured* rather than as zero
+- Capture starts when the peer connects and stops when the stream does, verified by a test
+  that watches for frames which must not arrive after teardown
+- `transportAvailable` is now true, and `activeStreams` reports the streams that are really
+  running rather than a placeholder
+- Verified end to end against a real WebRTC peer: 2560×1440 at 30 fps over `lan`,
+  0.57 ms per frame of encode time, and a 120 KB frame fragmented and reassembled intact
+
+**Done — web client (viewing)**
+
+- The dashboard answers the agent's offer and renders the stream, with the negotiation,
+  the codec, and whether the encoder is hardware stated on the page
+- Settings the PC could not honour are shown as a table of what was asked for, what was
+  applied, and why — rather than being applied silently
+- Live statistics from both ends: the PC reports what capture and encode cost, the browser
+  reports round-trip time, jitter, and loss, which only the receiving end can measure
+- Quality presets that change the profile on a running stream
+- The viewer states that control is unavailable rather than letting an operator find out by
+  clicking on the picture
+- Leaving the page stops the stream, so a PC never keeps encoding for a viewer who has gone
+
+**Done — input**
+
+- Keyboard and mouse injected through `SendInput`: absolute pointer positioning across the
+  virtual desktop, wheel and horizontal scroll, virtual-key codes with scan codes and the
+  extended flag, and Unicode text for IMEs and phone keyboards
+- Arbitration in the relay, because only the cloud sees two sessions competing for one PC.
+  The grant goes to both ends, expires in two minutes, and is renewed by the client holding
+  it
+- The expiry is enforced on the PC, so a cloud that becomes unreachable cannot leave a
+  machine controllable by whoever held it last
+- Losing control releases both sides of every modifier, so no chord is left stuck
+- Combinations Windows reserves — Ctrl+Alt+Delete, Win+L — are refused with the reason
+  rather than sent as keystrokes Windows discards
+- Input blocked by UIPI, as it is for a UAC prompt, is reported as a limitation instead of
+  disappearing
+- Verified against the real Windows input stack: the tests inject and observe through a
+  low-level hook that swallows the event, so nothing reaches the machine's own windows
+
+**Done — adaptive bitrate, frame rate, and resolution**
+
+- Driven by real feedback: the transport-wide congestion estimate, the receiver's reported
+  loss, round-trip time derived from RTCP timestamps, and the encoder's own cost per frame
+- Bitrate first, frame rate second, resolution last, in the order the PRD sets out —
+  resolution only once the bitrate is at its floor and the frame rate at the bottom of its
+  ladder, because the change costs a new encoder, a key frame, and a visible re-layout
+- Scaling runs in the video processor that already converts every frame, so it costs almost
+  nothing beyond the conversion that was happening anyway
+- A profile that caps the resolution is honoured from the start, fitted to the display's
+  aspect ratio, instead of being reported as a setting WOLF ignores
+- Down fast and up slow — three clean intervals before probing, and bitrate restored before
+  frame rate — because a stream that oscillates is worse to use than one that settles low
+- A floor below which the picture is not worth sending, and an honest `DEGRADED` state with
+  the reason attached whenever the profile is not being met
+- A pinned profile is left alone, and its shortfall reported rather than silently overridden
+- Picture loss indications are advertised and answered, so a client that drops part of a key
+  frame gets a new one instead of sitting on a frozen picture. Only `nack pli` is offered:
+  generic `nack` promises a retransmission this host cannot perform
+- Verified on real hardware: changing the pacing target took a running pipeline from 55 fps
+  to 14.5 fps; halving the encoded resolution on a running pipeline swapped in a new encoder
+  and kept streaming, with a key frame so the client could decode what followed; and a real
+  picture loss indication over a live connection produced a key frame request
+
+**Done — audio**
+
+- WASAPI loopback capture: what the PC is playing, never its microphone
+- Opus at 48 kHz stereo in 20 ms frames, on a fixed clock — a silent machine delivers no
+  packets at all, so the encoder fills the gaps rather than stopping
+- Discontinuous transmission makes silence nearly free: a quiet second measured at 1.2 kbps
+- `audio` is a separate grant from `screen`, decided by the relay and enforced by the host;
+  the dashboard holds the capability but starts every stream muted behind an explicit toggle
+- A machine with no audio endpoint, or a session without the grant, gets a working silent
+  stream and an adjustment saying which
+- Verified against the real audio stack, using a tone at -60 dBFS so the tests make no
+  audible noise: loopback captured it at 0.0037, and Opus packets reached a live peer
+
+**Done — clipboard**
+
+- Text in both directions on the data channel, never through the cloud, so there is nothing
+  for a server to store or log
+- `clipboard` is its own grant, like `audio` and `input`; without it the clipboard is not
+  read at all
+- Neither side takes without being asked: a stream does not ship what was already copied,
+  and WOLF never writes to the operator's own clipboard without a click
+- Loop prevention, so applying content from the client is not offered straight back
+- 256 KB of text, refused rather than truncated past that; images and files are named but
+  not carried
+
+**Done — multiple displays**
+
+- The streamed display can be switched while the stream runs, without a renegotiation
+- Pointer coordinates and the profile's resolution cap follow the display, so clicks land on
+  the monitor being watched and a capped stream stays capped
+- Unplugging the streamed monitor falls back to the primary and says so, rather than leaving
+  the viewer on a frozen picture
+- A display that cannot be captured leaves the stream exactly as it was
+
+Every capability this milestone set out to build now works: watch a PC, hear it, drive it,
+share a clipboard with it, and switch between its monitors — adapting to the link as it goes.
+
+**Still open, and worth doing before this is called finished**
+
+- The whole loop has never run against a browser. Every layer is verified independently and
+  the contracts between them are asserted at both ends, but nothing has yet put a real
+  Chrome in front of a real agent
+- Manual overrides for bitrate, frame rate, and resolution
+- A dedicated performance suite covering the PRD's test matrix
+- Desktop Duplication fallback for builds without Windows Graphics Capture
+- Switching between two physical monitors is untested: the development machine has one
+
+## Milestone 3 — The privileged helper
+
+Everything blocked on elevation, built without weakening any Windows boundary.
+
+- Separate helper service with an allow-listed, typed command surface
+- Authenticated, ACL-protected named-pipe IPC with anti-replay
+- Remote lock; SMART disk health; device management
+- Secure-desktop capture for the lock and sign-in screens
+- Remote unlock using a dedicated WOLF credential, never the Windows password
+
+## Milestone 4 — Administration
+
+- Terminal: CMD, PowerShell, tabs, streaming output, script execution
+- Administrative terminal behind an elevated grant
+- File manager and chunked, resumable transfers with checksums
+- Clipboard sync, never persisted in cloud history
+- Services, scheduled tasks, startup items
+- Network diagnostics, Windows event logs, hardware inventory
+
+## Milestone 5 — Intelligence
+
+- Long-term telemetry rollups and the aggregation job
+- Process, GPU, and storage intelligence
+- Notifications and the rule engine
+- The automation engine: triggers, conditions, actions, cooldowns
+- Configuration backup and restore
+
+## Android
+
+Kotlin and Jetpack Compose, native WebRTC, platform keystore for tokens and device
+identity, signed APK through CI. Scheduled after milestone 2, so the client arrives when
+there is a desktop to stream to it.
+
+## Infrastructure
+
+- Terraform for GCP, behind the cloud-provider interface
+- Staging and production pipelines with migrations and rollback
+- Signed agent packages, staged rollout, health check, and rollback on failure

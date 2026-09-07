@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+.pnp.*
+.yarn/
+
+# Build output
+dist/
+dist-test/
+build/
+out/
+*.tsbuildinfo
+.next/
+coverage/
+
+# .NET
+bin/
+obj/
+TestResults/
+*.user
+*.suo
+artifacts/
+
+# Android
+.gradle/
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Secrets - NEVER COMMIT
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/**/*.key
+*.p12
+*.pfx
+secrets/
+service-account*.json
+gcp-credentials*.json
+
+# Local state
+*.sqlite
+*.sqlite-journal
+*.db
+wolf-local/
+logs/
+*.log
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

@@ -1,0 +1,22 @@
+{
+  // The dashboard is a Next application and is type-checked, not compiled, by `typecheck`.
+  // The streaming state machine is ordinary TypeScript with no JSX and no React, so it is
+  // compiled separately here and run under Node's test runner — the same way every other
+  // workspace in this repository is tested.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-test",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
+    "incremental": false,
+    "plugins": []
+  },
+  "include": [
+    "lib/remote-desktop.ts",
+    "lib/remote-desktop.test.ts",
+    "lib/input-capture.ts",
+    "lib/input-capture.test.ts"
+  ]
+}
