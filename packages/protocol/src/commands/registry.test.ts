@@ -9,6 +9,7 @@ import {
   requiredCapability,
 } from './index.js';
 import { RESULT_SCHEMAS } from '../results.js';
+import { policyFor } from '@wolf/shared-types';
 
 test('every command type has a registry entry and a result schema', () => {
   for (const type of ALL_COMMAND_TYPES) {
@@ -138,4 +139,20 @@ test('a scheduled power action must name an explicit instant', () => {
     payload: { action: 'shutdown', runAt: '2026-09-06T22:00:00.000Z' },
   });
   assert.equal(withTime.success, true);
+});
+
+test('reading disk health is low risk and needs no privileged grant', () => {
+  const command = agentCommandBody.safeParse({
+    type: 'disk.smart-health',
+    payload: {},
+  });
+  assert.equal(command.success, true, 'the device id defaults to every drive');
+
+  // Elevation and danger are different questions. This one needs administrator to read and
+  // changes nothing, so gating it behind a single-use grant would tax a health check for no
+  // safety at all — grants exist to gate destruction.
+  const definition = COMMAND_REGISTRY['disk.smart-health'];
+  assert.equal(definition.risk, 'low');
+  assert.equal(definition.mutating, false);
+  assert.equal(policyFor(definition.risk).requiresPrivilegedGrant, false);
 });

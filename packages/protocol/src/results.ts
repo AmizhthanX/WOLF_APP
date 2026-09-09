@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { isoDateTime, wolfId } from '@wolf/validation';
 import { WINDOWS_SESSION_STATES } from '@wolf/shared-types';
 import { telemetrySample } from '@wolf/telemetry-schema';
-import { powerAction, processPriority } from './commands/index.js';
+import { diskHealth, powerAction, processPriority } from './commands/index.js';
 import { displayInfo, streamState, streamUnavailableReason } from './remote-desktop.js';
 import type { AgentCommandType } from './commands/index.js';
 
@@ -241,7 +241,24 @@ export const remoteDesktopStopResult = z.object({
 });
 
 /** Result schema for every command type, so results are validated on both sides. */
+/**
+ * What the agent found when it asked the drives.
+ *
+ * `helperAvailable` is answered separately from the list because the two failures are
+ * different: no helper means WOLF cannot ask at all, while an empty list from a working
+ * helper means this PC has no drive that will answer.
+ */
+export const diskSmartHealthResult = z.object({
+  disks: z.array(diskHealth).max(64),
+  /** False when the privileged helper is not running, which is why the list may be empty. */
+  helperAvailable: z.boolean(),
+  /** Present when the helper could not be reached, in the operator's terms. */
+  unavailableReason: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
 export const RESULT_SCHEMAS = {
+  'disk.smart-health': diskSmartHealthResult,
   'system.info': systemInfoResult,
   'system.capabilities': systemCapabilitiesResult,
   'system.telemetry-snapshot': systemTelemetrySnapshotResult,

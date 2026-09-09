@@ -24,6 +24,10 @@
     <!-- The display and encoder probes live in the session host, and are tested against
          the real machine rather than a mock. -->
     <ProjectReference Include="..\..\session-host\Wolf.Agent.SessionHost\Wolf.Agent.SessionHost.csproj" />
+    <!-- The privileged helper is tested by starting the real server in-process and driving
+         it over the real pipe. Its guards are properties of the channel, not of a message
+         shape, so a mock of it would be testing the mock. -->
+    <ProjectReference Include="..\..\helper\Wolf.Agent.Helper\Wolf.Agent.Helper.csproj" />
   </ItemGroup>
 
   <ItemGroup>

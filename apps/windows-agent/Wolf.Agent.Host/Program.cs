@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Wolf.Agent.Core;
 using Wolf.Agent.Core.Cloud;
 using Wolf.Agent.Core.Commands;
+using Wolf.Agent.Core.Privileged;
 using Wolf.Agent.Core.Identity;
 using Wolf.Agent.Core.Ipc;
 using Wolf.Agent.Core.Sessions;
@@ -64,6 +65,12 @@ public static class Program
         builder.Services.AddSingleton<PowerCommandHandler>();
         builder.Services.AddSingleton<RemoteDesktopCommandHandler>();
 
+        // Everything that needs administrator goes through the helper, and the client for it
+        // is cheap: it connects per call rather than holding a privileged channel open for
+        // the life of the agent.
+        builder.Services.AddSingleton<HelperClient>();
+        builder.Services.AddSingleton<DiskCommandHandler>();
+
         // The router is built from the handlers, and the system handler needs to advertise
         // what the router ends up supporting — resolved lazily to break the cycle.
         builder.Services.AddSingleton<CommandRouter>(provider =>
@@ -73,6 +80,7 @@ public static class Program
                 provider.GetRequiredService<ProcessCommandHandler>(),
                 provider.GetRequiredService<PowerCommandHandler>(),
                 provider.GetRequiredService<RemoteDesktopCommandHandler>(),
+                provider.GetRequiredService<DiskCommandHandler>(),
             };
 
             CommandRouter? router = null;

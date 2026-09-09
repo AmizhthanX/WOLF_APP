@@ -126,9 +126,9 @@ Milestone 1 covers the foundation and core management. These are *reported as un
 by the agent's capability handshake rather than stubbed, so the cloud refuses commands for
 them instead of queueing work that would never run:
 
-- Remote desktop capture, audio, and input
-- The privileged helper, and everything that depends on it (remote lock, remote unlock,
-  secure-desktop capture, SMART disk health)
+- The parts of the privileged helper that are not built yet: device management, remote
+  unlock, and secure-desktop capture. The helper itself exists and reads disk health — see
+  [the privileged helper](privileged-helper.md)
 - Terminal, file manager, services, scheduled tasks, startup items
 - Wake-on-LAN
 - GPU telemetry, CPU package power, thermal sensors

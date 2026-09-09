@@ -15,6 +15,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "session-host", "session-hos
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Wolf.Agent.SessionHost", "session-host\Wolf.Agent.SessionHost\Wolf.Agent.SessionHost.csproj", "{53576340-9643-4683-B704-CE59A5FFF704}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "helper", "helper", "{6E3B80E4-E889-6BA4-2A7C-AE44FC211B39}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Wolf.Agent.Helper", "helper\Wolf.Agent.Helper\Wolf.Agent.Helper.csproj", "{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -73,6 +77,18 @@ Global
 		{53576340-9643-4683-B704-CE59A5FFF704}.Release|x64.Build.0 = Release|Any CPU
 		{53576340-9643-4683-B704-CE59A5FFF704}.Release|x86.ActiveCfg = Release|Any CPU
 		{53576340-9643-4683-B704-CE59A5FFF704}.Release|x86.Build.0 = Release|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Debug|x64.Build.0 = Debug|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Debug|x86.Build.0 = Debug|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Release|x64.ActiveCfg = Release|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Release|x64.Build.0 = Release|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Release|x86.ActiveCfg = Release|Any CPU
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -82,5 +98,6 @@ Global
 		{DC1E3474-6E8E-44F0-A602-E813F9D8A8C6} = {A0596E84-2522-6F31-0F43-77167BFA80D0}
 		{DE010496-5782-42D9-97C5-6F571F4D23A2} = {A0596E84-2522-6F31-0F43-77167BFA80D0}
 		{53576340-9643-4683-B704-CE59A5FFF704} = {CF00B505-21CB-DF06-00C2-9C3A582DCB7D}
+		{2BC8A8A7-AA31-492A-9B98-CBB1E751B5A5} = {6E3B80E4-E889-6BA4-2A7C-AE44FC211B39}
 	EndGlobalSection
 EndGlobal

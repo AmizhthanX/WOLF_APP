@@ -316,8 +316,14 @@ Stated plainly rather than left to be discovered:
   abuse per instance, not globally. The per-account lockout is shared through Postgres and
   cannot be bypassed that way, which is why authentication relies on it rather than on the
   limiter. A shared limiter is a drop-in replacement for the interface.
-- **The privileged helper does not exist yet**, so every operation needing elevation is
-  refused with a stated limitation.
+- **The privileged helper exists, and is a boundary of surface rather than of privilege.**
+  Both it and the agent run as `LocalSystem`, so it stops nothing an attacker who is already
+  SYSTEM could not do. What it stops is a bug in the network-facing process becoming
+  arbitrary privileged action: the only things reachable through it are the operations on its
+  allow-list. See [the privileged helper](../architecture/privileged-helper.md).
+- **Most of what needs elevation is still not built.** Device management, secure-desktop
+  capture and remote unlock are refused with a stated limitation; disk health is the one
+  operation the helper performs today.
 - **Lock-state detection is an inference** (the presence of `LogonUI.exe` in the console
   session), because Windows exposes no supported query for it from a service. When the
   console session cannot be resolved, the state is reported `unknown`, never optimistically

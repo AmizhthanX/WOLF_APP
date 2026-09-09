@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using Wolf.Agent.Core.Ipc;
+using Wolf.Agent.Core.Privileged;
 using Wolf.Agent.Core.Native;
 using Wolf.Agent.Core.Protocol;
 using Wolf.Agent.Core.Sessions;
@@ -143,7 +144,11 @@ public sealed class MachineInfoProvider
             DisplayCount: host.Connected ? host.Displays.Count : ReadDisplayCount(),
             AudioCaptureAvailable: host.Connected && host.AudioCaptureAvailable,
             WakeOnLanCapable: false,
-            PrivilegedHelperAvailable: false,
+
+            // Asked at call time rather than assumed: the helper is a separate service and
+            // can be stopped, and a PC that says it can do privileged work when it cannot is
+            // one the cloud will offer operations that then fail.
+            PrivilegedHelperAvailable: HelperClient.IsListening(),
             // Capturing the lock and sign-in screens requires the privileged helper running
             // in the Winlogon desktop. Until it exists, WOLF reports the limitation so the
             // UI shows a LOCKED state instead of a blank frame pretending to be the desktop.

@@ -293,11 +293,37 @@ having done it:
 
 Everything blocked on elevation, built without weakening any Windows boundary.
 
-- Separate helper service with an allow-listed, typed command surface
-- Authenticated, ACL-protected named-pipe IPC with anti-replay
-- Remote lock; SMART disk health; device management
+**Done — the helper, its channel, and the first operation through it**
+
+- `Wolf.Agent.Helper`: a separate service with an allow-listed, typed command surface. No
+  network connection, no configuration file, and no "run this" operation — everything it will
+  ever do is compiled into it
+- Three guards on the channel, each answering a different question: the pipe ACL (SYSTEM and
+  Administrators only), caller verification (the client's process id comes from the pipe, not
+  from the client, and its image must be the agent beside the helper), and a per-connection
+  nonce with a strictly increasing sequence. A refused request does not advance the sequence,
+  so injecting one malformed message cannot lock the real agent out of its own channel
+- Stated plainly in the architecture: this is a boundary of **surface**, not of privilege.
+  Both processes run as `LocalSystem`, and it stops nothing an attacker who is already SYSTEM
+  could not do
+- `disk.smart-health` end to end — command, helper operation, and the drive's own verdict.
+  Read-only on purpose for a first operation: a mistake in the plumbing cannot damage anything
+- `unknown` is a real status and a common one. A USB enclosure, a RAID member, a virtual disk
+  — none of them answer, and "healthy" because nothing said otherwise would be inventing
+  reassurance about somebody's data
+- `privilegedHelperAvailable` is answered by opening the pipe at call time rather than
+  assumed, because the helper is a separate service and can be stopped
+
+**Still open in this milestone**
+
+- Device management: enabling and disabling hardware
 - Secure-desktop capture for the lock and sign-in screens
 - Remote unlock using a dedicated WOLF credential, never the Windows password
+- **The elevated half of the helper's tests has never run here.** Reading SMART and opening
+  the helper's own pipe both need administrator, and this development session is not
+  elevated. The guard logic and the attribute decoding are tested directly and do run; the
+  channel tests state that they need elevation and skip. That an unelevated process is
+  *refused* the pipe is asserted, and passes for the same reason the others skip
 
 ## Milestone 4 — Administration
 

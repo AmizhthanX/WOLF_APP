@@ -2,11 +2,13 @@ import { z } from 'zod';
 import type { RiskLevel, SessionCapability } from '@wolf/shared-types';
 import { maxRisk } from '@wolf/shared-types';
 import { CRITICAL_SYSTEM_PROCESSES, WOLF_OWN_PROCESSES, processCommand } from './process.js';
+import { diskCommand } from './disk.js';
 import { powerCommand } from './power.js';
 import { remoteDesktopCommand } from './remote-desktop.js';
 import { systemCommand } from './system.js';
 
 export * from './process.js';
+export * from './disk.js';
 export * from './power.js';
 export * from './remote-desktop.js';
 export * from './system.js';
@@ -21,6 +23,7 @@ export * from './system.js';
  */
 export const agentCommandBody = z.union([
   processCommand,
+  diskCommand,
   powerCommand,
   remoteDesktopCommand,
   systemCommand,
@@ -48,6 +51,19 @@ export interface CommandDefinition {
 
 export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefinition>> =
   Object.freeze({
+    /**
+     * Reading a drive's health needs administrative rights, but changes nothing, so it is
+     * low risk and needs no privileged grant. Elevation and danger are different questions:
+     * a grant exists to gate destruction, not to tax every call that happens to need
+     * administrator to read.
+     */
+    'disk.smart-health': {
+      risk: 'low',
+      capability: 'configuration',
+      mutating: false,
+      description: 'Read disk health',
+      auditCategory: 'pc',
+    },
     'system.info': {
       risk: 'low',
       capability: 'processes',
