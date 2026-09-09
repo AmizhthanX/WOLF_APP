@@ -713,6 +713,35 @@ as somebody was willing to watch it, with nothing on either side saying why. The
 now also logs the exit code of a host that has gone, which is the only evidence of why it
 went.
 
+### More than one monitor
+
+One display is streamed at a time, chosen by the client and switchable without a fresh
+negotiation. Two things about that are easy to get wrong, and both fail quietly.
+
+**The switch is asynchronous, and the client is told when it has happened.** Building a new
+capture and encoder from another thread while the capture thread is mid-frame is how a
+pipeline ends up encoding from a texture that has been disposed, so the request is queued and
+applied between frames. Which means the new size is not knowable when the request returns:
+anything reading it there reads the *old* display's. The pipeline raises an event once the
+switch has actually happened — or failed — and that is when `stream.ready` goes out and when
+the base size that pinned resolutions scale from is updated. A failed switch is reported as
+well, because a client waiting for a `stream.ready` that is never coming has nothing to act
+on.
+
+**Pointer coordinates are relative to the display being streamed; `SendInput` wants a
+fraction of the whole virtual desktop.** A monitor to the left of the primary starts at a
+negative X, one above it at a negative Y, and half the absolute range belongs to the other
+screen. Mapping that ignores the display's origin still produces a click — on the wrong
+monitor, which gets reported as lag or as the remote desktop being broken. The injector is
+retargeted before the switch rather than after, so input arriving in between belongs to the
+display the operator is now looking at.
+
+The mapping is a static function given its display and its desktop, rather than one that
+reads the metrics itself, so the layouts can be stated in a test. That is the only way the
+arithmetic can be checked at all on a machine with one monitor — which is what this was
+written on, and why the end-to-end two-display switch test skips there rather than passing
+on nothing.
+
 ### Saying so
 
 A stream running below its profile is `DEGRADED`, with one of the protocol's reasons

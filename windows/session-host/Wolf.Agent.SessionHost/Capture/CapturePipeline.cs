@@ -178,6 +178,18 @@ public sealed class CapturePipeline : IDisposable
     /// </summary>
     public event Action? DisplayLost;
 
+    /// <summary>
+    /// Raised once a requested display switch has actually happened, with whether it worked.
+    ///
+    /// <see cref="RequestDisplay"/> only queues the change — it has to, because building a
+    /// new capture and encoder from another thread while this one is mid-frame is how a
+    /// pipeline ends up encoding from a texture that has been disposed. So the new size is
+    /// not knowable when the request returns, and anything that reads it there reads the old
+    /// display's. Which for two monitors of different sizes means telling the client the
+    /// wrong dimensions and scaling a pinned resolution from the wrong base.
+    /// </summary>
+    public event Action<bool>? DisplayChanged;
+
     /// <summary>The size of the display being captured.</summary>
     public int Width => _capture.Width;
 
@@ -583,9 +595,11 @@ public sealed class CapturePipeline : IDisposable
 
         try
         {
-            return target.Monitor is { } monitor
-                ? SwitchDisplay(monitor)
-                : Resize(target.Width, target.Height);
+            if (target.Monitor is not { } monitor) return Resize(target.Width, target.Height);
+
+            bool switched = SwitchDisplay(monitor);
+            DisplayChanged?.Invoke(switched);
+            return switched;
         }
         catch (Exception ex)
         {
@@ -593,6 +607,11 @@ public sealed class CapturePipeline : IDisposable
             // would end not just this stream but every other one in the process, so a change
             // that cannot be made leaves the pipeline exactly as it was.
             _logger.LogError(ex, "The requested change could not be applied; the stream is unchanged.");
+
+            // A display switch that threw still has to be answered, or the client waits on a
+            // `stream.ready` that is never coming.
+            if (target.Monitor is not null) DisplayChanged?.Invoke(false);
+
             return false;
         }
     }

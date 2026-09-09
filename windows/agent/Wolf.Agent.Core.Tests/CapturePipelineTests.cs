@@ -473,6 +473,59 @@ public sealed class CapturePipelineTests : IClassFixture<ScreenActivity>
         Assert.Contains(frames, frame => frame.IsKeyFrame);
     }
 
+    /// <summary>
+    /// A display switch reports when it has actually happened, not when it was asked for.
+    ///
+    /// The request is queued — it has to be, because building a new capture and encoder from
+    /// another thread while the capture thread is mid-frame is how a pipeline ends up
+    /// encoding from a texture that has been disposed. So anything that reads the new size
+    /// when the request returns reads the old display's, which on two monitors of different
+    /// resolutions means telling the client to lay out for a picture it will not get.
+    /// </summary>
+    [Fact]
+    public void A_display_switch_reports_whether_it_worked()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        using CaptureDevice? device = CaptureDevice.TryCreate(loggers.CreateLogger<CaptureDevice>());
+        IntPtr? monitor = DisplayEnumerator.FindPrimaryMonitorHandle();
+
+        using CapturePipeline? pipeline = CapturePipeline.TryCreate(
+            device!,
+            monitor!.Value,
+            30,
+            8_000_000,
+            _ => { },
+            loggers);
+        Assert.NotNull(pipeline);
+
+        var outcomes = new List<bool>();
+        pipeline!.DisplayChanged += applied =>
+        {
+            lock (outcomes) outcomes.Add(applied);
+        };
+
+        pipeline.Start();
+        Thread.Sleep(TimeSpan.FromMilliseconds(500));
+
+        // A handle that is not a monitor. The switch has to fail, and it has to say so:
+        // silence here is what leaves a client waiting for a `stream.ready` for ever.
+        pipeline.RequestDisplay(new IntPtr(0x0BADF00D));
+        Thread.Sleep(TimeSpan.FromSeconds(2));
+
+        bool[] reported;
+        lock (outcomes) reported = outcomes.ToArray();
+
+        _output.WriteLine($"outcomes: {string.Join(", ", reported)}");
+
+        Assert.Single(reported);
+        Assert.False(reported[0], "a switch to a handle that is not a display must report failure");
+
+        // And the stream carries on where it was, which is the other half of the contract.
+        Assert.Equal(monitor.Value, pipeline.MonitorHandle);
+    }
+
     [Fact]
     public void Switching_to_a_display_that_is_not_there_leaves_the_stream_alone()
     {

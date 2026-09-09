@@ -336,34 +336,53 @@ public sealed partial class InputInjector
 
     /// <summary>
     /// Map a normalised point on the streamed display into the absolute range SendInput
-    /// wants.
+    /// wants, against this machine's real virtual desktop.
+    /// </summary>
+    public (int X, int Y) ToVirtualDesktop(double x, double y) =>
+        ToVirtualDesktop(x, y, _display, CurrentVirtualDesktop());
+
+    /// <summary>
+    /// Map a normalised point on one display into the absolute range SendInput wants.
     ///
     /// Two conversions, both easy to get subtly wrong. The normalised point is relative to
     /// the *captured display*, which may sit anywhere in the virtual desktop, including at
-    /// negative coordinates when a second monitor is to the left of the primary one. The
-    /// absolute range is 0..65535 across the whole virtual desktop, not across one screen.
+    /// negative coordinates when a second monitor is to the left of or above the primary
+    /// one. The absolute range is 0..65535 across the whole virtual desktop, not across one
+    /// screen — so on a two-monitor machine, half of that range belongs to the other screen
+    /// and a click that ignores the origin lands on the wrong monitor.
+    ///
+    /// Static and given its desktop rather than reading the metrics itself, because a
+    /// machine has whatever monitors it has: the arithmetic that decides which screen a
+    /// click reaches cannot be checked on a single-display machine unless the layout is
+    /// something a test can state.
     /// </summary>
-    public (int X, int Y) ToVirtualDesktop(double x, double y)
+    public static (int X, int Y) ToVirtualDesktop(
+        double x,
+        double y,
+        IpcDisplay display,
+        VirtualDesktop desktop)
     {
         double clampedX = Math.Clamp(x, 0, 1);
         double clampedY = Math.Clamp(y, 0, 1);
 
         // The point within the streamed display, in desktop pixels.
-        double pixelX = _display.OriginX + clampedX * (_display.WidthPixels - 1);
-        double pixelY = _display.OriginY + clampedY * (_display.HeightPixels - 1);
+        double pixelX = display.OriginX + clampedX * (display.WidthPixels - 1);
+        double pixelY = display.OriginY + clampedY * (display.HeightPixels - 1);
 
-        int virtualLeft = GetSystemMetrics(SmXVirtualScreen);
-        int virtualTop = GetSystemMetrics(SmYVirtualScreen);
-        int virtualWidth = Math.Max(1, GetSystemMetrics(SmCxVirtualScreen));
-        int virtualHeight = Math.Max(1, GetSystemMetrics(SmCyVirtualScreen));
-
-        double normalisedX = (pixelX - virtualLeft) / Math.Max(1, virtualWidth - 1);
-        double normalisedY = (pixelY - virtualTop) / Math.Max(1, virtualHeight - 1);
+        double normalisedX = (pixelX - desktop.Left) / Math.Max(1, desktop.Width - 1);
+        double normalisedY = (pixelY - desktop.Top) / Math.Max(1, desktop.Height - 1);
 
         return (
             (int)Math.Round(Math.Clamp(normalisedX, 0, 1) * AbsoluteMax),
             (int)Math.Round(Math.Clamp(normalisedY, 0, 1) * AbsoluteMax));
     }
+
+    /// <summary>The virtual desktop this machine currently has, in desktop pixels.</summary>
+    public static VirtualDesktop CurrentVirtualDesktop() => new(
+        GetSystemMetrics(SmXVirtualScreen),
+        GetSystemMetrics(SmYVirtualScreen),
+        Math.Max(1, GetSystemMetrics(SmCxVirtualScreen)),
+        Math.Max(1, GetSystemMetrics(SmCyVirtualScreen)));
 
     // -------------------------------------------------------------------------
     // The call itself

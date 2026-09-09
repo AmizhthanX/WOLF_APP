@@ -107,6 +107,9 @@ public sealed class StreamSession : IDisposable
 
     /// <summary>The pins in force, after clamping to what this PC can actually do.</summary>
     private SignalOverrides _overrides = SignalOverrides.None;
+
+    /// <summary>The display a switch is waiting on, until the pipeline reports it done.</summary>
+    private IpcDisplay? _pendingDisplay;
     private long _keyFramesFromRequests;
     private long _framesDroppedForTransport;
     private string _state = "STARTING";
@@ -300,6 +303,7 @@ public sealed class StreamSession : IDisposable
 
         _displays = displays;
         _pipeline.DisplayLost += OnDisplayLost;
+        _pipeline.DisplayChanged += OnDisplayChanged;
 
         // Desktop Duplication hands back the desktop without the pointer composited into it.
         // Reported rather than left to be discovered: an operator whose cursor is invisible
@@ -904,20 +908,67 @@ public sealed class StreamSession : IDisposable
             return;
         }
 
-        pipeline.RequestDisplay(monitor.Value);
-        _display = display;
-
         // Pointer coordinates are normalised against the display being streamed, so the
-        // injector has to be told as well — otherwise every click would land on the old
-        // monitor's rectangle.
+        // injector is told before the switch rather than after: input arriving in the
+        // moment between the two belongs to the display the operator is now looking at.
+        _display = display;
         _input?.Retarget(display);
+
+        // Everything that depends on the new size waits for the switch to actually happen.
+        // The request only queues it, so reading the encoded size here would read the old
+        // display's — and on two monitors of different resolutions, tell the client to lay
+        // out for a picture it is not going to get.
+        _pendingDisplay = display;
+        pipeline.RequestDisplay(monitor.Value);
+    }
+
+    /// <summary>
+    /// The pipeline has finished switching display, or refused to.
+    ///
+    /// This is where the client is told, because this is the first moment there is anything
+    /// true to tell it: the new display's size, the encoded size fitted to it, and a picture
+    /// already arriving at those dimensions.
+    /// </summary>
+    private void OnDisplayChanged(bool switched)
+    {
+        CapturePipeline? pipeline = _pipeline;
+        IpcDisplay? display = _pendingDisplay;
+        _pendingDisplay = null;
+
+        if (pipeline is null || display is null || _disposed) return;
+
+        if (!switched)
+        {
+            _logger.LogWarning("Stream {Stream} could not switch display; it stays where it was.", _streamId);
+
+            Fire(SendErrorAsync(
+                "no-display",
+                $"Display '{display.Id}' could not be captured. The stream is still showing the previous one.",
+                limitation: true,
+                "Try another display, or start the stream again."));
+            return;
+        }
 
         _baseWidth = pipeline.EncodedWidth;
         _baseHeight = pipeline.EncodedHeight;
 
-        _logger.LogInformation("Stream {Stream} switched to display {Display}.", _streamId, display.Id);
+        bool scaled = pipeline.EncodedWidth != display.WidthPixels ||
+                      pipeline.EncodedHeight != display.HeightPixels;
 
-        await SendReadyAsync(display, Array.Empty<SignalAdjustment>()).ConfigureAwait(false);
+        _effectiveProfile = _effectiveProfile! with
+        {
+            MaxWidthPixels = scaled ? pipeline.EncodedWidth : null,
+            MaxHeightPixels = scaled ? pipeline.EncodedHeight : null,
+        };
+
+        _logger.LogInformation(
+            "Stream {Stream} switched to display {Display}, encoding at {Width}x{Height}.",
+            _streamId,
+            display.Id,
+            pipeline.EncodedWidth,
+            pipeline.EncodedHeight);
+
+        Fire(SendReadyAsync(display, Array.Empty<SignalAdjustment>()));
     }
 
     /// <summary>

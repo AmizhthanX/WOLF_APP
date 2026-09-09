@@ -265,9 +265,29 @@ having done it:
 -  forces it, for machines where Graphics Capture reports
   itself supported and then produces nothing usable
 
+**Done — the multi-monitor arithmetic, and a switch that reports when it finished**
+
+- Pointer mapping is now tested against stated two-monitor layouts: a second monitor to the
+  right, to the left (negative origins, which a single-display machine can never produce),
+  above, portrait beside landscape, and two of different resolutions. The property asserted
+  is the one that matters — neither display's coordinates reach into the other's part of the
+  absolute range, so a click lands on the monitor being watched
+- Those tests were checked by breaking the code on purpose: dropping the display origin fails
+  four of eight, dropping the virtual-desktop origin fails two. They are not vacuous
+- Found and fixed while working through the two-monitor path: `RequestDisplay` only *queues*
+  the switch, but the session read the new encoded size immediately afterwards — so on two
+  monitors of different resolutions the client was told to lay out for the old display's
+  dimensions, and a pinned resolution scaled from the wrong base. The pipeline now reports
+  when the switch actually happened, and the client is told then
+- A switch that fails is reported too, rather than leaving the client waiting for a
+  `stream.ready` that is not coming
+
 **Still open, and worth doing before this is called finished**
 
-- Switching between two physical monitors is untested: the development machine has one
+- **Switching between two physical monitors has still never been run.** The development
+  machine has one display, and the end-to-end test skips with that reason rather than
+  passing on nothing. What *is* now covered is the arithmetic underneath it — see below —
+  and what is not is the hardware itself
 
 ## Milestone 3 — The privileged helper
 
