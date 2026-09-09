@@ -235,8 +235,12 @@ having done it:
    capped before it is sent
 5. **The relay logged how many validation issues a message had, not which.** A count is not
    diagnosable; finding defect 4 took a change to log the field paths
-6. **A stream requested while the session host is restarting is dropped**, and the supervisor
-   never logs why the previous host exited. Not yet fixed, and recorded below
+6. **A stream requested while the session host is restarting was dropped**, and the
+   supervisor never logged why the previous host had exited. The agent now remembers every
+   request it forwards until something comes back: losing the host fails them at once, and a
+   sweep answers anything still unanswered after twenty seconds. Verified by killing the
+   real host mid-stream — the client is told in about a second — and by holding it down
+   across a fresh request, which is refused in four milliseconds instead of hanging
 7. **The agent's reported frame rate was a lifetime mean**, so after any adaptation it gave a
    number that was neither the old rate nor the new one — to the operator reading the
    statistics panel, and to the adaptation controller deciding what to do next. Now measured
@@ -245,8 +249,6 @@ having done it:
 
 **Still open, and worth doing before this is called finished**
 
-- A stream request that arrives while the session host is restarting goes unanswered — the
-  client sits in `requesting` until it is retried, and nothing says what happened
 - Desktop Duplication fallback for builds without Windows Graphics Capture
 - Switching between two physical monitors is untested: the development machine has one
 

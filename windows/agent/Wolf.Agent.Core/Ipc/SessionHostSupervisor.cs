@@ -65,6 +65,16 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
     /// <summary>Raised when a signaling message arrives from the host. </summary>
     public event Func<HostSignalMessage, Task>? SignalReceived;
 
+    /// <summary>
+    /// Raised when the host goes away, with the streams it was serving.
+    ///
+    /// The host exiting is not rare — it goes with the session, so signing out, switching
+    /// users, or locking in some configurations all end it. Whoever was watching has to be
+    /// told, because from the client's side a host that vanishes and one that is simply slow
+    /// look identical until somebody gives up.
+    /// </summary>
+    public event Func<IReadOnlyList<IpcStreamStatus>, Task>? HostLost;
+
     public SessionHostSupervisor(ILogger<SessionHostSupervisor> logger, string? hostPath = null)
     {
         _logger = logger;
@@ -437,6 +447,9 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
         finally
         {
             _channel = null;
+
+            IReadOnlyList<IpcStreamStatus> lost = State.Streams;
+
             UpdateState(state => state with
             {
                 Connected = false,
@@ -446,7 +459,22 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                 // running would have the dashboard offer to stop something that is gone.
                 Streams = Array.Empty<IpcStreamStatus>(),
             });
+
             channel.Dispose();
+
+            if (HostLost is { } handler)
+            {
+                try
+                {
+                    await handler(lost).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Telling the cloud is best-effort. Failing to do it must not stop the
+                    // host being restarted, which is what the caller does next.
+                    _logger.LogError(ex, "Could not report the lost session host to the cloud.");
+                }
+            }
         }
     }
 
@@ -561,6 +589,23 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
         Process? host = _hostProcess;
         _hostProcess = null;
         if (host is null) return;
+
+        // Say how it ended before ending it. A host that exited on its own has already set
+        // an exit code, and it is the only evidence of why: without this the log reads as a
+        // host that connected twice for no stated reason.
+        try
+        {
+            if (host.HasExited)
+            {
+                _logger.LogInformation(
+                    "The session host exited with code {Code}; it will be restarted.",
+                    host.ExitCode);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // No exit code to be had. Not worth failing the teardown over.
+        }
 
         try
         {

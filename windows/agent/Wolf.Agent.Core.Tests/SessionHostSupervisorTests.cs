@@ -128,6 +128,63 @@ public sealed class SessionHostSupervisorTests
         Assert.False(delivered);
     }
 
+    /// <summary>
+    /// A host that dies says so, rather than leaving whoever was watching to work it out.
+    ///
+    /// The host exiting is ordinary — it lives in the interactive session, so signing out or
+    /// switching users ends it. What was not ordinary was the silence: streams it was
+    /// serving simply stopped, and a request forwarded into a host on its way out was never
+    /// answered at all. Killing the real process is the only honest way to test this; a
+    /// mocked pipe would be testing the mock.
+    /// </summary>
+    [Fact]
+    public async Task A_host_that_dies_is_announced_so_its_streams_can_be_failed()
+    {
+        Assert.True(File.Exists(HostPath), $"the session host was not built to {HostPath}");
+
+        await using var supervisor = new SessionHostSupervisor(
+            NullLogger<SessionHostSupervisor>.Instance,
+            HostPath);
+
+        var lost = new TaskCompletionSource<IReadOnlyList<IpcStreamStatus>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        supervisor.HostLost += streams =>
+        {
+            lost.TrySetResult(streams);
+            return Task.CompletedTask;
+        };
+
+        supervisor.Start();
+
+        SessionHostState connected = await WaitForConnectionAsync(supervisor, TimeSpan.FromSeconds(30));
+        if (!connected.Connected)
+        {
+            _output.WriteLine($"No session host here ({connected.UnavailableReason}); skipping.");
+            return;
+        }
+
+        foreach (System.Diagnostics.Process host in
+                 System.Diagnostics.Process.GetProcessesByName("Wolf.Agent.SessionHost"))
+        {
+            using (host)
+            {
+                host.Kill(entireProcessTree: true);
+            }
+        }
+
+        Task finished = await Task.WhenAny(lost.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.True(finished == lost.Task, "the supervisor never announced that the host had gone");
+
+        // Empty here because no stream was running, which is the point: the event fires on
+        // the host going away, not on there being something to report.
+        IReadOnlyList<IpcStreamStatus> streams = await lost.Task;
+        _output.WriteLine($"host lost, {streams.Count} stream(s) were running");
+
+        Assert.False(supervisor.State.Connected);
+        Assert.NotNull(supervisor.State.UnavailableReason);
+    }
+
     [Fact]
     public async Task A_missing_host_executable_is_reported_rather_than_retried_silently()
     {

@@ -661,6 +661,24 @@ encoder 15 frames a second also lowers the bitrate it produces, which is the dir
 congestion wants anyway. Measured on the development machine, the change takes effect
 immediately: 55 fps before, 14.5 fps after.
 
+### Every request is answered
+
+A stream request forwarded to the session host is remembered by the agent until something
+comes back for it. That is not belt and braces: writing to the host's named pipe succeeds
+for a host that is already exiting — the bytes reach the buffer and nobody ever reads them —
+so a successful send is not evidence that anything will happen.
+
+Two things end the wait. Losing the host fails every request still outstanding, and every
+stream it was serving, immediately. Anything else — a host that is running but wedged, a
+message lost in a pipe that was closing — is answered by a sweep after twenty seconds, which
+is generous because a cold start really does take a second or two to build a capture device,
+an encoder and a pipeline.
+
+The alternative was what the browser test found: a viewer showing `requesting` for as long
+as somebody was willing to watch it, with nothing on either side saying why. The supervisor
+now also logs the exit code of a host that has gone, which is the only evidence of why it
+went.
+
 ### Saying so
 
 A stream running below its profile is `DEGRADED`, with one of the protocol's reasons

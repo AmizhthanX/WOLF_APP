@@ -73,10 +73,30 @@ public sealed class CloudLink
         // nature: if the link is down there is nothing useful to queue, because an SDP
         // answer that arrives a minute late describes a negotiation nobody is waiting for.
         _sessionHost.SignalReceived += OnHostSignalAsync;
+        _sessionHost.HostLost += OnHostLostAsync;
     }
+
+    /// <summary>
+    /// How long a forwarded stream request may go unanswered before the client is told.
+    ///
+    /// Generous, because a cold start is genuinely slow: a capture device, an encoder, a
+    /// pipeline and the first ICE candidates. What it must not be is unbounded — the failure
+    /// this exists for left a viewer showing "requesting" for as long as somebody was
+    /// willing to sit and watch it, with nothing anywhere saying why.
+    /// </summary>
+    private static readonly TimeSpan StreamRequestTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>How often to look for requests that have gone unanswered.</summary>
+    private static readonly TimeSpan PendingSweepInterval = TimeSpan.FromSeconds(2);
+
+    private readonly PendingStreamRequests _awaitingHost = new();
 
     private async Task OnHostSignalAsync(HostSignalMessage signal)
     {
+        // Anything at all from the host means the request was received and is being worked
+        // on, so it is no longer waiting.
+        _awaitingHost.Answered(signal.StreamId);
+
         ClientWebSocket? socket = _socket;
         if (socket is null || socket.State != WebSocketState.Open)
         {
@@ -160,6 +180,7 @@ public sealed class CloudLink
         using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task? heartbeat = null;
         Task? telemetry = null;
+        Task? pendingSweep = null;
 
         try
         {
@@ -182,6 +203,7 @@ public sealed class CloudLink
                             await OnAuthenticatedAsync(socket, sessionCts.Token).ConfigureAwait(false);
                             heartbeat ??= HeartbeatLoopAsync(socket, sessionCts.Token);
                             telemetry ??= TelemetryLoopAsync(socket, sessionCts.Token);
+                            pendingSweep ??= SweepPendingStreamsAsync(sessionCts.Token);
                             break;
 
                         case "cloud.auth-rejected":
@@ -218,6 +240,12 @@ public sealed class CloudLink
             await sessionCts.CancelAsync().ConfigureAwait(false);
             await AwaitQuietly(heartbeat).ConfigureAwait(false);
             await AwaitQuietly(telemetry).ConfigureAwait(false);
+            await AwaitQuietly(pendingSweep).ConfigureAwait(false);
+
+            // The link is going down, so nothing forwarded is going to be answered over it.
+            // Cleared rather than carried into the next session: those stream ids belong to
+            // clients that have already been told the agent disconnected.
+            _awaitingHost.Clear();
             _socket = null;
         }
     }
@@ -412,6 +440,22 @@ public sealed class CloudLink
             return;
         }
 
+        string payloadType = envelope.TryGetProperty("payload", out JsonElement payloadElement) &&
+                             payloadElement.TryGetProperty("type", out JsonElement typeElement)
+            ? typeElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        // Remembered before the send rather than after: if the host answers immediately, the
+        // answer must find the entry already there to clear it.
+        if (payloadType == "stream.request")
+        {
+            _awaitingHost.Track(streamId, sessionId, DateTimeOffset.UtcNow);
+        }
+        else if (payloadType == "stream.stop")
+        {
+            _awaitingHost.Answered(streamId);
+        }
+
         bool delivered = await _sessionHost
             .SendAsync(
                 new ServiceSignalMessage(
@@ -430,22 +474,108 @@ public sealed class CloudLink
         {
             // No host means no desktop to stream. Say which, rather than letting the client
             // wait for an offer that is never coming.
-            SessionHostState host = _sessionHost.State;
-            await OnHostSignalAsync(
-                new HostSignalMessage(
-                    sessionId,
-                    streamId,
-                    JsonSerializer.SerializeToElement(
-                        new
-                        {
-                            type = "stream.error",
-                            code = "no-session-host",
-                            message = host.UnavailableReason ?? "The WOLF session host is not running.",
-                            limitation = true,
-                            recommendedAction =
-                                "Streaming needs somebody signed in at this PC. It resumes on its own once they are.",
-                        },
-                        WolfProtocol.Json))).ConfigureAwait(false);
+            await NoSessionHostAsync(sessionId, streamId).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Tell a client that the PC has no session host to serve its stream.</summary>
+    private Task NoSessionHostAsync(string sessionId, string streamId)
+    {
+        SessionHostState host = _sessionHost.State;
+
+        return OnHostSignalAsync(
+            new HostSignalMessage(
+                sessionId,
+                streamId,
+                JsonSerializer.SerializeToElement(
+                    new
+                    {
+                        type = "stream.error",
+                        code = "no-session-host",
+                        message = host.UnavailableReason ?? "The WOLF session host is not running.",
+                        limitation = true,
+                        recommendedAction =
+                            "Streaming needs somebody signed in at this PC. It resumes on its own once they are.",
+                    },
+                    WolfProtocol.Json)));
+    }
+
+    /// <summary>
+    /// The session host went away. Tell everyone who was watching, or waiting to.
+    ///
+    /// Two groups, and both were being left in silence. The streams the host was serving
+    /// simply stopped producing frames, and any request forwarded into a host that was
+    /// already on its way out was never answered at all — which is how a viewer ends up
+    /// showing "requesting" indefinitely after a host restart it had no way to know about.
+    /// </summary>
+    private async Task OnHostLostAsync(IReadOnlyList<IpcStreamStatus> running)
+    {
+        foreach (IpcStreamStatus stream in running)
+        {
+            _logger.LogInformation(
+                "Stream {Stream} ended: the session host is gone.",
+                stream.StreamId);
+
+            await NoSessionHostAsync(stream.SessionId, stream.StreamId).ConfigureAwait(false);
+        }
+
+        foreach (PendingStreamRequest pending in _awaitingHost.TakeAll())
+        {
+            _logger.LogInformation(
+                "Stream request {Stream} was never answered: the session host is gone.",
+                pending.StreamId);
+
+            await NoSessionHostAsync(pending.SessionId, pending.StreamId).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Answer stream requests the host has quietly failed to act on.
+    ///
+    /// The host going away is handled the moment it happens; this covers everything else — a
+    /// host that is running but wedged, a message lost in a pipe that was closing, a request
+    /// that arrived during the gap between one host exiting and the next connecting. The
+    /// client is told what happened either way, because a viewer stuck on "requesting" is
+    /// the one outcome that leaves somebody with nothing to act on.
+    /// </summary>
+    private async Task SweepPendingStreamsAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(PendingSweepInterval, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            IReadOnlyList<PendingStreamRequest> expired =
+                _awaitingHost.TakeExpired(DateTimeOffset.UtcNow, StreamRequestTimeout);
+
+            foreach (PendingStreamRequest pending in expired)
+            {
+                _logger.LogWarning(
+                    "The session host did not answer stream request {Stream} within {Seconds}s.",
+                    pending.StreamId,
+                    StreamRequestTimeout.TotalSeconds);
+
+                await OnHostSignalAsync(
+                    new HostSignalMessage(
+                        pending.SessionId,
+                        pending.StreamId,
+                        JsonSerializer.SerializeToElement(
+                            new
+                            {
+                                type = "stream.error",
+                                code = "no-session-host",
+                                message = "This PC did not answer the request to start streaming.",
+                                limitation = false,
+                                recommendedAction = "Try starting the stream again.",
+                            },
+                            WolfProtocol.Json))).ConfigureAwait(false);
+            }
         }
     }
 
