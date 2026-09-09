@@ -17,14 +17,20 @@ namespace Wolf.Agent.Core.Tests;
 /// parameter sets, no key frame — and every one of those failures would look like success
 /// to a test that only counted bytes.
 /// </summary>
+/// <remarks>
+/// Takes a <see cref="ScreenActivity"/> it never reads. Windows Graphics Capture delivers a
+/// frame when the composition changes, so on an idle desktop these tests measure nothing and
+/// fail at random. The fixture keeps something moving for as long as this class runs.
+/// </remarks>
 [Collection("Capture")]
-public sealed class EncodePipelineTests
+public sealed class EncodePipelineTests : IClassFixture<ScreenActivity>
 {
     private readonly ITestOutputHelper _output;
 
-    public EncodePipelineTests(ITestOutputHelper output)
+    public EncodePipelineTests(ITestOutputHelper output, ScreenActivity activity)
     {
         _output = output;
+        _ = activity;
     }
 
     /// <summary>NAL unit types an H.264 stream must contain for a decoder to start.</summary>

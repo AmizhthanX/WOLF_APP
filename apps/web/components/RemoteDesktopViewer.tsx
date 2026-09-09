@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRemoteDesktop } from '@/lib/use-remote-desktop';
-import type { InputEvent, StreamPhase, StreamProfile } from '@/lib/remote-desktop';
+import { NO_OVERRIDES } from '@/lib/remote-desktop';
+import type {
+  InputEvent,
+  QualityOverrides,
+  StreamPhase,
+  StreamProfile,
+} from '@/lib/remote-desktop';
 import {
   isExtendedCode,
   normalizePoint,
@@ -57,6 +63,7 @@ const PRESETS: { id: string; label: string; hint: string; profile: StreamProfile
       audioEnabled: false,
       qualityBias: 'quality',
       adaptive: true,
+      overrides: NO_OVERRIDES,
     },
   },
   {
@@ -74,6 +81,7 @@ const PRESETS: { id: string; label: string; hint: string; profile: StreamProfile
       audioEnabled: false,
       qualityBias: 'balanced',
       adaptive: true,
+      overrides: NO_OVERRIDES,
     },
   },
   {
@@ -91,9 +99,44 @@ const PRESETS: { id: string; label: string; hint: string; profile: StreamProfile
       audioEnabled: false,
       qualityBias: 'performance',
       adaptive: true,
+      overrides: NO_OVERRIDES,
     },
   },
 ];
+
+/**
+ * The values a lever can be pinned to.
+ *
+ * A short list rather than a free number box. Every value here is one the agent can
+ * actually hold — the frame rates are the ones the adaptation ladder uses, the scales are
+ * the ones the encoder will rebuild for — and a text field would mostly collect numbers
+ * that come back clamped.
+ */
+const PIN_CHOICES = {
+  bitrateBps: [1_000_000, 2_000_000, 5_000_000, 10_000_000, 20_000_000, 40_000_000],
+  frameRate: [15, 24, 30, 48, 60],
+  resolutionScale: [0.5, 0.75, 1],
+};
+
+/**
+ * Hold pins inside what the chosen preset can express.
+ *
+ * The API rejects a pin above its own profile's ceiling, because a bitrate pinned higher
+ * than the maximum has no reading that is not a guess. Switching preset can leave a pin
+ * stranded above the new ceiling, so it is brought down here rather than sent to be
+ * refused.
+ */
+function fitOverrides(profile: StreamProfile, overrides: QualityOverrides): QualityOverrides {
+  return {
+    bitrateBps:
+      overrides.bitrateBps === null
+        ? null
+        : Math.min(overrides.bitrateBps, profile.maxBitrateBps),
+    frameRate:
+      overrides.frameRate === null ? null : Math.min(overrides.frameRate, profile.targetFps),
+    resolutionScale: overrides.resolutionScale,
+  };
+}
 
 function megabits(bitsPerSecond: number | null): string {
   if (bitsPerSecond === null) return 'not measured';
@@ -171,6 +214,7 @@ export function RemoteDesktopViewer({
   // Off unless somebody turns it on. Listening to a machine is a separate act from watching
   // it, and starting a stream is not a decision to start listening.
   const [wantAudio, setWantAudio] = useState(false);
+  const [overrides, setOverrides] = useState<QualityOverrides>(NO_OVERRIDES);
   const [clipboardError, setClipboardError] = useState<string | null>(null);
 
   const controlling = view.control?.granted === true;
@@ -200,6 +244,30 @@ export function RemoteDesktopViewer({
   const preset = useMemo(
     () => PRESETS.find((entry) => entry.id === presetId) ?? PRESETS[1]!,
     [presetId],
+  );
+
+  /** The preset, with whatever the operator has pinned on top of it. */
+  const profile = useMemo<StreamProfile>(
+    () => ({ ...preset.profile, overrides: fitOverrides(preset.profile, overrides) }),
+    [preset, overrides],
+  );
+
+  /**
+   * Pin or unpin one lever, and tell a running stream straight away.
+   *
+   * Applied live rather than on the next start: the whole point of a pin is that the
+   * operator can see its effect on the picture in front of them.
+   */
+  const pin = useCallback(
+    (lever: keyof QualityOverrides, value: number | null) => {
+      const next = fitOverrides(preset.profile, { ...overrides, [lever]: value });
+      setOverrides(next);
+
+      if (view.phase === 'streaming' || view.phase === 'reconnecting') {
+        view.setProfile({ ...preset.profile, overrides: next });
+      }
+    },
+    [overrides, preset, view],
   );
 
   useEffect(() => {
@@ -328,7 +396,7 @@ export function RemoteDesktopViewer({
           ) : (
             <button
               type="button"
-              onClick={() => view.start(preset.profile, displayId, wantAudio)}
+              onClick={() => view.start(profile, displayId, wantAudio)}
               disabled={!sessionToken}
             >
               Start streaming
@@ -452,9 +520,16 @@ export function RemoteDesktopViewer({
                 className={entry.id === presetId ? 'preset preset-active' : 'preset'}
                 onClick={() => {
                   setPresetId(entry.id);
+
+                  // Pins survive a preset change, brought inside the new preset's ceilings.
+                  // Someone who pinned 30 fps to keep a link usable did not stop meaning it
+                  // because they also switched to a lower-bandwidth preset.
+                  const fitted = fitOverrides(entry.profile, overrides);
+                  setOverrides(fitted);
+
                   // A running stream is changed in place where the PC can manage it; a
                   // stopped one simply starts with the new profile next time.
-                  if (running) view.setProfile(entry.profile);
+                  if (running) view.setProfile({ ...entry.profile, overrides: fitted });
                 }}
               >
                 <span>{entry.label}</span>
@@ -513,6 +588,66 @@ export function RemoteDesktopViewer({
               ) : null}
             </label>
           ) : null}
+
+          <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, gap: 8 }}>
+            <legend className="muted" style={{ fontSize: 12, padding: 0 }}>
+              Hold a setting steady. Anything left on <span className="mono">Automatic</span> keeps
+              adapting to the link.
+            </legend>
+
+            {(
+              [
+                {
+                  lever: 'bitrateBps' as const,
+                  label: 'Bitrate',
+                  choices: PIN_CHOICES.bitrateBps.filter(
+                    (value) => value <= preset.profile.maxBitrateBps,
+                  ),
+                  format: megabits,
+                },
+                {
+                  lever: 'frameRate' as const,
+                  label: 'Frame rate',
+                  choices: PIN_CHOICES.frameRate.filter(
+                    (value) => value <= preset.profile.targetFps,
+                  ),
+                  format: (value: number) => `${value} fps`,
+                },
+                {
+                  lever: 'resolutionScale' as const,
+                  label: 'Resolution',
+                  choices: PIN_CHOICES.resolutionScale,
+                  format: (value: number) =>
+                    value === 1 ? 'Full size' : `${Math.round(value * 100)}% of full size`,
+                },
+              ]
+            ).map((row) => (
+              <label key={row.lever} className="row" style={{ gap: 8 }}>
+                <span className="muted" style={{ minWidth: 88 }}>
+                  {row.label}
+                </span>
+                <select
+                  value={overrides[row.lever] ?? ''}
+                  onChange={(event) =>
+                    pin(row.lever, event.target.value === '' ? null : Number(event.target.value))
+                  }
+                  disabled={busy}
+                >
+                  <option value="">Automatic</option>
+                  {row.choices.map((value) => (
+                    <option key={value} value={value}>
+                      {row.format(value)}
+                    </option>
+                  ))}
+                </select>
+                {overrides[row.lever] !== null ? (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Held here. The PC says so below if it cannot manage it.
+                  </span>
+                ) : null}
+              </label>
+            ))}
+          </fieldset>
 
           {view.adjustments.length > 0 ? (
             <div className="stack">

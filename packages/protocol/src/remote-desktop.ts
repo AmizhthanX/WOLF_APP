@@ -52,6 +52,33 @@ export const qualityBias = z.enum(QUALITY_BIAS);
 export type QualityBias = z.infer<typeof qualityBias>;
 
 /**
+ * Settings the operator has pinned, which adaptation must not move.
+ *
+ * Null means "adapt this one". Pinning is per lever rather than all-or-nothing because the
+ * useful cases are mixed: hold the resolution steady so text stays readable while letting
+ * the frame rate fall, or hold a frame rate for something being demonstrated while the
+ * bitrate does what it must.
+ *
+ * A pinned value is honoured until it stops being physically possible. It is never quietly
+ * overridden — the stream reports itself degraded and says what the cause was, and the pin
+ * stays visible so the operator can see it is theirs.
+ */
+export const qualityOverrides = z.object({
+  bitrateBps: z.number().int().min(100_000).max(200_000_000).nullable().default(null),
+  frameRate: z.number().int().min(1).max(240).nullable().default(null),
+  /** Fraction of the full resolution, so it means the same on any display. */
+  resolutionScale: z.number().min(0.25).max(1).nullable().default(null),
+});
+export type QualityOverrides = z.infer<typeof qualityOverrides>;
+
+/** Nothing pinned: every lever is adaptation's to move. */
+export const NO_OVERRIDES: QualityOverrides = {
+  bitrateBps: null,
+  frameRate: null,
+  resolutionScale: null,
+};
+
+/**
  * A saved set of streaming preferences.
  *
  * Every field is a ceiling or a target, never a guarantee. When the machine or the network
@@ -75,6 +102,13 @@ export const remoteDesktopProfile = z.object({
    * a poor idea over a congested link.
    */
   adaptive: z.boolean().default(true),
+  /**
+   * Individual levers the operator has taken control of.
+   *
+   * Layered on top of `adaptive`: turning adaptation off pins everything at the profile's
+   * values, while these pin one lever at a time and leave the rest adapting.
+   */
+  overrides: qualityOverrides.default(NO_OVERRIDES),
 })
   .refine((profile) => profile.maxBitrateBps >= profile.minBitrateBps, {
     message: 'maxBitrateBps must be at least minBitrateBps',
@@ -87,7 +121,34 @@ export const remoteDesktopProfile = z.object({
       message: 'set both maxWidthPixels and maxHeightPixels, or neither',
       path: ['maxHeightPixels'],
     },
+  )
+  .refine(
+    (profile) =>
+      profile.overrides.bitrateBps === null ||
+      profile.overrides.bitrateBps <= profile.maxBitrateBps,
+    {
+      // A pin above the ceiling is not a preference the agent could act on either way
+      // round, so it is rejected here rather than resolved by a coin toss on the host.
+      message: 'a pinned bitrate cannot exceed maxBitrateBps',
+      path: ['overrides', 'bitrateBps'],
+    },
+  )
+  .refine(
+    (profile) => profile.overrides.frameRate === null || profile.overrides.frameRate <= profile.targetFps,
+    {
+      message: 'a pinned frame rate cannot exceed targetFps',
+      path: ['overrides', 'frameRate'],
+    },
   );
+
+/** True when the operator has taken any lever away from adaptation. */
+export function hasOverrides(overrides: QualityOverrides): boolean {
+  return (
+    overrides.bitrateBps !== null ||
+    overrides.frameRate !== null ||
+    overrides.resolutionScale !== null
+  );
+}
 export type RemoteDesktopProfile = z.infer<typeof remoteDesktopProfile>;
 
 /** The profiles WOLF ships with. Users can add their own. */

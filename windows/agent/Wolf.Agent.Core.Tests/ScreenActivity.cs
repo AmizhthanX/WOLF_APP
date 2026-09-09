@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Wolf.Agent.Core.Tests.Performance;
+namespace Wolf.Agent.Core.Tests;
 
 /// <summary>
 /// Something changing on screen, so capture performance can be measured at all.
@@ -10,13 +10,19 @@ namespace Wolf.Agent.Core.Tests.Performance;
 /// pipeline under load. Rather than hoping somebody is moving a window at the time, these
 /// runs drive the screen themselves.
 ///
-/// It is a small labelled window in the bottom-right corner that repaints for a few seconds
-/// and then goes away. That is intrusive, and deliberately the least intrusive thing that
-/// works: painting straight onto the desktop would leave artifacts on somebody's screen, and
-/// injecting mouse movement would move a pointer they are using. A performance run is
-/// something a person starts on purpose, and a window that says what it is beats a mystery.
+/// It is a small labelled window in the bottom-right corner that repaints while the tests
+/// that need it are running, and then goes away. That is intrusive, and deliberately the
+/// least intrusive thing that works: painting straight onto the desktop would leave
+/// artifacts on somebody's screen, and injecting mouse movement would move a pointer they
+/// are using. A window that says what it is beats a mystery.
+///
+/// The ordinary suite needs this as much as the performance one does, and for longer than it
+/// looks. Without it the capture tests pass or fail on whether anything happened to be
+/// moving on the developer's screen: runs of the same unchanged tree have failed six, three,
+/// one and zero of twelve. A suite that reports a different answer each time is not
+/// measuring the product.
 /// </summary>
-internal sealed class ScreenActivity : IDisposable
+public sealed class ScreenActivity : IDisposable
 {
     private const int Width = 260;
     private const int Height = 90;

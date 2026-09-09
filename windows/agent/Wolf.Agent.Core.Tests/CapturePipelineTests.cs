@@ -17,14 +17,20 @@ namespace Wolf.Agent.Core.Tests;
 /// frames to its consumer, and that it stops cleanly rather than leaving a thread encoding
 /// somebody's desktop.
 /// </summary>
+/// <remarks>
+/// Takes a <see cref="ScreenActivity"/> it never reads. Windows Graphics Capture delivers a
+/// frame when the composition changes, so on an idle desktop these tests measure nothing and
+/// fail at random. The fixture keeps something moving for as long as this class runs.
+/// </remarks>
 [Collection("Capture")]
-public sealed class CapturePipelineTests
+public sealed class CapturePipelineTests : IClassFixture<ScreenActivity>
 {
     private readonly ITestOutputHelper _output;
 
-    public CapturePipelineTests(ITestOutputHelper output)
+    public CapturePipelineTests(ITestOutputHelper output, ScreenActivity activity)
     {
         _output = output;
+        _ = activity;
     }
 
     private bool CanRun()

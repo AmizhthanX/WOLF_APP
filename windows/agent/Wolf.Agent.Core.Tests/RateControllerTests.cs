@@ -35,6 +35,17 @@ public sealed class RateControllerTests
     private static RateController Controller(bool adaptive = true, int targetFps = 60) =>
         new(new RateLimits(Min, Max, targetFps, adaptive));
 
+    /// <summary>A controller with individual levers taken away from adaptation.</summary>
+    private static RateController Pinned(
+        int? bitrate = null,
+        int? frameRate = null,
+        double? scale = null,
+        int targetFps = 60) =>
+        new(new RateLimits(Min, Max, targetFps, true, bitrate, frameRate, scale));
+
+    /// <summary>An interval bad enough that every free lever should be reaching for something.</summary>
+    private static RateSignals Terrible() => Losing(30, estimate: 400_000);
+
     /// <summary>A healthy interval: nothing lost, plenty of headroom, encoder idling.</summary>
     private static RateSignals Healthy(int? estimate = 40_000_000) =>
         new(estimate, 0, 20, EncodeMsPerFrame: 1, CapturedFps: 60, EncodedFps: 60);
@@ -432,5 +443,158 @@ public sealed class RateControllerTests
         // Nothing is changed, but staying silent while the stream visibly struggles would
         // leave the operator blaming the wrong thing.
         Assert.Null(controller.Observe(Healthy()).DegradedReason);
+    }
+
+    /* --------------------------------------------------------------------- */
+    /* Pinned levers                                                          */
+    /* --------------------------------------------------------------------- */
+
+    [Fact]
+    public void A_pinned_bitrate_does_not_move_however_bad_the_link_gets()
+    {
+        RateController controller = Pinned(bitrate: 6_000_000);
+
+        Assert.Equal(6_000_000, controller.BitrateBps);
+        Assert.True(controller.HasPins);
+
+        for (var interval = 0; interval < 10; interval++)
+        {
+            RateDecision decision = controller.Observe(Terrible());
+            Assert.Equal(6_000_000, decision.BitrateBps);
+            Assert.False(decision.BitrateChanged);
+        }
+
+        // Held, but not hidden. A stream sending six megabits down a link that will carry
+        // four hundred kilobits is degraded, and the operator is the one who can undo it.
+        Assert.Equal("packet-loss", controller.Observe(Terrible()).DegradedReason);
+    }
+
+    [Fact]
+    public void A_pinned_bitrate_leaves_the_other_levers_free()
+    {
+        RateController controller = Pinned(bitrate: 6_000_000);
+
+        // An encoder that cannot make its frame budget is not a bandwidth problem, and the
+        // lever that fixes it is not the one the operator took away.
+        RateDecision decision = controller.Observe(new RateSignals(null, 0, 20, 50, 60, 20));
+
+        _output.WriteLine($"pinned bitrate, overloaded encoder: {decision.FrameRate} fps");
+
+        Assert.Equal("encoder-overloaded", decision.DegradedReason);
+        Assert.True(decision.FrameRateChanged);
+        Assert.Equal(RateLimits.FrameRateLadder[1], decision.FrameRate);
+        Assert.Equal(6_000_000, decision.BitrateBps);
+    }
+
+    [Fact]
+    public void A_pinned_frame_rate_survives_an_encoder_that_cannot_keep_up()
+    {
+        RateController controller = Pinned(frameRate: 60);
+
+        RateDecision decision = controller.Observe(new RateSignals(null, 0, 20, 50, 60, 20));
+
+        // The operator asked for 60. They get 60, and they get told the machine is not
+        // managing it — which is a different thing from being quietly given 30.
+        Assert.Equal(60, decision.FrameRate);
+        Assert.False(decision.FrameRateChanged);
+        Assert.Equal("encoder-overloaded", decision.DegradedReason);
+    }
+
+    [Fact]
+    public void A_pinned_frame_rate_is_used_as_typed_rather_than_snapped_to_the_ladder()
+    {
+        // The ladder exists to make automatic steps feel gradual. Somebody who typed 45
+        // asked for 45, and rounding them to 48 or 30 would be answering a question they
+        // did not ask.
+        RateController controller = Pinned(frameRate: 45);
+
+        Assert.Equal(45, controller.FrameRate);
+        Assert.DoesNotContain(45, RateLimits.FrameRateLadder);
+        Assert.Equal(45, controller.Observe(Terrible()).FrameRate);
+    }
+
+    [Fact]
+    public void Resolution_still_comes_down_when_both_other_levers_are_pinned()
+    {
+        RateController controller = Pinned(bitrate: 6_000_000, frameRate: 60);
+
+        RateDecision decision = controller.Observe(Terrible());
+
+        _output.WriteLine($"both pinned: scale fell to {decision.ResolutionScale:P0}");
+
+        // A pinned lever is exhausted by definition. Waiting for the bitrate to reach a
+        // floor it will never reach would leave the one free lever doing nothing at all.
+        Assert.True(decision.ResolutionChanged);
+        Assert.Equal(RateLimits.ResolutionLadder[1], decision.ResolutionScale);
+    }
+
+    [Fact]
+    public void A_pinned_resolution_is_never_scaled_away()
+    {
+        // Bad on both counts: a link that will not carry the stream and an encoder that
+        // cannot make its budget. Resolution only comes down once both of the cheaper
+        // levers have run out, so anything gentler would prove nothing.
+        var hopeless = new RateSignals(400_000, 30, 200, EncodeMsPerFrame: 50, CapturedFps: 60, EncodedFps: 20);
+
+        // A control run, so the test fails if it stops exercising the thing it names.
+        RateController unpinned = Controller();
+        for (var interval = 0; interval < 20; interval++) unpinned.Observe(hopeless);
+        Assert.True(unpinned.ResolutionScale < 1.0, "an unpinned stream should have scaled down by now");
+
+        RateController controller = Pinned(scale: 0.75);
+
+        Assert.Equal(0.75, controller.ResolutionScale);
+
+        for (var interval = 0; interval < 20; interval++)
+        {
+            RateDecision decision = controller.Observe(hopeless);
+            Assert.Equal(0.75, decision.ResolutionScale);
+            Assert.False(decision.ResolutionChanged);
+        }
+
+        // Everything else has bottomed out, so the stream is degraded and says why.
+        RateDecision last = controller.Observe(hopeless);
+        Assert.Equal(RateLimits.AbsoluteFloorBps, last.BitrateBps);
+        Assert.Equal(RateLimits.FrameRateLadder[^1], last.FrameRate);
+        Assert.NotNull(last.DegradedReason);
+    }
+
+    [Fact]
+    public void Recovery_gives_nothing_back_to_a_pinned_lever()
+    {
+        RateController controller = Pinned(bitrate: 3_000_000, scale: 0.5);
+
+        // Long enough for several recovery windows to come round.
+        for (var interval = 0; interval < 30; interval++)
+        {
+            RateDecision decision = controller.Observe(Healthy());
+            Assert.Equal(3_000_000, decision.BitrateBps);
+            Assert.Equal(0.5, decision.ResolutionScale);
+        }
+
+        // Handing quality back to a lever the operator is holding is not generosity; it is
+        // ignoring them slowly.
+        Assert.Equal(3_000_000, controller.BitrateBps);
+        Assert.Equal(0.5, controller.ResolutionScale);
+        Assert.Null(controller.Observe(Healthy()).DegradedReason);
+    }
+
+    [Fact]
+    public void A_pinned_bitrate_below_the_profile_floor_is_not_reported_as_a_shortfall()
+    {
+        // Min is 2 Mbps and the pin is under it. That is not the network failing to meet
+        // the profile — it is the same person saying something more specific, so the pin
+        // replaces the range rather than permanently disagreeing with it.
+        RateController controller = Pinned(bitrate: 800_000);
+
+        Assert.Equal(800_000, controller.BitrateBps);
+        Assert.Null(controller.Observe(Healthy()).DegradedReason);
+    }
+
+    [Fact]
+    public void An_unpinned_controller_says_it_has_no_pins()
+    {
+        Assert.False(Controller().HasPins);
+        Assert.True(Pinned(frameRate: 30).HasPins);
     }
 }

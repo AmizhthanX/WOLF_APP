@@ -39,6 +39,23 @@ public static class SignalTypes
     public const string StreamError = "stream.error";
 }
 
+/// <summary>
+/// Levers the operator has taken away from adaptation, each null when they have not.
+///
+/// Sent with the profile rather than as a separate message: a pin is part of what the
+/// operator asked the stream to be, and splitting it out would let the two disagree.
+/// </summary>
+public sealed record SignalOverrides(
+    [property: JsonPropertyName("bitrateBps")] int? BitrateBps,
+    [property: JsonPropertyName("frameRate")] int? FrameRate,
+    [property: JsonPropertyName("resolutionScale")] double? ResolutionScale)
+{
+    /// <summary>Nothing pinned. Also what a client that predates overrides means.</summary>
+    public static readonly SignalOverrides None = new(null, null, null);
+
+    public bool Any => BitrateBps is not null || FrameRate is not null || ResolutionScale is not null;
+}
+
 /// <summary>A streaming profile. Every field is a ceiling or a target, never a guarantee.</summary>
 public sealed record SignalProfile(
     [property: JsonPropertyName("name")] string Name,
@@ -50,7 +67,9 @@ public sealed record SignalProfile(
     [property: JsonPropertyName("codecPreference")] IReadOnlyList<string> CodecPreference,
     [property: JsonPropertyName("audioEnabled")] bool AudioEnabled,
     [property: JsonPropertyName("qualityBias")] string QualityBias,
-    [property: JsonPropertyName("adaptive")] bool Adaptive);
+    [property: JsonPropertyName("adaptive")] bool Adaptive,
+    /// <summary>Null from a client that does not send overrides, which means none.</summary>
+    [property: JsonPropertyName("overrides")] SignalOverrides? Overrides = null);
 
 public sealed record SignalStreamRequest(
     [property: JsonPropertyName("displayId")] string? DisplayId,

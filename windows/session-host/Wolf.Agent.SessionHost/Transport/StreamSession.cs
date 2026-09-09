@@ -104,6 +104,9 @@ public sealed class StreamSession : IDisposable
     // this rather than to the display, so a capped profile is not quietly re-expanded.
     private int _baseWidth;
     private int _baseHeight;
+
+    /// <summary>The pins in force, after clamping to what this PC can actually do.</summary>
+    private SignalOverrides _overrides = SignalOverrides.None;
     private long _keyFramesFromRequests;
     private long _framesDroppedForTransport;
     private string _state = "STARTING";
@@ -302,6 +305,19 @@ public sealed class StreamSession : IDisposable
         _baseWidth = _pipeline.EncodedWidth;
         _baseHeight = _pipeline.EncodedHeight;
 
+        // Pins are resolved before the offer goes out. A pinned resolution in particular has
+        // to be applied here: `stream.ready` describes the picture the client will receive,
+        // and advertising the full size only to start sending a smaller one would make the
+        // viewer lay out for a stream that never arrives.
+        _overrides = ClampOverrides(_request.Profile.Overrides, targetFps, bitrate, adjustments);
+
+        if (_overrides.ResolutionScale is { } pinnedScale)
+        {
+            _pipeline.RequestEncodedSize(
+                (int)Math.Round(_baseWidth * pinnedScale),
+                (int)Math.Round(_baseHeight * pinnedScale));
+        }
+
         // Input is refused until the cloud says who is driving. Building the channel here
         // rather than on the first grant means a batch arriving early is answered with the
         // reason it was refused instead of being dropped on the floor.
@@ -376,6 +392,7 @@ public sealed class StreamSession : IDisposable
             CodecPreference = new[] { SupportedCodec },
             AudioEnabled = audioCodec is not null,
             Adaptive = _request.Profile.Adaptive,
+            Overrides = _overrides,
         };
 
         // 6. The offer, describing the profile and level the encoder is really producing.
@@ -509,8 +526,9 @@ public sealed class StreamSession : IDisposable
 
     private static int ClampBitrate(SignalProfile profile, List<SignalAdjustment> adjustments)
     {
-        // The maximum is the target: this build does not adapt, so running at the ceiling is
-        // what the operator asked for when they chose the profile.
+        // The maximum is where the stream starts. Adaptation comes down from here when the
+        // link cannot carry it, so the ceiling is what the operator asked for rather than a
+        // number the stream is guaranteed to sit at.
         int applied = Math.Clamp(profile.MaxBitrateBps, 100_000, 200_000_000);
 
         if (applied != profile.MaxBitrateBps)
@@ -523,6 +541,84 @@ public sealed class StreamSession : IDisposable
         }
 
         return applied;
+    }
+
+    /// <summary>
+    /// Hold pinned values inside what this display and this encoder can actually do.
+    ///
+    /// A pin is a strong instruction, not an impossible one: pinning 120 fps on a 60 Hz
+    /// panel asks for pictures that do not exist. Every clamp is reported as an adjustment,
+    /// so the operator sees the number they typed next to the number they got instead of
+    /// wondering why the setting looks ignored.
+    /// </summary>
+    private static SignalOverrides ClampOverrides(
+        SignalOverrides? requested,
+        int targetFps,
+        int maxBitrateBps,
+        List<SignalAdjustment> adjustments)
+    {
+        if (requested is null || !requested.Any) return SignalOverrides.None;
+
+        int? frameRate = requested.FrameRate;
+        if (frameRate is { } fps && fps > targetFps)
+        {
+            adjustments.Add(new SignalAdjustment(
+                "overrides.frameRate",
+                fps.ToString(),
+                targetFps.ToString(),
+                "Above what this display and profile can produce."));
+            frameRate = targetFps;
+        }
+
+        int? bitrate = requested.BitrateBps;
+        if (bitrate is { } bps && bps > maxBitrateBps)
+        {
+            adjustments.Add(new SignalAdjustment(
+                "overrides.bitrateBps",
+                bps.ToString(),
+                maxBitrateBps.ToString(),
+                "Above the bitrate ceiling this stream negotiated."));
+            bitrate = maxBitrateBps;
+        }
+
+        // The ladder stops at half size because a smaller remote desktop stops being
+        // readable. A pin may sit anywhere above that, including between the ladder's rungs.
+        double? scale = requested.ResolutionScale is { } value ? Math.Clamp(value, 0.25, 1.0) : null;
+
+        return new SignalOverrides(bitrate, frameRate, scale);
+    }
+
+    /// <summary>The controller's limits, pins included, from a negotiated profile.</summary>
+    private static RateLimits LimitsFrom(SignalProfile profile)
+    {
+        SignalOverrides overrides = profile.Overrides ?? SignalOverrides.None;
+
+        return new RateLimits(
+            MinBitrateBps: Math.Min(profile.MinBitrateBps, profile.MaxBitrateBps),
+            MaxBitrateBps: profile.MaxBitrateBps,
+            TargetFrameRate: profile.TargetFps,
+            Adaptive: profile.Adaptive,
+            PinnedBitrateBps: overrides.BitrateBps,
+            PinnedFrameRate: overrides.FrameRate,
+            PinnedResolutionScale: overrides.ResolutionScale);
+    }
+
+    /// <summary>
+    /// Put a freshly built controller's numbers into the pipeline.
+    ///
+    /// Used wherever a controller is created — stream start, and every profile change — so a
+    /// pin is acted on immediately. Applying it is best-effort by nature: an encoder that
+    /// refuses a bitrate or a size leaves the pipeline as it was and says so in the log, and
+    /// the next adaptation interval reports the stream degraded.
+    /// </summary>
+    private void ApplyRate(CapturePipeline pipeline, RateController rate)
+    {
+        pipeline.TrySetBitrate(rate.BitrateBps);
+        pipeline.SetTargetFrameRate(rate.FrameRate);
+
+        pipeline.RequestEncodedSize(
+            (int)Math.Round(_baseWidth * rate.ResolutionScale),
+            (int)Math.Round(_baseHeight * rate.ResolutionScale));
     }
 
     private void OnEncodedFrame(EncodedVideoFrame frame)
@@ -619,11 +715,11 @@ public sealed class StreamSession : IDisposable
             }
 
             // Adaptation starts with the stream, from the profile that was negotiated.
-            _rate = new RateController(new RateLimits(
-                MinBitrateBps: _effectiveProfile!.MinBitrateBps,
-                MaxBitrateBps: _effectiveProfile.MaxBitrateBps,
-                TargetFrameRate: _effectiveProfile.TargetFps,
-                Adaptive: _request.Profile.Adaptive));
+            _rate = new RateController(LimitsFrom(_effectiveProfile!));
+
+            // Pinned levers take effect now rather than on the first adaptation interval, so
+            // the operator does not spend a second watching the setting they made not happen.
+            ApplyRate(_pipeline, _rate);
 
             _adaptTimer = new Timer(_ => Adapt(), null, AdaptInterval, AdaptInterval);
             _statsTimer = new Timer(_ => PublishStats(), null, StatsInterval, StatsInterval);
@@ -832,40 +928,91 @@ public sealed class StreamSession : IDisposable
     /// <summary>
     /// Apply a profile change to the running stream.
     ///
-    /// Only the bitrate can change without rebuilding the pipeline, and only if the encoder
-    /// accepts it. Everything else is answered rather than half-applied.
+    /// What can change in place is the rate policy: the bitrate ceiling, whether adaptation
+    /// runs at all, and which levers the operator has pinned. Those are all decisions rather
+    /// than plumbing, so they take effect on the next frame.
+    ///
+    /// Resolution and codec are not in that set. They mean a new encoder and a fresh
+    /// negotiation, so a profile that changes them is answered with what could not be done
+    /// rather than half-applied — with the exception of a pinned resolution scale, which is
+    /// the one resolution change the pipeline can make without renegotiating.
     /// </summary>
     public async Task ApplyProfileAsync(SignalProfile profile)
     {
         CapturePipeline? pipeline = _pipeline;
-        if (pipeline is null) return;
+        SignalProfile? effective = _effectiveProfile;
+        if (pipeline is null || effective is null) return;
 
-        if (profile.MaxBitrateBps != _effectiveProfile?.MaxBitrateBps &&
-            pipeline.TrySetBitrate(profile.MaxBitrateBps))
+        var adjustments = new List<SignalAdjustment>();
+        SignalOverrides overrides = ClampOverrides(
+            profile.Overrides,
+            effective.TargetFps,
+            profile.MaxBitrateBps,
+            adjustments);
+
+        bool ceilingChanged = profile.MaxBitrateBps != effective.MaxBitrateBps;
+        bool policyChanged = overrides != _overrides || profile.Adaptive != effective.Adaptive;
+
+        if (!ceilingChanged && !policyChanged)
         {
-            _effectiveProfile = _effectiveProfile! with { MaxBitrateBps = profile.MaxBitrateBps };
-
-            // The controller works under the new ceiling from here. Rebuilt rather than
-            // adjusted so a profile change also clears whatever it had backed off to.
-            _rate = new RateController(new RateLimits(
-                MinBitrateBps: Math.Min(profile.MinBitrateBps, profile.MaxBitrateBps),
-                MaxBitrateBps: profile.MaxBitrateBps,
-                TargetFrameRate: _effectiveProfile.TargetFps,
-                Adaptive: profile.Adaptive));
-
-            _logger.LogInformation(
-                "Stream {Stream} bitrate is now {Kbps} kbps.",
-                _streamId,
-                profile.MaxBitrateBps / 1000);
+            await SendErrorAsync(
+                "profile-unsupported",
+                "On a running stream WOLF can change the bitrate, adaptation, and pinned " +
+                "settings. This profile changes something else.",
+                limitation: false,
+                "Stop the stream and start it again with the profile you want.").ConfigureAwait(false);
             return;
         }
 
-        await SendErrorAsync(
-            "profile-unsupported",
-            "This build can only change the bitrate on a running stream, and this encoder " +
-            "refused even that.",
-            limitation: false,
-            "Stop the stream and start it again with the profile you want.").ConfigureAwait(false);
+        if (ceilingChanged)
+        {
+            if (!pipeline.TrySetBitrate(profile.MaxBitrateBps))
+            {
+                // Some encoders only accept a bitrate at configuration time. Said plainly:
+                // carrying on with a controller that believes a ceiling the encoder never
+                // took would make every later decision wrong.
+                await SendErrorAsync(
+                    "profile-unsupported",
+                    "This encoder will not change its bitrate once a stream is running.",
+                    limitation: true,
+                    "Stop the stream and start it again with the profile you want.")
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            effective = effective with
+            {
+                MaxBitrateBps = profile.MaxBitrateBps,
+                MinBitrateBps = Math.Min(profile.MinBitrateBps, profile.MaxBitrateBps),
+            };
+        }
+
+        _overrides = overrides;
+        _effectiveProfile = effective with { Adaptive = profile.Adaptive, Overrides = overrides };
+
+        // The controller works under the new policy from here. Rebuilt rather than adjusted
+        // so a profile change also clears whatever it had backed off to, and so a lever that
+        // has just been unpinned starts adapting from the profile instead of from wherever
+        // the pin happened to leave it.
+        var rate = new RateController(LimitsFrom(_effectiveProfile));
+        _rate = rate;
+        ApplyRate(pipeline, rate);
+
+        _logger.LogInformation(
+            "Stream {Stream} is now {Kbps} kbps at {Fps} fps, {Scale:P0} of full size{Pinned}.",
+            _streamId,
+            rate.BitrateBps / 1000,
+            rate.FrameRate,
+            rate.ResolutionScale,
+            rate.HasPins ? " (pinned)" : string.Empty);
+
+        // A pinned resolution changes the picture the client is receiving, and a viewer that
+        // kept laying out for the old size would be describing a stream that stopped
+        // arriving. Adjustments ride along, so a clamped pin is visible rather than inferred.
+        if (_display is { } display)
+        {
+            await SendReadyAsync(display, adjustments).ConfigureAwait(false);
+        }
     }
 
     public void AcceptAnswer(string sdp)

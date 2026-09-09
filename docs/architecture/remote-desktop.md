@@ -615,6 +615,7 @@ into congestion that was already there.
 | Encode time over 80% of the frame budget | Step the frame rate down: 60 → 48 → 30 → 24 → 15 |
 | Capture falling behind | Report it; neither lever fixes it |
 | Bitrate at the floor *and* frame rate at the bottom | Step the resolution down: full → 75% → 50% |
+| A lever the operator pinned | Left where they put it, and counted as already spent |
 | Three clean intervals in a row | Raise the bitrate 8%, capped by the estimate |
 | Bitrate back at the ceiling, still clean | Restore one step of resolution, then of frame rate |
 
@@ -674,6 +675,53 @@ as it was asked for, even on a link that cannot carry it — but the shortfall i
 reported, because staying silent while the stream visibly struggles would leave them blaming
 the wrong thing.
 
+### Pinning one lever at a time
+
+Turning adaptation off is all or nothing, and the useful cases are mixed. Holding the
+resolution steady so text stays readable while the frame rate takes whatever the link does
+to it is a reasonable thing to want, and so is holding a frame rate for something being
+demonstrated while the bitrate does what it must.
+
+So each lever can be pinned on its own. `profile.overrides` carries three nullable values —
+`bitrateBps`, `frameRate`, `resolutionScale` — where null means "this one adapts". They sit
+alongside `adaptive` rather than replacing it: switching adaptation off still pins
+everything at the profile's own numbers.
+
+Four rules follow from "honour the setting, never hide what it costs":
+
+- **A pinned lever is never moved.** Not to recover from loss, and not to give quality back
+  when the link improves. Handing quality back to a lever the operator is holding is not
+  generosity, it is ignoring them slowly.
+- **A pinned lever counts as exhausted, not as a reason to wait.** Resolution normally comes
+  down only once the bitrate has reached its floor and the frame rate the bottom of its
+  ladder. If either of those is pinned it can never reach its own bottom, so a pin is
+  treated as spent — otherwise pinning the bitrate would quietly disable the two levers
+  underneath it.
+- **The stream still says it is degraded.** A pinned bitrate does not make the packet loss
+  stop; it makes it the operator's to know about. The causal reason is reported exactly as
+  it would be without the pin.
+- **A pin is used as typed.** The frame-rate ladder exists to make automatic steps feel
+  gradual; somebody who typed 45 asked for 45, not for the nearest rung.
+
+A pin replaces the profile's range for that lever rather than fighting it. A bitrate pinned
+under the profile's own minimum is the same person saying something more specific, so it is
+not reported as failing to meet the profile. A pin *above* what the profile allows has no
+such reading, and the schema rejects it instead of resolving it by guesswork.
+
+What cannot be met is clamped and reported as an adjustment, so the operator sees the number
+they typed next to the number they got: pinning 60 fps on a 30 fps profile comes back as
+`overrides.frameRate`, requested 60, applied 30.
+
+A pinned resolution is applied before the offer goes out, so `stream.ready` describes the
+picture the client will actually receive. A pin that only took effect on the first adaptation
+interval would have the viewer laying itself out for a stream that never arrives.
+
+Pins can be changed on a running stream. `stream.set-profile` now carries policy — the
+bitrate ceiling, adaptation, and the pins — and all of it takes effect on the next frame; the
+host answers with a fresh `stream.ready` because a pinned resolution changes the picture's
+size. Resolution beyond that, and codec, still need a new negotiation, and a profile that
+changes them is answered with what could not be done rather than half-applied.
+
 ## Stream states
 
 ```
@@ -710,6 +758,9 @@ requested profile, and the UI shows why.
 9. **Clipboard** — *done.* Text both ways on the data channel, behind its own grant.
 10. **Multi-monitor** — *done.* One display at a time, switchable live, with a fallback when
     the streamed one is unplugged.
+11. **Manual quality overrides** — *done.* Any of the three levers can be pinned on its own
+    and changed on a running stream, with what cannot be met clamped and reported rather
+    than silently ignored.
 
 Each step leaves the build working, and the agent only advertises a capability once it can
 genuinely deliver it — so a half-finished slice is inert rather than dangerous.

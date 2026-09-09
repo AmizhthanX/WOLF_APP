@@ -21,14 +21,20 @@ namespace Wolf.Agent.Core.Tests;
 /// They skip rather than fail when there is no desktop, because a headless build agent is a
 /// legitimate environment in which the honest answer is "this cannot capture".
 /// </summary>
+/// <remarks>
+/// Takes a <see cref="ScreenActivity"/> it never reads. Windows Graphics Capture delivers a
+/// frame when the composition changes, so on an idle desktop these tests measure nothing and
+/// fail at random. The fixture keeps something moving for as long as this class runs.
+/// </remarks>
 [Collection("Capture")]
-public sealed class DisplayCaptureTests
+public sealed class DisplayCaptureTests : IClassFixture<ScreenActivity>
 {
     private readonly ITestOutputHelper _output;
 
-    public DisplayCaptureTests(ITestOutputHelper output)
+    public DisplayCaptureTests(ITestOutputHelper output, ScreenActivity activity)
     {
         _output = output;
+        _ = activity;
     }
 
     private bool HasDesktop()

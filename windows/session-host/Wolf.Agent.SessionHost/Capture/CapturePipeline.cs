@@ -264,6 +264,29 @@ public sealed class CapturePipeline : IDisposable
         (int Width, int Height) target = EvenSize(width, height);
         if (target.Width == EncodedWidth && target.Height == EncodedHeight) return;
 
+        if (_thread is null)
+        {
+            // Nothing is running yet, so no other thread owns the converter or the encoder
+            // and the change can be made here. It has to be: a size asked for before the
+            // stream starts is the size the negotiation must describe, and a queued change
+            // would not reach EncodedWidth until the first frame — after the offer had gone
+            // out claiming a different picture.
+            try
+            {
+                Resize(target.Width, target.Height);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "The encoded size could not be set to {Width}x{Height}; the pipeline is unchanged.",
+                    target.Width,
+                    target.Height);
+            }
+
+            return;
+        }
+
         lock (_running)
         {
             _pending = (null, target.Width, target.Height);

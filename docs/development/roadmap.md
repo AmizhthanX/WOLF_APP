@@ -178,12 +178,38 @@ share a clipboard with it, and switch between its monitors — adapting to the l
   4.64 ms, 55 fps sustained with nothing dropped, a resolution change costing a 15 ms gap,
   and input handled at 1222 batches a second
 
+**Done — manual quality overrides**
+
+- Bitrate, frame rate, and resolution can each be pinned on their own, leaving the other two
+  adapting. Switching adaptation off entirely still works and still means all three
+- A pinned lever is never moved: not to recover from loss, and not to give quality back when
+  the link improves
+- A pinned lever counts as spent rather than as something to wait for, so pinning the bitrate
+  does not quietly disable the two levers underneath it
+- The stream still reports itself degraded, with the same causal reason it would have given
+  without the pin. A pinned bitrate does not make the packet loss stop
+- A pin is used as typed rather than snapped to the adaptation ladder
+- What the display or the encoder cannot meet is clamped and reported as an adjustment, so
+  the operator sees the number they typed next to the number they got
+- A pinned resolution is applied before the offer goes out, so `stream.ready` describes the
+  picture that will actually arrive
+- Pins can be changed on a running stream, and the viewer offers each lever as a short list
+  of values the agent can genuinely hold
+
+**Fixed along the way — a suite that answered differently each run**
+
+- The capture, encode, and stream tests only see frames when something on screen changes,
+  so on an idle desktop they failed at random: runs of the same unchanged tree failed six,
+  three, one and zero of twelve
+- They now share the performance suite's `ScreenActivity` — a small labelled window that
+  repaints while those classes run — as a class fixture. Three consecutive full runs pass
+  150 of 150, and the suite went from 2m41s to 52s because nothing waits out a timeout
+
 **Still open, and worth doing before this is called finished**
 
 - The whole loop has never run against a browser. Every layer is verified independently and
   the contracts between them are asserted at both ends, but nothing has yet put a real
   Chrome in front of a real agent
-- Manual overrides for bitrate, frame rate, and resolution
 - Desktop Duplication fallback for builds without Windows Graphics Capture
 - Switching between two physical monitors is untested: the development machine has one
 

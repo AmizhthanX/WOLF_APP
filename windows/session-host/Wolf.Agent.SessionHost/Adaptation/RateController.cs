@@ -8,7 +8,13 @@ public sealed record RateLimits(
     int MaxBitrateBps,
     int TargetFrameRate,
     /// <summary>False when the operator pinned the profile; the controller then does nothing.</summary>
-    bool Adaptive = true)
+    bool Adaptive = true,
+    /// <summary>Bitrate the operator pinned, or null to let adaptation choose it.</summary>
+    int? PinnedBitrateBps = null,
+    /// <summary>Frame rate the operator pinned, or null to let adaptation choose it.</summary>
+    int? PinnedFrameRate = null,
+    /// <summary>Fraction of full resolution the operator pinned, or null to let adaptation choose it.</summary>
+    double? PinnedResolutionScale = null)
 {
     /// <summary>
     /// The lowest bitrate worth sending, whatever the profile says.
@@ -73,6 +79,13 @@ public sealed record RateDecision(
 /// Coming back up is slower than going down, on purpose. Congestion recovers in steps and
 /// probing too eagerly produces a stream that oscillates between good and unwatchable,
 /// which is worse to use than one that settles slightly low.
+///
+/// Any of the three levers can be pinned by the operator, individually. A pinned lever is
+/// never moved — not to recover from loss, not to give quality back — and it is treated as
+/// already exhausted, so the levers that are still free take the whole load rather than
+/// waiting behind one that will never move. When a pin is the reason a problem cannot be
+/// fixed, the stream still reports itself degraded and still says what the cause was:
+/// honouring the setting is the point, hiding its consequences is not.
 /// </summary>
 public sealed class RateController
 {
@@ -115,16 +128,36 @@ public sealed class RateController
     public RateController(RateLimits limits)
     {
         _limits = limits;
-        _bitrate = limits.MaxBitrateBps;
+
+        // A pinned lever starts at its pinned value, so the very first decision the stream
+        // acts on already reflects the operator's choice rather than drifting into it.
+        _bitrate = limits.PinnedBitrateBps ?? limits.MaxBitrateBps;
         _frameRateIndex = NearestLadderIndex(limits.TargetFrameRate);
     }
 
-    public int BitrateBps => _bitrate;
+    private bool BitratePinned => _limits.PinnedBitrateBps is not null;
 
-    public int FrameRate => Math.Min(_limits.TargetFrameRate, RateLimits.FrameRateLadder[_frameRateIndex]);
+    private bool FrameRatePinned => _limits.PinnedFrameRate is not null;
+
+    private bool ResolutionPinned => _limits.PinnedResolutionScale is not null;
+
+    /// <summary>True when the operator has taken at least one lever away from adaptation.</summary>
+    public bool HasPins => BitratePinned || FrameRatePinned || ResolutionPinned;
+
+    public int BitrateBps => _limits.PinnedBitrateBps ?? _bitrate;
+
+    /// <summary>
+    /// The frame rate to encode at.
+    ///
+    /// A pin is used verbatim rather than snapped to the ladder. The ladder exists to make
+    /// automatic steps feel gradual; somebody who typed 45 asked for 45.
+    /// </summary>
+    public int FrameRate =>
+        _limits.PinnedFrameRate ?? Math.Min(_limits.TargetFrameRate, RateLimits.FrameRateLadder[_frameRateIndex]);
 
     /// <summary>Fraction of the full resolution currently being encoded.</summary>
-    public double ResolutionScale => RateLimits.ResolutionLadder[_resolutionIndex];
+    public double ResolutionScale =>
+        _limits.PinnedResolutionScale ?? RateLimits.ResolutionLadder[_resolutionIndex];
 
     /// <summary>
     /// Take one interval's worth of signals and decide.
@@ -136,7 +169,7 @@ public sealed class RateController
     /// </summary>
     public RateDecision Observe(RateSignals signals)
     {
-        int previousBitrate = _bitrate;
+        int previousBitrate = BitrateBps;
         int previousFrameRate = FrameRate;
         double previousScale = ResolutionScale;
 
@@ -145,7 +178,7 @@ public sealed class RateController
             // The operator pinned the profile. Honour it, and say so if the machine cannot
             // keep up rather than quietly overriding the choice.
             return new RateDecision(
-                _bitrate,
+                BitrateBps,
                 FrameRate,
                 ResolutionScale,
                 DescribePinnedShortfall(signals),
@@ -161,8 +194,14 @@ public sealed class RateController
         //    no amount of estimate optimism outranks packets that did not arrive.
         if (signals.PacketLossPercent is { } loss && loss >= MildLossPercent)
         {
-            double factor = loss >= SevereLossPercent ? SevereCut : MildCut;
-            _bitrate = (int)(_bitrate * factor);
+            if (!BitratePinned)
+            {
+                double factor = loss >= SevereLossPercent ? SevereCut : MildCut;
+                _bitrate = (int)(_bitrate * factor);
+            }
+
+            // Reported whether or not anything moved. A pinned bitrate does not make the
+            // loss stop; it makes it the operator's to know about.
             reason = "packet-loss";
             healthy = false;
         }
@@ -172,9 +211,9 @@ public sealed class RateController
         if (signals.EstimatedBitrateBps is { } estimate && estimate > 0)
         {
             int ceiling = (int)(estimate * EstimateHeadroom);
-            if (ceiling < _bitrate)
+            if (ceiling < BitrateBps)
             {
-                _bitrate = ceiling;
+                if (!BitratePinned) _bitrate = ceiling;
                 reason ??= "bandwidth";
                 healthy = false;
             }
@@ -185,8 +224,8 @@ public sealed class RateController
         double budgetMs = 1000.0 / Math.Max(1, FrameRate);
         if (signals.EncodeMsPerFrame > budgetMs * EncodeBudgetShare)
         {
-            if (StepFrameRateDown()) reason = "encoder-overloaded";
-            else reason ??= "encoder-overloaded";
+            if (!FrameRatePinned) StepFrameRateDown();
+            reason = "encoder-overloaded";
             healthy = false;
         }
 
@@ -201,9 +240,17 @@ public sealed class RateController
         //    change — a new encoder, a key frame, and a visible re-layout of everything the
         //    operator is looking at — so it is what is left when lowering the bitrate has
         //    reached the floor and the frame rate has reached the bottom of its ladder.
+        //
+        // A pinned lever counts as exhausted rather than as a reason to wait: if the
+        // operator is holding the bitrate steady, the point of the remaining levers is to
+        // absorb what the pinned one no longer can.
+        bool bitrateSpent = BitratePinned || _bitrate <= RateLimits.AbsoluteFloorBps;
+        bool frameRateSpent = FrameRatePinned || _frameRateIndex >= RateLimits.FrameRateLadder.Length - 1;
+
         if (!healthy &&
-            _bitrate <= RateLimits.AbsoluteFloorBps &&
-            _frameRateIndex >= RateLimits.FrameRateLadder.Length - 1 &&
+            !ResolutionPinned &&
+            bitrateSpent &&
+            frameRateSpent &&
             _resolutionIndex < RateLimits.ResolutionLadder.Length - 1)
         {
             _resolutionIndex++;
@@ -219,7 +266,9 @@ public sealed class RateController
             {
                 _healthyIntervals = 0;
 
-                if (_bitrate < _limits.MaxBitrateBps)
+                // Recovery skips pinned levers entirely. Giving quality back to a lever the
+                // operator is holding is not generosity, it is ignoring them.
+                if (!BitratePinned && _bitrate < _limits.MaxBitrateBps)
                 {
                     // Probe upward, but never past what the estimate says the path holds.
                     int probed = (int)(_bitrate * Probe);
@@ -230,14 +279,14 @@ public sealed class RateController
 
                     _bitrate = Math.Max(_bitrate, probed);
                 }
-                else if (_resolutionIndex > 0)
+                else if (!ResolutionPinned && _resolutionIndex > 0)
                 {
                     // Bitrate is back at the ceiling, so resolution comes next. Ahead of
                     // frame rate because a remote desktop is mostly read: text that is too
                     // soft to make out cannot be worked around, while a slower refresh can.
                     _resolutionIndex--;
                 }
-                else
+                else if (!FrameRatePinned)
                 {
                     // Full size and full bitrate; smoothness is what is still owed.
                     StepFrameRateUp();
@@ -249,18 +298,23 @@ public sealed class RateController
             _healthyIntervals = 0;
         }
 
-        _bitrate = Math.Clamp(_bitrate, RateLimits.AbsoluteFloorBps, _limits.MaxBitrateBps);
+        if (!BitratePinned)
+        {
+            _bitrate = Math.Clamp(_bitrate, RateLimits.AbsoluteFloorBps, _limits.MaxBitrateBps);
 
-        // Running under the operator's floor is not a failure to report as bandwidth alone:
-        // it means the profile they chose is not currently possible.
-        if (_bitrate < _limits.MinBitrateBps) reason ??= "bandwidth";
+            // Running under the operator's floor is not a failure to report as bandwidth
+            // alone: it means the profile they chose is not currently possible. A pinned
+            // bitrate is exempt: the pin is the more specific instruction from the same
+            // person, so it replaces the profile's range rather than fighting it.
+            if (_bitrate < _limits.MinBitrateBps) reason ??= "bandwidth";
+        }
 
         return new RateDecision(
-            _bitrate,
+            BitrateBps,
             FrameRate,
             ResolutionScale,
             reason,
-            _bitrate != previousBitrate,
+            BitrateBps != previousBitrate,
             FrameRate != previousFrameRate,
             Math.Abs(ResolutionScale - previousScale) > double.Epsilon);
     }
@@ -278,7 +332,7 @@ public sealed class RateController
         double budgetMs = 1000.0 / Math.Max(1, FrameRate);
         if (signals.EncodeMsPerFrame > budgetMs) return "encoder-overloaded";
 
-        if (signals.EstimatedBitrateBps is { } estimate && estimate > 0 && estimate < _bitrate)
+        if (signals.EstimatedBitrateBps is { } estimate && estimate > 0 && estimate < BitrateBps)
         {
             return "bandwidth";
         }
@@ -286,11 +340,10 @@ public sealed class RateController
         return null;
     }
 
-    private bool StepFrameRateDown()
+    private void StepFrameRateDown()
     {
-        if (_frameRateIndex >= RateLimits.FrameRateLadder.Length - 1) return false;
+        if (_frameRateIndex >= RateLimits.FrameRateLadder.Length - 1) return;
         _frameRateIndex++;
-        return true;
     }
 
     private void StepFrameRateUp()

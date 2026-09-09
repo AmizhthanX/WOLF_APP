@@ -139,6 +139,7 @@ const PROFILE = {
   audioEnabled: false,
   qualityBias: 'balanced' as const,
   adaptive: true,
+  overrides: { bitrateBps: null, frameRate: null, resolutionScale: null },
 };
 
 interface Recorded {

@@ -47,6 +47,25 @@ export type StreamPhase =
   | 'stopped'
   | 'failed';
 
+/**
+ * Levers the operator has taken away from adaptation.
+ *
+ * Null means "let it adapt". Pinning one lever does not pin the others: holding the
+ * resolution so text stays readable while the frame rate does whatever the link forces is
+ * the case this exists for.
+ */
+export interface QualityOverrides {
+  bitrateBps: number | null;
+  frameRate: number | null;
+  resolutionScale: number | null;
+}
+
+export const NO_OVERRIDES: QualityOverrides = {
+  bitrateBps: null,
+  frameRate: null,
+  resolutionScale: null,
+};
+
 export interface StreamProfile {
   name: string;
   maxWidthPixels: number | null;
@@ -58,6 +77,7 @@ export interface StreamProfile {
   audioEnabled: boolean;
   qualityBias: 'quality' | 'balanced' | 'performance';
   adaptive: boolean;
+  overrides: QualityOverrides;
 }
 
 export interface StreamAdjustment {

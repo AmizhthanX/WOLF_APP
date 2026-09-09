@@ -26,14 +26,20 @@ namespace Wolf.Agent.Core.Tests;
 /// profile the encoder is not producing, a stream that negotiates and never sends a
 /// picture, a pipeline that keeps capturing after the client has gone.
 /// </summary>
+/// <remarks>
+/// Takes a <see cref="ScreenActivity"/> it never reads. Windows Graphics Capture delivers a
+/// frame when the composition changes, so on an idle desktop these tests measure nothing and
+/// fail at random. The fixture keeps something moving for as long as this class runs.
+/// </remarks>
 [Collection("Capture")]
-public sealed class StreamSessionTests
+public sealed class StreamSessionTests : IClassFixture<ScreenActivity>
 {
     private readonly ITestOutputHelper _output;
 
-    public StreamSessionTests(ITestOutputHelper output)
+    public StreamSessionTests(ITestOutputHelper output, ScreenActivity activity)
     {
         _output = output;
+        _ = activity;
     }
 
     private const string SessionId = "01J9ZQK7T0000000000000000A";
@@ -105,7 +111,10 @@ public sealed class StreamSessionTests
         new(SessionId, StreamId, JsonDocument.Parse(json).RootElement.Clone());
 
     /// <summary>A stream request in the shape the protocol defines it.</summary>
-    private static string StreamRequest(string clientCodecs = "[\"h264\"]", int targetFps = 30) => $$"""
+    private static string StreamRequest(
+        string clientCodecs = "[\"h264\"]",
+        int targetFps = 30,
+        string overrides = "null") => $$"""
         {
           "type": "stream.request",
           "request": {
@@ -120,7 +129,8 @@ public sealed class StreamSessionTests
               "codecPreference": [],
               "audioEnabled": false,
               "qualityBias": "balanced",
-              "adaptive": false
+              "adaptive": false,
+              "overrides": {{overrides}}
             },
             "clientCodecs": {{clientCodecs}},
             "requestAudio": false
@@ -138,6 +148,80 @@ public sealed class StreamSessionTests
         }
 
         return condition();
+    }
+
+    [Fact]
+    public async Task A_pinned_resolution_is_applied_before_the_client_is_told_what_it_gets()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        var displays = new DisplayEnumerator(loggers.CreateLogger<DisplayEnumerator>());
+        var relay = new Relay(_output);
+
+        using var coordinator = new StreamCoordinator(displays, relay.AcceptAsync, loggers);
+
+        await coordinator.HandleAsync(
+            Signal(StreamRequest(overrides: """{"bitrateBps":null,"frameRate":null,"resolutionScale":0.5}""")),
+            CancellationToken.None);
+
+        Outbound? ready = relay.FirstOf("stream.ready");
+        Assert.NotNull(ready);
+
+        JsonElement negotiation = ready!.Payload.GetProperty("negotiation");
+        JsonElement profile = negotiation.GetProperty("effectiveProfile");
+        int displayWidth = negotiation.GetProperty("display").GetProperty("widthPixels").GetInt32();
+        int encodedWidth = profile.GetProperty("maxWidthPixels").GetInt32();
+
+        _output.WriteLine($"display {displayWidth} px wide, encoding {encodedWidth} px");
+
+        // `stream.ready` is the message the viewer lays itself out from. A pin that only
+        // took effect on the first adaptation interval would have it describing a picture
+        // that never arrives.
+        Assert.True(
+            encodedWidth <= displayWidth * 0.55,
+            $"a half-size pin should be reflected in the negotiation; got {encodedWidth} of {displayWidth}");
+
+        Assert.Equal(0.5, profile.GetProperty("overrides").GetProperty("resolutionScale").GetDouble());
+    }
+
+    [Fact]
+    public async Task A_pin_the_display_cannot_meet_is_clamped_and_reported()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        var displays = new DisplayEnumerator(loggers.CreateLogger<DisplayEnumerator>());
+        var relay = new Relay(_output);
+
+        using var coordinator = new StreamCoordinator(displays, relay.AcceptAsync, loggers);
+
+        // The profile targets 30 fps and the pin asks for 60 of them. The pin is the more
+        // specific instruction, but it cannot invent frames the profile is not capturing.
+        await coordinator.HandleAsync(
+            Signal(StreamRequest(
+                targetFps: 30,
+                overrides: """{"bitrateBps":null,"frameRate":60,"resolutionScale":null}""")),
+            CancellationToken.None);
+
+        Outbound? ready = relay.FirstOf("stream.ready");
+        Assert.NotNull(ready);
+
+        JsonElement negotiation = ready!.Payload.GetProperty("negotiation");
+        Assert.Equal(
+            30,
+            negotiation.GetProperty("effectiveProfile").GetProperty("overrides").GetProperty("frameRate").GetInt32());
+
+        // Clamped is not the same as ignored. The operator sees the number they typed next
+        // to the number they got, rather than wondering why the setting did nothing.
+        JsonElement[] adjustments = negotiation.GetProperty("adjustments").EnumerateArray().ToArray();
+        _output.WriteLine("adjustments: " + string.Join(", ", adjustments.Select(a => a.ToString())));
+
+        Assert.Contains(
+            adjustments,
+            adjustment => adjustment.GetProperty("setting").GetString() == "overrides.frameRate" &&
+                          adjustment.GetProperty("requested").GetString() == "60" &&
+                          adjustment.GetProperty("applied").GetString() == "30");
     }
 
     [Fact]

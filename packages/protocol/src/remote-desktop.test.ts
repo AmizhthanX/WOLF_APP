@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BUILT_IN_PROFILES,
+  hasOverrides,
   isTransientUnavailable,
   negotiateCodec,
   remoteDesktopProfile,
@@ -102,6 +103,57 @@ test('profile defaults are adaptive with audio on', () => {
   assert.equal(profile.adaptive, true);
   assert.equal(profile.audioEnabled, true);
   assert.equal(profile.maxWidthPixels, null, 'native resolution unless capped');
+});
+
+test('nothing is pinned unless the operator pins it', () => {
+  const profile = remoteDesktopProfile.parse({ name: 'Default' });
+
+  assert.deepEqual(profile.overrides, {
+    bitrateBps: null,
+    frameRate: null,
+    resolutionScale: null,
+  });
+  assert.equal(hasOverrides(profile.overrides), false);
+});
+
+test('a lever can be pinned on its own, leaving the rest adapting', () => {
+  const profile = remoteDesktopProfile.parse({
+    name: 'Readable',
+    overrides: { resolutionScale: 1 },
+  });
+
+  // The point of pinning per lever: hold the resolution so text stays sharp, and let the
+  // frame rate and bitrate take whatever the link does to them.
+  assert.equal(profile.overrides.resolutionScale, 1);
+  assert.equal(profile.overrides.frameRate, null);
+  assert.equal(profile.adaptive, true, 'pinning one lever does not switch adaptation off');
+  assert.equal(hasOverrides(profile.overrides), true);
+});
+
+test('a pin that contradicts its own profile is rejected, not resolved', () => {
+  const overBitrate = remoteDesktopProfile.safeParse({
+    name: 'Contradictory',
+    maxBitrateBps: 5_000_000,
+    overrides: { bitrateBps: 20_000_000 },
+  });
+  assert.equal(overBitrate.success, false, 'a pin above the ceiling has no sensible reading');
+
+  const overFps = remoteDesktopProfile.safeParse({
+    name: 'Contradictory',
+    targetFps: 30,
+    overrides: { frameRate: 60 },
+  });
+  assert.equal(overFps.success, false);
+
+  // Under the ceiling is the normal case and stays legal.
+  assert.equal(
+    remoteDesktopProfile.safeParse({
+      name: 'Fine',
+      maxBitrateBps: 5_000_000,
+      overrides: { bitrateBps: 3_000_000 },
+    }).success,
+    true,
+  );
 });
 
 test('a stream request must name at least one codec the client can decode', () => {
