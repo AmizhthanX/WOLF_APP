@@ -184,6 +184,73 @@ public sealed class CapturePipelineTests : IClassFixture<ScreenActivity>
         Assert.True(position < 4, $"the key frame arrived {position} frames after the request");
     }
 
+    /// <summary>
+    /// The reported rate follows the real one instead of averaging it away.
+    ///
+    /// These numbers are read by two things that both mean "right now": the adaptation
+    /// controller, which lowers the frame rate when encoding stops fitting in its budget,
+    /// and the operator wondering why a stream feels slow. A lifetime mean answers neither.
+    /// Driven through a real rate change because that is the only condition under which the
+    /// two definitions disagree — which is exactly when somebody is looking.
+    /// </summary>
+    [Fact]
+    public void Reported_rates_describe_the_last_second_rather_than_the_whole_stream()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        using CaptureDevice? device = CaptureDevice.TryCreate(loggers.CreateLogger<CaptureDevice>());
+        IntPtr? monitor = DisplayEnumerator.FindPrimaryMonitorHandle();
+
+        using CapturePipeline? pipeline = CapturePipeline.TryCreate(
+            device!,
+            monitor!.Value,
+            60,
+            8_000_000,
+            _ => { },
+            loggers);
+        Assert.NotNull(pipeline);
+
+        pipeline!.Start();
+        Thread.Sleep(TimeSpan.FromSeconds(4));
+
+        PipelineStats fast = pipeline.Stats();
+        if (fast.EncodedFps < 10)
+        {
+            _output.WriteLine(
+                $"Only {fast.EncodedFps:F1} fps with nothing changing on screen; a rate change " +
+                "cannot be told from noise. Skipping.");
+            return;
+        }
+
+        pipeline.SetTargetFrameRate(10);
+
+        // Long enough that a lifetime mean would still be dominated by the fast period: four
+        // seconds at ~30 and three at 10 averages to about 21, so a test that passes here
+        // cannot be passing on a lifetime figure.
+        Thread.Sleep(TimeSpan.FromSeconds(3));
+
+        PipelineStats slow = pipeline.Stats();
+        double lifetime = slow.FramesEncoded / 7.0;
+
+        _output.WriteLine($"before {fast.EncodedFps:F1} fps, after {slow.EncodedFps:F1} fps");
+        _output.WriteLine($"a lifetime mean would have said {lifetime:F1} fps");
+
+        Assert.True(
+            slow.EncodedFps <= 10 * 1.4,
+            $"reported {slow.EncodedFps:F1} fps against a 10 fps target");
+
+        // The point of the whole change, stated as an assertion: the reported number has to
+        // have moved further than the lifetime average could have.
+        Assert.True(
+            slow.EncodedFps < lifetime * 0.85,
+            $"reported {slow.EncodedFps:F1} fps, which is not meaningfully below the {lifetime:F1} fps " +
+            "a lifetime mean would give");
+
+        // Counts stay counts. Only the rates are windowed.
+        Assert.True(slow.FramesEncoded > fast.FramesEncoded, "frame totals must keep accumulating");
+    }
+
     [Fact]
     public void The_frame_rate_can_be_lowered_on_a_running_pipeline()
     {

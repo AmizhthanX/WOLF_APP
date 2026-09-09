@@ -237,14 +237,16 @@ having done it:
    diagnosable; finding defect 4 took a change to log the field paths
 6. **A stream requested while the session host is restarting is dropped**, and the supervisor
    never logs why the previous host exited. Not yet fixed, and recorded below
+7. **The agent's reported frame rate was a lifetime mean**, so after any adaptation it gave a
+   number that was neither the old rate nor the new one — to the operator reading the
+   statistics panel, and to the adaptation controller deciding what to do next. Now measured
+   over a one-second window: a pipeline moved from a 60 fps target to 10 reports 55.6 then
+   10.0, where the lifetime figure said 35.7
 
 **Still open, and worth doing before this is called finished**
 
 - A stream request that arrives while the session host is restarting goes unanswered — the
   client sits in `requesting` until it is retried, and nothing says what happened
-- `stream.stats.fps` from the agent is a lifetime mean, so after any adaptation it reports a
-  number that is neither the old rate nor the new one. The browser's own figure is correct;
-  the PC's is the one an operator would read to answer "why is this laggy"
 - Desktop Duplication fallback for builds without Windows Graphics Capture
 - Switching between two physical monitors is untested: the development machine has one
 

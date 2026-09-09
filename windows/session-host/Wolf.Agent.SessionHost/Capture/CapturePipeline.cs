@@ -5,14 +5,29 @@ using Wolf.Agent.SessionHost.Encoding;
 
 namespace Wolf.Agent.SessionHost.Capture;
 
-/// <summary>What the pipeline is currently achieving, as opposed to what it was asked for.</summary>
+/// <summary>
+/// What the pipeline is currently achieving, as opposed to what it was asked for.
+///
+/// The three rates are measured over the last second, not since the stream started. That
+/// distinction is the whole point of them: both things that read these numbers — the
+/// adaptation controller, and the operator looking at the statistics panel — are asking
+/// "what is happening now". A lifetime mean answers a question nobody asked, and answers it
+/// misleadingly the moment anything changes: a stream taken from 30 fps to 15 reports
+/// neither, drifting between them for minutes, and an encoder that has just started
+/// struggling is hidden by every healthy second that came before it.
+///
+/// The counts beside them are lifetime totals, which is what a count should be.
+/// </summary>
 public sealed record PipelineStats(
+    /// <summary>Frames captured per second, over the last window.</summary>
     double CapturedFps,
+    /// <summary>Frames encoded per second, over the last window.</summary>
     double EncodedFps,
     long FramesCaptured,
     long FramesEncoded,
     long FramesDropped,
     long BytesEncoded,
+    /// <summary>Milliseconds per encode call, over the last window.</summary>
     double MeanEncodeMs,
     int WidthPixels,
     int HeightPixels,
@@ -78,6 +93,26 @@ public sealed class CapturePipeline : IDisposable
     private long _framesEncoded;
     private long _bytesEncoded;
     private double _encodeMsTotal;
+
+    /// <summary>
+    /// How long a window the reported rates cover.
+    ///
+    /// One second, because adaptation observes on a one-second interval and a window longer
+    /// than that would hand it the same number twice. Shorter, and a 15 fps stream would be
+    /// measuring a handful of frames and reporting the noise.
+    /// </summary>
+    private const double WindowSeconds = 1.0;
+
+    // Rolled forward on the capture thread; read under _running by Stats().
+    private long _windowStartTicks;
+    private long _windowCaptured;
+    private long _windowEncoded;
+    private double _windowEncodeMs;
+    private long _windowEncodeCalls;
+    private bool _windowMeasured;
+    private double _recentCapturedFps;
+    private double _recentEncodedFps;
+    private double _recentEncodeMs;
     private readonly Stopwatch _running = new();
     private bool _disposed;
 
@@ -216,6 +251,7 @@ public sealed class CapturePipeline : IDisposable
         if (_thread is not null) return;
 
         _running.Start();
+        _windowStartTicks = Stopwatch.GetTimestamp();
         _thread = new Thread(Run)
         {
             IsBackground = true,
@@ -361,6 +397,7 @@ public sealed class CapturePipeline : IDisposable
             }
 
             ApplyPendingChange();
+            RollWindow();
 
             // Re-read every iteration rather than hoisting: the interval is what adaptation
             // changes, and a loop that cached it would keep the old rate until it restarted.
@@ -419,8 +456,51 @@ public sealed class CapturePipeline : IDisposable
             lock (_running)
             {
                 _encodeMsTotal += encodeMs;
+                _windowEncodeMs += encodeMs;
+                _windowEncodeCalls++;
             }
         }
+    }
+
+    /// <summary>
+    /// Close the current measurement window if it has run long enough.
+    ///
+    /// Called from the capture loop rather than from <see cref="Stats"/> so that reading the
+    /// statistics has no side effect. Two callers on different intervals — adaptation every
+    /// second, the client's statistics every two — would otherwise keep cutting each other's
+    /// windows short, and a test that read twice in quick succession would divide by very
+    /// nearly nothing.
+    ///
+    /// The loop keeps turning when the screen is static and no frames arrive, so a stalled
+    /// capture rolls the window too and correctly reports zero rather than the last healthy
+    /// number for ever.
+    /// </summary>
+    private void RollWindow()
+    {
+        long now = Stopwatch.GetTimestamp();
+        double elapsed = (now - _windowStartTicks) / (double)Stopwatch.Frequency;
+        if (elapsed < WindowSeconds) return;
+
+        long captured = Interlocked.Read(ref _framesCaptured);
+        long encoded = Interlocked.Read(ref _framesEncoded);
+
+        lock (_running)
+        {
+            _recentCapturedFps = (captured - _windowCaptured) / elapsed;
+            _recentEncodedFps = (encoded - _windowEncoded) / elapsed;
+
+            // Per encode call, not per captured frame: a frame the converter rejected cost
+            // no encode time, and averaging it in would understate what encoding costs.
+            _recentEncodeMs = _windowEncodeCalls == 0 ? 0 : _windowEncodeMs / _windowEncodeCalls;
+            _windowMeasured = true;
+
+            _windowEncodeMs = 0;
+            _windowEncodeCalls = 0;
+        }
+
+        _windowCaptured = captured;
+        _windowEncoded = encoded;
+        _windowStartTicks = now;
     }
 
     /// <summary>
@@ -615,15 +695,31 @@ public sealed class CapturePipeline : IDisposable
         long captured = Interlocked.Read(ref _framesCaptured);
         long encoded = Interlocked.Read(ref _framesEncoded);
 
+        double capturedFps;
+        double encodedFps;
         double meanEncodeMs;
+
         lock (_running)
         {
-            meanEncodeMs = captured == 0 ? 0 : _encodeMsTotal / captured;
+            if (_windowMeasured)
+            {
+                capturedFps = _recentCapturedFps;
+                encodedFps = _recentEncodedFps;
+                meanEncodeMs = _recentEncodeMs;
+            }
+            else
+            {
+                // Before the first window closes there is nothing recent to report, so the
+                // answer is what has happened so far. It is only ever the first second.
+                capturedFps = captured / seconds;
+                encodedFps = encoded / seconds;
+                meanEncodeMs = captured == 0 ? 0 : _encodeMsTotal / captured;
+            }
         }
 
         return new PipelineStats(
-            CapturedFps: captured / seconds,
-            EncodedFps: encoded / seconds,
+            CapturedFps: capturedFps,
+            EncodedFps: encodedFps,
             FramesCaptured: captured,
             FramesEncoded: encoded,
             FramesDropped: _encoder.FramesDropped,
@@ -651,12 +747,17 @@ public sealed class CapturePipeline : IDisposable
         _running.Stop();
         _ = _device;
 
+        // A shutdown summary is the one place a lifetime average is the right answer, so it
+        // is computed here rather than read from Stats(), which reports the last second.
         PipelineStats stats = Stats();
+        double lifetimeSeconds = Math.Max(_running.Elapsed.TotalSeconds, 0.001);
+
         _logger.LogInformation(
-            "Capture pipeline stopped after {Frames} frames ({Fps:F1} fps, {Mb:F1} MB, {Ms:F1} ms/frame encode).",
+            "Capture pipeline stopped after {Frames} frames ({Fps:F1} fps, {Mb:F1} MB, {Ms:F1} ms/frame encode) over {Seconds:F1}s.",
             stats.FramesEncoded,
-            stats.EncodedFps,
+            stats.FramesEncoded / lifetimeSeconds,
             stats.BytesEncoded / 1_048_576.0,
-            stats.MeanEncodeMs);
+            stats.FramesCaptured == 0 ? 0 : _encodeMsTotal / stats.FramesCaptured,
+            lifetimeSeconds);
     }
 }

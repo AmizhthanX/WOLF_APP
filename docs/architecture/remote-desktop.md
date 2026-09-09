@@ -670,6 +670,21 @@ three different problems, and a single "degraded" badge would send somebody to i
 the wrong one. The state change is sent immediately; the statistics confirm it two seconds
 later.
 
+**The rates describe the last second, not the whole stream.** Frames per second, captured
+frames per second, and encode time per frame are all measured over a one-second window. That
+matters to both things that read them. The adaptation controller lowers the frame rate when
+encoding stops fitting inside its budget, and a lifetime mean would hide an encoder that had
+only just started struggling behind every healthy second before it — then drag the number
+back down once it had adapted. The operator reading the statistics panel is asking the same
+question: a stream taken from 30 fps to 15 reported neither for minutes, drifting between
+them. Measured on the development machine, a pipeline moved from a 60 fps target to 10 now
+reports 55.6 fps and then 10.0; the lifetime figure at that moment was 35.7.
+
+The counts beside them — frames captured, frames encoded, bytes sent, key frames — stay
+lifetime totals, which is what a count should be. The window is closed on the capture thread
+rather than when the statistics are read, so reading them has no side effect and two callers
+on different intervals cannot cut each other's windows short.
+
 The operator can pin a profile by turning adaptation off. A pinned profile is left exactly
 as it was asked for, even on a link that cannot carry it — but the shortfall is still
 reported, because staying silent while the stream visibly struggles would leave them blaming
