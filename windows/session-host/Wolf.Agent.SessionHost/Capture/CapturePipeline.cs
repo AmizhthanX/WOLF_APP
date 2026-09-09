@@ -55,7 +55,7 @@ public sealed class CapturePipeline : IDisposable
 
     // Rebuilt when the streamed display changes. Like the converter and encoder below, it is
     // only ever swapped on the pipeline thread, between frames.
-    private DisplayCapture _capture;
+    private IDisplayCapture _capture;
 
     // Rebuilt when the encoded resolution changes, which is why they are not readonly. Both
     // are only ever swapped on the pipeline thread, between frames.
@@ -114,11 +114,12 @@ public sealed class CapturePipeline : IDisposable
     private double _recentEncodedFps;
     private double _recentEncodeMs;
     private readonly Stopwatch _running = new();
+    private readonly bool _preferDuplication;
     private bool _disposed;
 
     private CapturePipeline(
         CaptureDevice device,
-        DisplayCapture capture,
+        IDisplayCapture capture,
         ColorConverter converter,
         H264Encoder encoder,
         IntPtr monitorHandle,
@@ -128,7 +129,8 @@ public sealed class CapturePipeline : IDisposable
         int maxHeightPixels,
         Action<EncodedVideoFrame> onFrame,
         ILoggerFactory loggers,
-        ILogger<CapturePipeline> logger)
+        ILogger<CapturePipeline> logger,
+        bool preferDuplication)
     {
         _device = device;
         _capture = capture;
@@ -142,10 +144,30 @@ public sealed class CapturePipeline : IDisposable
         _onFrame = onFrame;
         _loggers = loggers;
         _logger = logger;
+
+        // Remembered so switching display keeps the same capture API. A stream that silently
+        // changed from duplication to Graphics Capture halfway through would also silently
+        // gain a cursor and a border, which is not a thing to do without saying so.
+        _preferDuplication = preferDuplication;
     }
 
     /// <summary>The monitor currently being captured.</summary>
     public IntPtr MonitorHandle => _monitorHandle;
+
+    /// <summary>Which Windows capture API is producing these frames.</summary>
+    public string CaptureApi => _capture.Api;
+
+    /// <summary>
+    /// Whether the mouse pointer is in the picture.
+    ///
+    /// False on the Desktop Duplication path, which hands back the desktop without it. The
+    /// client is told, because an operator who cannot see the cursor needs to know that is
+    /// the capture and not their own machine.
+    /// </summary>
+    public bool CursorCaptured => _capture.CursorCaptured;
+
+    /// <summary>Whether Windows is showing the person at the PC that it is being captured.</summary>
+    public bool BorderShown => _capture.BorderShown;
 
     /// <summary>
     /// Raised when the captured display goes away — unplugged, or switched off.
@@ -192,12 +214,14 @@ public sealed class CapturePipeline : IDisposable
         Action<EncodedVideoFrame> onFrame,
         ILoggerFactory loggers,
         int maxWidthPixels = 0,
-        int maxHeightPixels = 0)
+        int maxHeightPixels = 0,
+        bool preferDuplication = false)
     {
-        DisplayCapture? capture = DisplayCapture.TryStart(
+        IDisplayCapture? capture = DisplayCaptureFactory.TryStart(
             device,
             monitorHandle,
-            loggers.CreateLogger<DisplayCapture>());
+            loggers,
+            preferDuplication);
         if (capture is null) return null;
 
         // A profile that caps the resolution is honoured from the start rather than being
@@ -243,7 +267,8 @@ public sealed class CapturePipeline : IDisposable
             maxHeightPixels,
             onFrame,
             loggers,
-            loggers.CreateLogger<CapturePipeline>());
+            loggers.CreateLogger<CapturePipeline>(),
+            preferDuplication);
     }
 
     public void Start()
@@ -581,10 +606,11 @@ public sealed class CapturePipeline : IDisposable
     /// </summary>
     private bool SwitchDisplay(IntPtr monitorHandle)
     {
-        DisplayCapture? capture = DisplayCapture.TryStart(
+        IDisplayCapture? capture = DisplayCaptureFactory.TryStart(
             _device,
             monitorHandle,
-            _loggers.CreateLogger<DisplayCapture>());
+            _loggers,
+            _preferDuplication);
 
         if (capture is null)
         {
@@ -602,7 +628,7 @@ public sealed class CapturePipeline : IDisposable
             return false;
         }
 
-        DisplayCapture old = _capture;
+        IDisplayCapture old = _capture;
         _capture = capture;
         old.Dispose();
 
@@ -631,7 +657,7 @@ public sealed class CapturePipeline : IDisposable
     /// new size — an encoder has limits, and a driver may simply say no — the stream carries
     /// on unchanged, which is far better than one that stops because it could not adjust.
     /// </summary>
-    private bool RebuildEncodeChain(DisplayCapture capture, int width, int height)
+    private bool RebuildEncodeChain(IDisplayCapture capture, int width, int height)
     {
         ColorConverter? converter = ColorConverter.TryCreate(
             _device,

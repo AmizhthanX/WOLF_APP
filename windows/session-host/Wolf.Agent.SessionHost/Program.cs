@@ -181,19 +181,12 @@ public static class Program
     /// <summary>
     /// Which capture API this host will use, if any.
     ///
-    /// Guarded on the Windows version rather than assumed: Graphics Capture arrived in
-    /// Windows 10 1903, and the agent supports older builds where the honest answer is that
-    /// this PC cannot stream its screen.
+    /// Graphics Capture where it exists, Desktop Duplication where it does not, and "none"
+    /// where neither does — the agent supports builds old enough for that to be the honest
+    /// answer, and a PC that says it cannot stream is better than one that offers to and
+    /// then produces a black screen.
     /// </summary>
-    private static string DetectCaptureApi()
-    {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
-        {
-            return "none";
-        }
-
-        return CaptureDevice.IsCaptureSupported() ? "graphics-capture" : "none";
-    }
+    private static string DetectCaptureApi() => DisplayCaptureFactory.DetectApi();
 
     /// <summary>
     /// Whether this PC has audio WOLF can capture.

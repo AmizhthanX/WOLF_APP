@@ -247,9 +247,26 @@ having done it:
    over a one-second window: a pipeline moved from a 60 fps target to 10 reports 55.6 then
    10.0, where the lifetime figure said 35.7
 
+**Done — the Desktop Duplication fallback**
+
+- A second capture path behind the same interface, for the builds that have no Windows
+  Graphics Capture. Everything above it — converter, encoder, adaptation, transport — cannot
+  tell which one is running
+- Graphics Capture stays preferred, and the choice is re-made per display so a stream never
+  silently changes API halfway through
+- The two things duplication cannot do are reported rather than left to be discovered: the
+  mouse pointer is not in the picture, which arrives as an adjustment on the negotiation, and
+  Windows draws no capture indicator for the person at the PC
+- Exercised on a machine that *does* have Graphics Capture, by forcing it — a fallback only
+  run by the people who cannot report bugs is one that has already rotted. Five tests,
+  including a whole encode pipeline on the fallback producing real H.264
+- Verified through a real browser: 2560x1440 at 30 fps, 485 frames decoded over a direct
+  connection, with the cursor adjustment showing in the negotiation
+-  forces it, for machines where Graphics Capture reports
+  itself supported and then produces nothing usable
+
 **Still open, and worth doing before this is called finished**
 
-- Desktop Duplication fallback for builds without Windows Graphics Capture
 - Switching between two physical monitors is untested: the development machine has one
 
 ## Milestone 3 — The privileged helper

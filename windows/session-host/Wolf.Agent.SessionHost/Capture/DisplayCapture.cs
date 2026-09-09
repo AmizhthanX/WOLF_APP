@@ -16,6 +16,37 @@ public sealed record CapturedFrame(
     TimeSpan SystemRelativeTime);
 
 /// <summary>
+/// A source of desktop frames on the GPU.
+///
+/// Two implementations, because Windows has two ways of doing this and neither is available
+/// everywhere. Graphics Capture is the better one and needs Windows 10 1903; Desktop
+/// Duplication goes back further and is what is left on the builds that do not have it. The
+/// pipeline above is written against this rather than either of them, so which one is in use
+/// changes nothing except what the host reports it is using.
+/// </summary>
+public interface IDisplayCapture : IDisposable
+{
+    int Width { get; }
+
+    int Height { get; }
+
+    /// <summary>True once the display went away. The pipeline stops rather than spinning.</summary>
+    bool Closed { get; }
+
+    /// <summary>True when Windows draws its capture border around the display being shared.</summary>
+    bool BorderShown { get; }
+
+    /// <summary>Whether the captured image includes the mouse pointer.</summary>
+    bool CursorCaptured { get; }
+
+    /// <summary>Which Windows API this is, as the protocol names it.</summary>
+    string Api { get; }
+
+    /// <summary>The most recent frame, or null when none has arrived since the last call.</summary>
+    CaptureFrameLease? TryAcquire();
+}
+
+/// <summary>
 /// Captures one display through Windows Graphics Capture.
 ///
 /// The frame pool is created free-threaded so the host does not need a message pump or a
@@ -27,8 +58,11 @@ public sealed record CapturedFrame(
 /// pipeline set its own pace and drop the frames in between without ever allocating them.
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
-public sealed class DisplayCapture : IDisposable
+public sealed class DisplayCapture : IDisplayCapture
 {
+    /// <summary>How this capture is named in the protocol and in the host's status.</summary>
+    public const string ApiName = "graphics-capture";
+
     /// <summary>
     /// Two buffers is enough for a pull model and keeps latency down: more buffers only
     /// add frames that would be stale by the time they were read.
@@ -62,6 +96,13 @@ public sealed class DisplayCapture : IDisposable
 
     /// <summary>True when Windows draws its capture border around the display being shared.</summary>
     public bool BorderShown { get; private set; } = true;
+
+    /// <summary>
+    /// Graphics Capture composites the pointer into the frame, so the operator sees it move.
+    /// </summary>
+    public bool CursorCaptured => true;
+
+    public string Api => ApiName;
 
     /// <summary>
     /// Start capturing a monitor.
@@ -199,10 +240,13 @@ public sealed class DisplayCapture : IDisposable
             }
 
             ID3D11Texture2D texture = CaptureInterop.GetTexture(frame.Surface);
+
+            // Disposed in this order: the texture view first, then the pooled frame, which
+            // is what actually returns the buffer.
             return new CaptureFrameLease(
                 new CapturedFrame(texture, _size.Width, _size.Height, frame.SystemRelativeTime),
-                frame,
-                texture);
+                texture,
+                frame);
         }
     }
 
@@ -242,29 +286,38 @@ public sealed class DisplayCapture : IDisposable
 }
 
 /// <summary>
-/// A frame held from the pool.
+/// A frame borrowed from whichever capture produced it.
 ///
-/// Disposing returns the buffer. The pool has two, so a leaked lease stops capture within
-/// two frames — which is why this is a distinct type rather than a convention.
+/// Holding one blocks the capture: Graphics Capture has two pool buffers, and Desktop
+/// Duplication refuses to hand over the next frame at all until the last is released. Either
+/// way a leaked lease stops the stream within a frame or two, which is why this is a type
+/// rather than a convention.
+///
+/// What has to be released differs between the two, so the lease simply owns a list and
+/// disposes it in order. The order matters — a texture view has to go before the thing that
+/// owns the surface underneath it.
 /// </summary>
-[SupportedOSPlatform("windows10.0.19041.0")]
 public sealed class CaptureFrameLease : IDisposable
 {
-    private readonly Direct3D11CaptureFrame _frame;
-    private readonly ID3D11Texture2D _texture;
+    private readonly IDisposable?[] _owned;
+    private bool _disposed;
 
-    internal CaptureFrameLease(CapturedFrame frame, Direct3D11CaptureFrame source, ID3D11Texture2D texture)
+    internal CaptureFrameLease(CapturedFrame frame, params IDisposable?[] owned)
     {
         Frame = frame;
-        _frame = source;
-        _texture = texture;
+        _owned = owned;
     }
 
     public CapturedFrame Frame { get; }
 
     public void Dispose()
     {
-        _texture.Dispose();
-        _frame.Dispose();
+        if (_disposed) return;
+        _disposed = true;
+
+        foreach (IDisposable? owned in _owned)
+        {
+            owned?.Dispose();
+        }
     }
 }

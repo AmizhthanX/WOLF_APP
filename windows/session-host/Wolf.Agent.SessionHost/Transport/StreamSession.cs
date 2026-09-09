@@ -301,6 +301,21 @@ public sealed class StreamSession : IDisposable
         _displays = displays;
         _pipeline.DisplayLost += OnDisplayLost;
 
+        // Desktop Duplication hands back the desktop without the pointer composited into it.
+        // Reported rather than left to be discovered: an operator whose cursor is invisible
+        // will assume their own machine or the network before they suspect the capture API,
+        // and the difference between "missing" and "not captured on this PC" is the whole
+        // point of the adjustments list.
+        if (!_pipeline.CursorCaptured)
+        {
+            adjustments.Add(new SignalAdjustment(
+                "cursor",
+                "shown",
+                "hidden",
+                "This PC captures its screen with Desktop Duplication, which does not include " +
+                "the mouse pointer."));
+        }
+
         _display = display;
         _baseWidth = _pipeline.EncodedWidth;
         _baseHeight = _pipeline.EncodedHeight;

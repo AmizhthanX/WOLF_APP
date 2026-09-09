@@ -115,13 +115,47 @@ encoder is present — copies to system memory and uses the Media Foundation sof
 encoder, which is slower and is *reported as such* in the stream stats rather than silently
 degrading.
 
-Capture selection, in order of preference:
+### Two ways to capture, and why the order is not a toss-up
 
 1. `Windows.Graphics.Capture` (Windows 10 1903+). Handles DPI, HDR tone mapping, and
    occluded windows correctly, and does not require a compatible legacy driver.
-2. Desktop Duplication (DXGI) as a fallback for older builds.
+2. Desktop Duplication (DXGI), for the builds that do not have it.
 
-Both are probed at startup, and whichever is available is what the agent advertises.
+Both sit behind one interface, so everything above the capture — the colour converter, the
+encoder, adaptation, the transport — cannot tell which is running. What the agent advertises
+in the capability handshake is what it will actually use, including when that is `none`,
+because a PC that says it cannot stream is better than one that offers to and then sends a
+black screen.
+
+Graphics Capture is preferred rather than merely listed first, and the two differences are
+both things the operator would notice:
+
+- **The pointer.** Graphics Capture composites it into the frame. Duplication hands back the
+  desktop without it and offers the cursor separately as a shape to blend in — three bitmap
+  formats, per frame. That is not done, so on the fallback the operator sees the desktop
+  move and not the cursor. It is reported as an adjustment on the negotiation
+  (`cursor`, requested `shown`, applied `hidden`), because somebody whose pointer has
+  vanished will suspect their own machine or the network long before they suspect the
+  capture API.
+- **The indicator.** Windows draws a coloured border around a display being captured through
+  Graphics Capture, which is how the person sitting at the PC knows. Duplication draws
+  nothing, and `BorderShown` is false rather than assumed — claiming an indicator is showing
+  when it is not would be a lie to the operator about somebody else's privacy.
+
+Duplication also has a tighter contract: exactly one frame may be outstanding, and the next
+`AcquireNextFrame` is refused until it is released. The lease returns it, so a dropped lease
+stops capture in one frame rather than two — and losing access, which happens for ordinary
+reasons like a mode change or the secure desktop appearing, is answered by duplicating the
+output again rather than by ending the stream.
+
+The choice is made per display and re-made when the display is switched, so a stream never
+silently changes API — and with it, silently gains or loses a cursor — halfway through.
+
+`WOLF_FORCE_DESKTOP_DUPLICATION=1` forces the fallback. It is there for the one case the
+automatic choice cannot detect: a machine where Graphics Capture reports itself supported,
+starts without error, and then produces nothing usable, which some virtual display drivers
+do. It is opt-in, logged as a warning every time it takes effect, and answered by the
+capability handshake, so the cloud is never promising a cursor that will not arrive.
 
 ### Three things the pipeline has to get right before it produces a single frame
 
@@ -777,6 +811,8 @@ requested profile, and the UI shows why.
    display enumeration, and Media Foundation encoder discovery.
 3. **Capture and encode** — *done.* Windows Graphics Capture into a hardware H.264 encoder,
    frames staying on the GPU throughout, with on-demand key frames and live bitrate control.
+   Desktop Duplication behind the same interface for the builds without Graphics Capture,
+   with the cursor it cannot capture reported rather than quietly missing.
 4. **WebRTC on the host** — *done.* Peer connection, H.264 video track, control data
    channel, ICE servers delivered from the cloud, live statistics.
 5. **Web client** — *done.* The dashboard answers the offer, renders the stream, shows both
