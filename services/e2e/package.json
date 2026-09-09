@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
-    "test": "tsc -b && node --test \"dist/**/*.test.js\""
+    "test": "tsc -b && node --test \"dist/**/*.test.js\"",
+    "cloud": "tsc -b && node dist/local-cloud.js",
+    "browser": "tsc -b && node dist/browser-harness.js"
   },
   "dependencies": {
     "@wolf/api": "0.1.0",

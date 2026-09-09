@@ -17,7 +17,17 @@ namespace Wolf.Agent.Core.Tests;
 /// </summary>
 public sealed class IdentityInteropTests
 {
-    private sealed record SignatureVector(string PublicKey, string Payload, string Signature);
+    private sealed record SignatureVector(
+        string PcId,
+        string Nonce,
+        /// <summary>UTF-8 bytes of the payload, hex encoded so the NUL separators survive.</summary>
+        string PayloadHex,
+        string PublicKey,
+        string Signature)
+    {
+        /// <summary>The bytes the cloud actually signed.</summary>
+        public string Payload => Encoding.UTF8.GetString(Convert.FromHexString(PayloadHex));
+    }
 
     private static SignatureVector LoadVector()
     {
@@ -26,8 +36,10 @@ public sealed class IdentityInteropTests
         JsonElement root = document.RootElement;
 
         return new SignatureVector(
+            root.GetProperty("pcId").GetString()!,
+            root.GetProperty("nonce").GetString()!,
+            root.GetProperty("payloadHex").GetString()!,
             root.GetProperty("publicKey").GetString()!,
-            root.GetProperty("payload").GetString()!,
             root.GetProperty("signature").GetString()!);
     }
 
@@ -55,7 +67,7 @@ public sealed class IdentityInteropTests
         key.ImportSubjectPublicKeyInfo(Base64Url.Decode(vector.PublicKey), out _);
 
         Assert.False(key.VerifyData(
-            Encoding.UTF8.GetBytes(vector.Payload.Replace("NONCE-NODE-42", "NONCE-NODE-43", StringComparison.Ordinal)),
+            Encoding.UTF8.GetBytes(WolfProtocol.ChallengeSigningPayload(vector.PcId, "NONCE-NODE-43")),
             Base64Url.Decode(vector.Signature),
             HashAlgorithmName.SHA256,
             DSASignatureFormat.Rfc3279DerSequence));
@@ -68,7 +80,7 @@ public sealed class IdentityInteropTests
         using (key)
         {
             byte[] signature = key.SignData(
-                Encoding.UTF8.GetBytes("wolf-agent-auth v1 PC NONCE"),
+                Encoding.UTF8.GetBytes(WolfProtocol.ChallengeSigningPayload("PC", "NONCE")),
                 HashAlgorithmName.SHA256,
                 DSASignatureFormat.Rfc3279DerSequence);
 
@@ -84,10 +96,32 @@ public sealed class IdentityInteropTests
     [Fact]
     public void The_signing_payload_binds_the_pc_and_the_nonce()
     {
-        // Both sides build this string independently; if they ever disagree, no PC connects.
+        // NUL between the fields, not a space. The separator has to be something that
+        // cannot occur inside a field, or two different (pcId, nonce) pairs could produce
+        // the same bytes and one PC's signature would authenticate another.
         Assert.Equal(
-            "wolf-agent-auth v1 PC-1 NONCE-1",
+            "wolf-agent-auth\0v1\0PC-1\0NONCE-1",
             WolfProtocol.ChallengeSigningPayload("PC-1", "NONCE-1"));
+    }
+
+    /// <summary>
+    /// The agent builds the same bytes the cloud signed.
+    ///
+    /// This is the test that was missing, and its absence cost a build in which every PC
+    /// enrolled successfully and then failed every handshake with "bad-signature": the
+    /// cloud separated the payload's fields with NUL and the agent with spaces, while each
+    /// suite checked only its own crypto against a payload string carried inside the shared
+    /// vector — which both were happy to sign whatever it said. The vectors now record the
+    /// bytes, and each side rebuilds the string with its own function and compares.
+    /// </summary>
+    [Fact]
+    public void The_shared_vector_records_the_bytes_this_agent_would_sign()
+    {
+        SignatureVector vector = LoadVector();
+
+        Assert.Equal(
+            WolfProtocol.ChallengeSigningPayload(vector.PcId, vector.Nonce),
+            vector.Payload);
     }
 
     [Theory]

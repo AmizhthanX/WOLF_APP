@@ -82,6 +82,36 @@ The dashboard is at http://localhost:3000. The API defaults to port 8080; set `P
 the realtime service to something else (for example `PORT=8081`) since both read the same
 variable.
 
+## Running the whole loop locally
+
+`npm run dev:cloud` starts the real API and the real relay on 8080 and 8081, against an
+in-process Postgres. Nothing external is needed — no Postgres server, no `.env`:
+
+```bash
+npm run dev:cloud
+```
+
+Its database lives only in memory, so every restart is a fresh cloud and any PC enrolled
+against the previous run is gone. The owner is `owner@example.com` with the passphrase
+`a-long-local-passphrase`, both overridable with `WOLF_OWNER_EMAIL` and
+`WOLF_OWNER_PASSWORD`. It refuses to start with `NODE_ENV=production`.
+
+Point the agent at it with `Wolf__ApiBaseUrl`, `Wolf__RealtimeUrl`, and — unless you are
+running elevated — `Wolf__DataDirectory`, since the identity store's default lives under
+`C:\ProgramData` where a standard user cannot create it.
+
+To drive a real browser at a real stream, create a session through the API and serve the
+loop-test page:
+
+```bash
+WOLF_HARNESS_SESSION_TOKEN=<session token> npm run browser -w @wolf/e2e
+```
+
+It serves `http://127.0.0.1:3100/`, which drives the dashboard's own streaming state machine
+— not a second implementation of it — and reports what the browser actually decoded, read
+from its own WebRTC statistics rather than from what the page was told. `window.__wolf`
+holds the same figures for a test driver to read back.
+
 ## Enrolling a Windows PC
 
 1. Sign in to the dashboard and choose **Add a PC**. The enrollment token is shown once —

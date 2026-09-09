@@ -15,6 +15,29 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\windows\agent\Wolf.Agent.Core\Wolf.Agent.Core.csproj" />
+
+    <!-- Built, but not referenced as an assembly: the session host is a separate process,
+         not a library. The agent talks to it over a named pipe and never links against it. -->
+    <ProjectReference Include="..\..\..\windows\session-host\Wolf.Agent.SessionHost\Wolf.Agent.SessionHost.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
   </ItemGroup>
+
+  <!--
+    Put the session host beside the agent executable.
+
+    SessionHostSupervisor looks for Wolf.Agent.SessionHost.exe in AppContext.BaseDirectory,
+    so without this the agent builds, runs, and reports itself healthy while every remote
+    desktop request fails for want of a session host — a whole feature inert in anything
+    built from this project rather than run out of the session host's own output folder.
+  -->
+  <Target Name="CopySessionHost" AfterTargets="Build">
+    <ItemGroup>
+      <SessionHostOutput Include="$(MSBuildThisFileDirectory)..\..\..\windows\session-host\Wolf.Agent.SessionHost\bin\$(Configuration)\$(TargetFramework)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SessionHostOutput)"
+          DestinationFolder="$(OutDir)%(RecursiveDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

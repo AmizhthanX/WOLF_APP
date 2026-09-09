@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WOLF browser loop test</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #101014; color: #e6e6ea; font: 13px/1.5 system-ui, sans-serif; }
+      main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; padding: 12px; }
+      video { width: 100%; background: #000; border: 1px solid #2a2a33; }
+      pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 ui-monospace, monospace; }
+      section { border: 1px solid #2a2a33; padding: 8px; margin-bottom: 8px; }
+      h2 { font-size: 11px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; color: #9a9aa8; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <video id="screen" autoplay playsinline muted></video>
+      <div>
+        <section><h2>Phase</h2><pre id="phase">idle</pre></section>
+        <section><h2>Decoding</h2><pre id="decode">—</pre></section>
+        <section><h2>Negotiation</h2><pre id="negotiation">—</pre></section>
+        <section><h2>Log</h2><pre id="log"></pre></section>
+      </div>
+    </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "@wolf/shared-types": "/packages/shared-types/dist/ids.js"
+        }
+      }
+    </script>
+
+    <script type="module">
+      // The dashboard's own state machine, compiled by its own test build. Reimplementing
+      // the client here would test a second implementation and prove nothing about the one
+      // that ships.
+      import { RemoteDesktopStream, decodableCodecs } from '/apps/web/dist-test/remote-desktop.js';
+
+      const el = (id) => document.getElementById(id);
+      const lines = [];
+      const log = (message) => {
+        lines.push(`${new Date().toISOString().slice(11, 23)} ${message}`);
+        el('log').textContent = lines.slice(-30).join('\n');
+      };
+
+      // Fetched rather than put in the URL: a session token in a query string ends up in
+      // history, in logs, and in referrer headers.
+      const config = await fetch('/config.json').then((response) => response.json());
+
+      /** What the driver reads back. Nothing here is inferred; it is all measured. */
+      const result = {
+        phase: 'idle',
+        phaseDetail: null,
+        errors: [],
+        negotiation: null,
+        codecs: decodableCodecs(),
+        agentStats: null,
+        clientStats: null,
+        degraded: null,
+        control: null,
+        clipboard: [],
+        videoWidth: 0,
+        videoHeight: 0,
+        framesDecoded: 0,
+        keyFramesDecoded: 0,
+        frameSize: [0, 0],
+        bytesReceived: 0,
+        decoderImplementation: null,
+        log: lines,
+      };
+      window.__wolf = result;
+
+      const stream = new RemoteDesktopStream({
+        realtimeUrl: config.realtimeUrl,
+        sessionToken: config.sessionToken,
+        iceServers: config.iceServers ?? [],
+        profile: config.profile,
+        displayId: null,
+        requestAudio: false,
+        events: {
+          onPhase: (phase, detail) => {
+            result.phase = phase;
+            result.phaseDetail = detail;
+            el('phase').textContent = detail ? `${phase} — ${detail}` : phase;
+            log(`phase: ${phase}${detail ? ` (${detail})` : ''}`);
+          },
+          onTrack: (mediaStream) => {
+            el('screen').srcObject = mediaStream;
+            log('track attached');
+          },
+          onNegotiation: (negotiation) => {
+            result.negotiation = negotiation;
+            el('negotiation').textContent = JSON.stringify(negotiation, null, 1);
+            log(`negotiated ${negotiation.videoCodec} on ${negotiation.display.name}`);
+          },
+          onAgentStats: (stats) => { result.agentStats = stats; },
+          onClientStats: (stats) => { result.clientStats = stats; },
+          onError: (error) => {
+            result.errors.push(error);
+            log(`error: ${error.code} — ${error.message}`);
+          },
+          onInputControl: (control) => {
+            result.control = control;
+            log(`control: ${JSON.stringify(control)}`);
+          },
+          onDegraded: (reason) => {
+            result.degraded = reason;
+            log(`degraded: ${reason ?? 'no'}`);
+          },
+          onClipboard: (event) => {
+            result.clipboard.push(event);
+            log(`clipboard: ${event.kind ?? JSON.stringify(event)}`);
+          },
+        },
+      });
+
+      stream.start();
+
+      // Read off the video element and the peer connection directly, rather than trusting
+      // what the page was told. A stream can report itself healthy while nothing decodes.
+      setInterval(async () => {
+        const video = el('screen');
+        result.videoWidth = video.videoWidth;
+        result.videoHeight = video.videoHeight;
+
+        // The client keeps its RTCPeerConnection private, which is right for the product
+        // and awkward here. Found by shape rather than by name, so a rename does not turn
+        // this panel into a silent zero.
+        const peer = Object.values(stream).find(
+          (value) => value && typeof value.getStats === 'function' && 'iceConnectionState' in value,
+        );
+        if (!peer) return;
+
+        // .values(): iterating an RTCStatsReport directly yields [id, report] pairs, not
+        // reports, and the type check then silently never matches.
+        for (const report of (await peer.getStats()).values()) {
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            result.framesDecoded = report.framesDecoded ?? 0;
+            result.keyFramesDecoded = report.keyFramesDecoded ?? 0;
+            result.bytesReceived = report.bytesReceived ?? 0;
+            result.frameSize = [report.frameWidth ?? 0, report.frameHeight ?? 0];
+            result.decoderImplementation = report.decoderImplementation ?? null;
+          }
+        }
+
+        el('decode').textContent =
+          `video    ${result.videoWidth}x${result.videoHeight}\n` +
+          `frames   ${result.framesDecoded}\n` +
+          `bytes    ${result.bytesReceived}\n` +
+          `decoder  ${result.decoderImplementation ?? '—'}\n` +
+          `route    ${result.clientStats?.route ?? '—'}`;
+      }, 500);
+
+      window.__wolfStream = stream;
+      window.__wolfRequestControl = () => stream.requestControl();
+      window.__wolfSendInput = (events) => stream.sendInput(events);
+      window.__wolfSetProfile = (profile) => stream.setProfile(profile);
+      window.__wolfSendClipboard = (text) => stream.sendClipboard(text);
+    </script>
+  </body>
+</html>

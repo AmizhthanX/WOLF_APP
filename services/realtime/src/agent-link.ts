@@ -110,7 +110,18 @@ export class AgentLink implements AgentLinkHandle {
     const parsed = agentMessage.safeParse(parsedJson);
     if (!parsed.success) {
       this.logger.warn(
-        { pcId: this.pcId || null, issueCount: parsed.error.issues.length },
+        {
+          pcId: this.pcId || null,
+          issueCount: parsed.error.issues.length,
+          // Paths and codes, never values: the message that failed may carry clipboard
+          // text or session material. A bare count is not diagnosable — it cost a day of
+          // an agent reconnecting in a loop with nothing in the log to say which field
+          // the two sides disagreed about.
+          issues: parsed.error.issues.slice(0, 8).map((issue) => ({
+            path: issue.path.join('.'),
+            code: issue.code,
+          })),
+        },
         'Rejected a malformed agent message',
       );
       this.close('malformed-message');

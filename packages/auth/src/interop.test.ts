@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { challengeSigningPayload } from '@wolf/protocol';
 import { generateIdentityKeyPair, signPayload, verifySignature } from './identity.js';
 
 /**
@@ -19,33 +20,76 @@ import { generateIdentityKeyPair, signPayload, verifySignature } from './identit
 const testdata = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../testdata');
 
 interface SignatureVector {
+  readonly pcId: string;
+  readonly nonce: string;
+  /** UTF-8 bytes of the canonical payload, hex encoded so the NUL separators survive. */
+  readonly payloadHex: string;
   readonly publicKey: string;
-  readonly payload: string;
   readonly signature: string;
 }
 
-test('a signature produced by the .NET agent verifies in the cloud', () => {
-  const vector = JSON.parse(
+function loadVector(): SignatureVector {
+  return JSON.parse(
     readFileSync(path.join(testdata, 'dotnet-signature.json'), 'utf8'),
   ) as SignatureVector;
+}
 
-  assert.equal(verifySignature(vector.publicKey, vector.payload, vector.signature), true);
+/** What .NET actually signed, reconstructed from the vector rather than retyped. */
+function signedPayload(vector: SignatureVector): string {
+  return Buffer.from(vector.payloadHex, 'hex').toString('utf8');
+}
+
+/**
+ * The test that was missing, and the reason a whole release could not connect.
+ *
+ * Everything else here checks the *cryptography* — curve, hash, DER, base64url — against a
+ * payload string carried inside the vector, which both sides were happy to sign whatever it
+ * said. Meanwhile the two runtimes built that string differently: the cloud separated the
+ * fields with NUL and the agent with spaces. Enrolment succeeded, every handshake after it
+ * was refused with `bad-signature`, and no test noticed because no test ever compared the
+ * two functions.
+ */
+test('the cloud and the .NET agent build the same signing payload', () => {
+  const vector = loadVector();
+
+  assert.equal(
+    challengeSigningPayload(vector.pcId, vector.nonce),
+    signedPayload(vector),
+    'the cloud must build exactly the bytes the agent signed',
+  );
+});
+
+test('a signature produced by the .NET agent verifies in the cloud', () => {
+  const vector = loadVector();
+
+  // Verified against the payload the *cloud* builds, not the one recorded in the vector:
+  // that is the string the relay will actually check against in production.
+  assert.equal(
+    verifySignature(
+      vector.publicKey,
+      challengeSigningPayload(vector.pcId, vector.nonce),
+      vector.signature,
+    ),
+    true,
+  );
 });
 
 test('the .NET vector is rejected for a different payload', () => {
-  const vector = JSON.parse(
-    readFileSync(path.join(testdata, 'dotnet-signature.json'), 'utf8'),
-  ) as SignatureVector;
+  const vector = loadVector();
 
   // The signed payload binds the PC id and the nonce, so changing either must invalidate it.
   assert.equal(
-    verifySignature(vector.publicKey, vector.payload.replace('NONCE-ABC123', 'NONCE-XYZ789'), vector.signature),
+    verifySignature(
+      vector.publicKey,
+      challengeSigningPayload(vector.pcId, 'NONCE-XYZ789'),
+      vector.signature,
+    ),
     false,
   );
   assert.equal(
     verifySignature(
       vector.publicKey,
-      vector.payload.replace('01J9ZQK7T0000000000000000A', '01J9ZQK7T0000000000000000B'),
+      challengeSigningPayload('01J9ZQK7T0000000000000000B', vector.nonce),
       vector.signature,
     ),
     false,
@@ -53,9 +97,7 @@ test('the .NET vector is rejected for a different payload', () => {
 });
 
 test('the .NET vector uses the encodings the cloud expects', () => {
-  const vector = JSON.parse(
-    readFileSync(path.join(testdata, 'dotnet-signature.json'), 'utf8'),
-  ) as SignatureVector;
+  const vector = loadVector();
 
   assert.match(vector.publicKey, /^[A-Za-z0-9_-]+$/, 'public key must be base64url');
   assert.match(vector.signature, /^[A-Za-z0-9_-]+$/, 'signature must be base64url');

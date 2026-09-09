@@ -21,6 +21,7 @@
     "db:migrate": "npm run db:migrate -w @wolf/api",
     "dev:api": "npm run dev -w @wolf/api",
     "dev:web": "npm run dev -w @wolf/web",
+    "dev:cloud": "npm run cloud -w @wolf/e2e",
     "check:secrets": "node scripts/check-secrets.mjs",
     "test:windows": "dotnet test windows/Wolf.sln",
     "test:windows:perf": "dotnet test windows/Wolf.sln -s windows/agent/Wolf.Agent.Core.Tests/performance.runsettings --logger \"console;verbosity=detailed\""

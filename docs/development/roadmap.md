@@ -205,11 +205,46 @@ share a clipboard with it, and switch between its monitors — adapting to the l
   repaints while those classes run — as a class fixture. Three consecutive full runs pass
   150 of 150, and the suite went from 2m41s to 52s because nothing waits out a timeout
 
+**Done — the whole loop, against a real browser**
+
+Run with `npm run dev:cloud`, the agent pointed at it, and `npm run browser -w @wolf/e2e`.
+Chromium, the shipping client state machine, the real relay, the real agent: 2560x1440 at 30
+fps over a direct p2p connection, 1945 frames decoded with no loss, encoded by the NVIDIA
+H.264 MFT at 0.38 ms a frame and decoded at 0.36. Control was requested and granted with a
+two-minute lease. Pinning 15 fps at half size took the stream to 1280x720 at exactly 15.00
+fps and unpinning put it back — the manual overrides, end to end.
+
+It found six defects that every layer's own tests had passed over, which is the argument for
+having done it:
+
+1. **The agent could never connect.** The cloud built the signing payload with NUL
+   separators and the agent with spaces, so enrolment succeeded and every handshake after it
+   was refused with `bad-signature`. Both interop suites checked their own crypto against a
+   payload string carried inside the shared vector, and neither compared the two functions.
+   They do now
+2. **The session host was never shipped beside the agent.** Nothing copied
+   `Wolf.Agent.SessionHost.exe` into the agent's output, so a built agent reported itself
+   healthy and failed every stream request for want of a host
+3. **Enrolment locked itself out of its own identity store.** The directory ACL was set to
+   SYSTEM and Administrators with inheritance off, and then written to — which works as
+   LocalSystem and fails with access-denied for the documented development run
+4. **A machine with many NDIS filter drivers could not stay connected.** Windows lists every
+   filter bound to an adapter as its own interface; this PC reported 42 where the protocol
+   accepts 32, and the relay closed the link over it, taking the stream signaling with it.
+   Adapters are now told apart by whether they have an address of their own, and the count is
+   capped before it is sent
+5. **The relay logged how many validation issues a message had, not which.** A count is not
+   diagnosable; finding defect 4 took a change to log the field paths
+6. **A stream requested while the session host is restarting is dropped**, and the supervisor
+   never logs why the previous host exited. Not yet fixed, and recorded below
+
 **Still open, and worth doing before this is called finished**
 
-- The whole loop has never run against a browser. Every layer is verified independently and
-  the contracts between them are asserted at both ends, but nothing has yet put a real
-  Chrome in front of a real agent
+- A stream request that arrives while the session host is restarting goes unanswered — the
+  client sits in `requesting` until it is retried, and nothing says what happened
+- `stream.stats.fps` from the agent is a lifetime mean, so after any adaptation it reports a
+  number that is neither the old rate nor the new one. The browser's own figure is correct;
+  the PC's is the one an operator would read to answer "why is this laggy"
 - Desktop Duplication fallback for builds without Windows Graphics Capture
 - Switching between two physical monitors is untested: the development machine has one
 

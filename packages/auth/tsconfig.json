@@ -5,5 +5,5 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../shared-types" }]
+  "references": [{ "path": "../shared-types" }, { "path": "../protocol" }]
 }

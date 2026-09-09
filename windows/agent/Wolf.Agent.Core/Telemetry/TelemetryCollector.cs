@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Wolf.Agent.Core.Native;
+using Wolf.Agent.Core.Protocol;
 
 namespace Wolf.Agent.Core.Telemetry;
 
@@ -254,9 +255,26 @@ public sealed class TelemetryCollector : IDisposable
         return samples;
     }
 
+    /// <summary>
+    /// The machine's network adapters, as a person would recognise them.
+    ///
+    /// Windows lists far more interfaces than a machine has: every NDIS filter bound to an
+    /// adapter — QoS Packet Scheduler, the WFP MAC layer filters, the vendor's lightweight
+    /// filter — appears as its own interface named after its parent. This PC reports five
+    /// real adapters and thirty-seven of those, which is both useless to read and over the
+    /// forty-two the protocol will accept in one sample.
+    ///
+    /// They are told apart by whether the interface has an address of its own. That is a
+    /// property rather than a name pattern: a filter instance carries no unicast address,
+    /// and every genuine adapter here has one even when it is unplugged. If that leaves
+    /// nothing at all — a machine with nothing configured — the ones Windows says are up
+    /// are reported instead, because an empty list would read as "no network" rather than
+    /// "nothing addressed".
+    /// </summary>
     private IReadOnlyList<NetworkSample> CollectNetworks(DateTimeOffset now)
     {
         var samples = new List<NetworkSample>();
+        var fallback = new List<NetworkSample>();
 
         foreach (NetworkInterface adapter in NetworkInterface.GetAllNetworkInterfaces())
         {
@@ -298,7 +316,7 @@ public sealed class TelemetryCollector : IDisposable
 
             _networkPrevious[adapter.Id] = (received, sent, now);
 
-            samples.Add(new NetworkSample(
+            var sample = new NetworkSample(
                 AdapterId: adapter.Id,
                 Name: adapter.Name,
                 Kind: adapter.NetworkInterfaceType switch
@@ -313,10 +331,56 @@ public sealed class TelemetryCollector : IDisposable
                 SendBytesPerSecond: sendRate,
                 LinkSpeedBitsPerSecond: adapter.Speed > 0 ? adapter.Speed : null,
                 // Wi-Fi signal strength needs the WLAN API; reported as unknown for now.
-                SignalPercent: null));
+                SignalPercent: null);
+
+            if (HasOwnAddress(adapter)) samples.Add(sample);
+            else if (sample.Up) fallback.Add(sample);
         }
 
-        return samples;
+        List<NetworkSample> chosen = samples.Count > 0 ? samples : fallback;
+
+        // Hard limit, last. Everything above is about reporting the useful adapters; this is
+        // about never handing the cloud a message it is obliged to refuse. An unfamiliar
+        // machine that still exceeds the cap loses the tail of a list rather than its link.
+        if (chosen.Count > WolfProtocol.MaxNetworkSamples)
+        {
+            _logger.LogDebug(
+                "Reporting {Kept} of {Total} network adapters; the protocol carries {Max}.",
+                WolfProtocol.MaxNetworkSamples,
+                chosen.Count,
+                WolfProtocol.MaxNetworkSamples);
+
+            // Connected ones first, so what survives the cut is what somebody would look at.
+            chosen = chosen
+                .OrderByDescending(network => network.Up)
+                .Take(WolfProtocol.MaxNetworkSamples)
+                .ToList();
+        }
+
+        return chosen;
+    }
+
+    /// <summary>
+    /// Whether this interface has an IP address of its own.
+    ///
+    /// The test that separates a real adapter from an NDIS filter instance bound to one.
+    /// A driver that refuses the query is treated as not having one: reporting an interface
+    /// nothing can be said about is what fills the list up in the first place.
+    /// </summary>
+    private static bool HasOwnAddress(NetworkInterface adapter)
+    {
+        try
+        {
+            return adapter.GetIPProperties().UnicastAddresses.Count > 0;
+        }
+        catch (NetworkInformationException)
+        {
+            return false;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static BatterySample? CollectBattery()

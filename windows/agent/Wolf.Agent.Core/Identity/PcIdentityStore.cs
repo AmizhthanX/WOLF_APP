@@ -142,6 +142,20 @@ public sealed class PcIdentityStore
     /// blob would be readable by any local user, and while DPAPI machine scope means they
     /// could also decrypt it, there is no reason to hand it to them.
     /// </summary>
+    /// <summary>
+    /// Lock the directory down to SYSTEM, Administrators, and whoever is running the agent.
+    ///
+    /// The third one is not a concession. Inheritance is switched off here, so a rule set of
+    /// SYSTEM and Administrators alone locks the agent out of the directory it just created
+    /// unless it happens to be one of them — and enrolment then fails on the next line with
+    /// an access-denied error. In production the agent is LocalSystem and the extra rule is
+    /// a duplicate that changes nothing. Anywhere else — the documented development run, or
+    /// the agent started by hand — it is the difference between working and not.
+    ///
+    /// It gives away nothing either: a user who can run this process can already read its
+    /// memory, where the same key is sitting unprotected. The file stays DPAPI-protected to
+    /// this machine regardless, so copying it elsewhere still yields nothing.
+    /// </summary>
     private static void RestrictDirectoryAccess(string directory)
     {
         var info = new DirectoryInfo(directory);
@@ -151,7 +165,12 @@ public sealed class PcIdentityStore
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
 
-        foreach (SecurityIdentifier identity in new[] { system, administrators })
+        using var current = WindowsIdentity.GetCurrent();
+        SecurityIdentifier[] allowed = current.User is { } account && account != system
+            ? new[] { system, administrators, account }
+            : new[] { system, administrators };
+
+        foreach (SecurityIdentifier identity in allowed)
         {
             security.AddAccessRule(new FileSystemAccessRule(
                 identity,

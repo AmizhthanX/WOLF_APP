@@ -109,7 +109,15 @@ export class ClientLink implements ClientLinkHandle {
     const parsed = clientMessage.safeParse(parsedJson);
     if (!parsed.success) {
       this.logger.warn(
-        { sessionId: this.sessionId || null, issueCount: parsed.error.issues.length },
+        {
+          sessionId: this.sessionId || null,
+          issueCount: parsed.error.issues.length,
+          // Paths and codes, never values: a rejected message may carry clipboard text.
+          issues: parsed.error.issues.slice(0, 8).map((issue) => ({
+            path: issue.path.join('.'),
+            code: issue.code,
+          })),
+        },
         'Rejected a malformed client message',
       );
       this.close('malformed-message');
