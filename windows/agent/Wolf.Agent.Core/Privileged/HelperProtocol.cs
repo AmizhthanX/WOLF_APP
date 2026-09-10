@@ -41,6 +41,27 @@ public static class HelperProtocol
         /// </summary>
         public const string DeviceSetEnabled = "device.set-enabled";
 
+        /// <summary>List the Windows services on this machine. Read-only.</summary>
+        public const string ServiceList = "service.list";
+
+        /// <summary>
+        /// Start, stop or restart one service.
+        ///
+        /// Refusals of the helper's own live in <see cref="Wolf.Agent.Helper"/>: a service
+        /// that would cut the way back into the machine is not something a confirmation
+        /// should be able to unlock.
+        /// </summary>
+        public const string ServiceControl = "service.control";
+
+        /// <summary>
+        /// Change when one service starts.
+        ///
+        /// Separate from starting and stopping because it survives a reboot, which makes it
+        /// the more dangerous of the two: a service stopped by mistake comes back when the
+        /// machine does, and a disabled one does not.
+        /// </summary>
+        public const string ServiceSetStartType = "service.set-start-type";
+
         /// <summary>What this helper is and what it can do. Costs nothing and touches nothing.</summary>
         public const string Describe = "helper.describe";
     }
@@ -50,6 +71,9 @@ public static class HelperProtocol
         operation is Operations.DiskSmartHealth
             or Operations.DeviceList
             or Operations.DeviceSetEnabled
+            or Operations.ServiceList
+            or Operations.ServiceControl
+            or Operations.ServiceSetStartType
             or Operations.Describe;
 }
 
@@ -165,5 +189,41 @@ public sealed record HelperDeviceResult(
     /// <summary>What Windows reports after the change, not what was asked for.</summary>
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("restartRequired")] bool RestartRequired,
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("message")] string? Message);
+
+/// <summary>One Windows service, as the service control manager describes it.</summary>
+public sealed record HelperService(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("displayName")] string DisplayName,
+    /// <summary>running, stopped, starting, stopping, paused — as Windows reports it now.</summary>
+    [property: JsonPropertyName("status")] string Status,
+    /// <summary>automatic, automatic-delayed, manual, disabled, boot, system.</summary>
+    [property: JsonPropertyName("startType")] string? StartType,
+    /// <summary>The account it runs as, which is the fact that decides what it can reach.</summary>
+    [property: JsonPropertyName("account")] string? Account,
+    [property: JsonPropertyName("imagePath")] string? ImagePath,
+    /// <summary>Whether Windows itself says the service accepts a stop.</summary>
+    [property: JsonPropertyName("canStop")] bool CanStop,
+    /// <summary>
+    /// Which of WOLF's own protections covers this service, or null when none does.
+    ///
+    /// Carried in the listing so an operator sees what is off limits before they try it,
+    /// rather than after. `Windows will not stop this` and `WOLF will not ask it to` are
+    /// different facts and are reported separately.
+    /// </summary>
+    [property: JsonPropertyName("protectedBy")] string? ProtectedBy);
+
+/// <summary>The helper's answer to a service list request.</summary>
+public sealed record HelperServiceListResult(
+    [property: JsonPropertyName("services")] IReadOnlyList<HelperService> Services);
+
+/// <summary>What happened when a service was started, stopped, or reconfigured.</summary>
+public sealed record HelperServiceResult(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("displayName")] string DisplayName,
+    [property: JsonPropertyName("ok")] bool Ok,
+    /// <summary>What Windows reports afterwards, never what was asked for.</summary>
+    [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("code")] string? Code,
     [property: JsonPropertyName("message")] string? Message);

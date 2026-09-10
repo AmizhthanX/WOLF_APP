@@ -33,6 +33,9 @@ Wolf.Agent (LocalSystem)                  Wolf.Agent.Helper (LocalSystem)
 │ command router             │  ACL'd     │   disk.smart-health          │
 │ session host supervision   │            │   device.list                │
 │                            │            │   device.set-enabled         │
+│                            │            │   service.list               │
+│                            │            │   service.control            │
+│                            │            │   service.set-start-type     │
 │                            │            │                              │
 │                            │            │ no network, no configuration │
 └────────────────────────────┘            └──────────────────────────────┘
@@ -182,3 +185,53 @@ The capability handshake answers `privilegedHelperAvailable` by opening the pipe
 it again, at call time rather than from a cached assumption: the helper is a separate service
 and can be stopped, and a PC that claims it can do privileged work when it cannot is one the
 cloud will offer operations that then fail.
+
+## Services
+
+Listing, starting, stopping and reconfiguring Windows services runs here for the same reason
+device management does: it needs administrator, and the process holding the network connection
+should not be the process holding those rights.
+
+`ServiceController` covers listing, starting and stopping. It has no way to read or change a
+start type, so that goes through `advapi32` — `QueryServiceConfig`, `ChangeServiceConfig`, and
+`ChangeServiceConfig2` for the delayed-start flag, which is set *and cleared* rather than only
+set, because a service switched from delayed to plain automatic with the flag left on reports a
+start type it does not have.
+
+**`CreateService` and `DeleteService` are not called and there is no operation that reaches
+them.** Installing a service is a persistence mechanism, and a remote-management tool that can
+do it is a remote-persistence tool — a different product with a different threat model. WOLF
+manages services that already exist.
+
+### What the helper refuses outright
+
+`ServiceProtection` answers one question, the same one `DeviceProtection` asks: *if this goes
+wrong, can it be undone from the other end of a network?* Where the answer is no, the service
+is refused rather than confirmed.
+
+| | Why |
+| --- | --- |
+| `WolfAgent`, `WolfAgentHelper` | Stopping one ends the session that would report the result |
+| `RpcSs`, `DcomLaunch`, `SamSs`, `PlugPlay`, `EventLog`, `CryptSvc`, `Winmgmt`… | Windows needs them to run at all; `RpcSs` cannot be started again once stopped |
+| `Dhcp`, `Dnscache`, `nsi`, `BFE`, `mpssvc`, `WlanSvc`… | The way back into the machine |
+
+`BFE` earns its place by not looking dangerous. It is the base filtering engine, and stopping
+it takes the firewall, IPsec and — on many builds — the network stack with it. It is the
+canonical example of a service whose name does not tell you what stopping it does.
+
+**Starting anything is allowed**, whatever it is. The asymmetry is deliberate and is the same
+one the device rules make: starting restores function, and a service that should not have been
+started can be stopped again. That is not true in the other direction.
+
+**This is a floor, not a ceiling.** Everything not on the list is still `high` or `critical` in
+the command registry — confirmation, re-authentication, and for a disable a single-use
+privileged grant. The list is the set of things no amount of confirming should unlock.
+
+### Why services are not on the data channel
+
+The terminal and the file manager go peer-to-peer because they carry content that must never
+reach a server. A service change carries no content at all — it is a name and a verb — and what
+matters about it is the opposite: that it is classified for risk, confirmed, re-authenticated
+where the risk warrants, and written to an audit record somebody can read afterwards. All of
+that lives in the cloud, and routing service control around it to save a hop would trade the
+only property that makes it accountable for one it does not need.

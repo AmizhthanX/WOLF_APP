@@ -288,7 +288,54 @@ export const deviceSetEnabledResult = z.object({
   at: isoDateTime,
 });
 
+/** One Windows service, as the service control manager describes it. */
+export const serviceInfo = z.object({
+  name: z.string().min(1).max(256),
+  displayName: z.string().max(512),
+  /** What Windows reports right now: running, stopped, starting, stopping, paused. */
+  status: z.string().max(32),
+  startType: z.string().max(32).nullable().default(null),
+  /** The account it runs as, which is the fact that decides what it can reach. */
+  account: z.string().max(512).nullable().default(null),
+  imagePath: z.string().max(4096).nullable().default(null),
+  /** Whether Windows itself says the service accepts a stop. */
+  canStop: z.boolean().default(false),
+  /**
+   * Which of WOLF's protections covers this service, or null when none does.
+   *
+   * Carried in the listing so an operator sees what is off limits before they try it. That
+   * `Windows will not stop this` and `WOLF will not ask it to` are reported separately is
+   * deliberate: they are different facts with different next steps.
+   */
+  protectedBy: z.string().max(64).nullable().default(null),
+});
+export type ServiceInfo = z.infer<typeof serviceInfo>;
+
+export const serviceListResult = z.object({
+  services: z.array(serviceInfo).max(2000),
+  /** False when the privileged helper is not running, which is why the list may be empty. */
+  helperAvailable: z.boolean(),
+  unavailableReason: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
+export const serviceChangeResult = z.object({
+  name: z.string().min(1).max(256),
+  displayName: z.string().max(512),
+  /**
+   * The state Windows is in afterwards, never the state that was asked for.
+   *
+   * A service that was told to stop and did not is the case this exists to make visible.
+   */
+  status: z.string().max(32),
+  note: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
 export const RESULT_SCHEMAS = {
+  'service.list': serviceListResult,
+  'service.control': serviceChangeResult,
+  'service.set-start-type': serviceChangeResult,
   'device.list': deviceListResult,
   'device.set-enabled': deviceSetEnabledResult,
   'disk.smart-health': diskSmartHealthResult,

@@ -200,6 +200,9 @@ public sealed class HelperServer : IAsyncDisposable
                         HelperProtocol.Operations.DiskSmartHealth,
                         HelperProtocol.Operations.DeviceList,
                         HelperProtocol.Operations.DeviceSetEnabled,
+                        HelperProtocol.Operations.ServiceList,
+                        HelperProtocol.Operations.ServiceControl,
+                        HelperProtocol.Operations.ServiceSetStartType,
                     },
                     WindowsIdentity.GetCurrent().Name);
 
@@ -219,6 +222,59 @@ public sealed class HelperServer : IAsyncDisposable
 
                 _logger.LogInformation("Read health for {Count} drive(s).", disks.Count);
                 return Ok(sequence, new HelperDiskHealthResult(disks));
+            }
+
+            case HelperProtocol.Operations.ServiceList:
+            {
+                var manager = new ServiceManager(_loggers.CreateLogger<ServiceManager>());
+                IReadOnlyList<HelperService> services = manager.List(ReadPayloadString(payload, "search"));
+
+                _logger.LogInformation("Listed {Count} service(s).", services.Count);
+                return Ok(sequence, new HelperServiceListResult(services));
+            }
+
+            case HelperProtocol.Operations.ServiceControl:
+            {
+                string? name = ReadPayloadString(payload, "name");
+                string? action = ReadPayloadString(payload, "action");
+                string? expected = ReadPayloadString(payload, "expectedDisplayName");
+
+                if (name is null || action is null || expected is null)
+                {
+                    // The expected name is not optional, for the same reason a process id is
+                    // checked against its name before it is terminated: a service list the
+                    // operator read a minute ago can describe a machine that has changed.
+                    return Refused(
+                        sequence,
+                        "malformed",
+                        "A service change needs a name, an action, and the display name it was last seen under.");
+                }
+
+                var manager = new ServiceManager(_loggers.CreateLogger<ServiceManager>());
+                HelperServiceResult result = manager.Control(name, action, expected);
+
+                // Returned as a successful call whatever the outcome. "Windows refused" and
+                // "the helper refused" are answers the operator needs in full, not errors
+                // that lose the detail on the way back.
+                return Ok(sequence, result);
+            }
+
+            case HelperProtocol.Operations.ServiceSetStartType:
+            {
+                string? name = ReadPayloadString(payload, "name");
+                string? startType = ReadPayloadString(payload, "startType");
+                string? expected = ReadPayloadString(payload, "expectedDisplayName");
+
+                if (name is null || startType is null || expected is null)
+                {
+                    return Refused(
+                        sequence,
+                        "malformed",
+                        "A start-type change needs a name, a start type, and the display name it was last seen under.");
+                }
+
+                var manager = new ServiceManager(_loggers.CreateLogger<ServiceManager>());
+                return Ok(sequence, manager.SetStartType(name, startType, expected));
             }
 
             case HelperProtocol.Operations.DeviceList:

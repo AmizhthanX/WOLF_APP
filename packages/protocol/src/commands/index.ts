@@ -6,6 +6,7 @@ import { deviceCommand } from './device.js';
 import { diskCommand } from './disk.js';
 import { powerCommand } from './power.js';
 import { remoteDesktopCommand } from './remote-desktop.js';
+import { isUnstoppableService, serviceCommand } from './service.js';
 import { systemCommand } from './system.js';
 
 export * from './process.js';
@@ -13,6 +14,7 @@ export * from './device.js';
 export * from './disk.js';
 export * from './power.js';
 export * from './remote-desktop.js';
+export * from './service.js';
 export * from './system.js';
 
 /**
@@ -29,6 +31,7 @@ export const agentCommandBody = z.union([
   diskCommand,
   powerCommand,
   remoteDesktopCommand,
+  serviceCommand,
   systemCommand,
 ]);
 export type AgentCommandBody = z.infer<typeof agentCommandBody>;
@@ -49,7 +52,8 @@ export interface CommandDefinition {
     | 'power'
     | 'pc'
     | 'session'
-    | 'unlock';
+    | 'unlock'
+    | 'service';
 }
 
 export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefinition>> =
@@ -212,6 +216,41 @@ export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefiniti
       description: 'Stop a remote desktop stream',
       auditCategory: 'session',
     },
+    /**
+     * Reading the service list changes nothing, but it is not nothing: it tells you what a
+     * machine runs, which is the first thing anybody looking for a way in wants to know. Low
+     * risk, its own capability, and audited like everything else.
+     */
+    'service.list': {
+      risk: 'low',
+      capability: 'services',
+      mutating: false,
+      description: 'List Windows services',
+      auditCategory: 'service',
+    },
+    /**
+     * Baseline only. Starting a service restores function and stays here; stopping or
+     * restarting one is escalated by `classifyRisk`, because those are the directions that
+     * can take a machine off the network from the other end of a network.
+     */
+    'service.control': {
+      risk: 'medium',
+      capability: 'services',
+      mutating: true,
+      description: 'Start, stop or restart a service',
+      auditCategory: 'service',
+    },
+    /**
+     * Higher than controlling one, because it survives a reboot. A service stopped by mistake
+     * comes back when the machine does; a disabled one does not.
+     */
+    'service.set-start-type': {
+      risk: 'high',
+      capability: 'services',
+      mutating: true,
+      description: 'Change when a service starts',
+      auditCategory: 'service',
+    },
     'power.unlock': {
       risk: 'critical',
       capability: 'privileged',
@@ -245,6 +284,25 @@ export function classifyRisk(command: AgentCommandBody): RiskLevel {
       // means of undoing it, so it takes a confirmation, a re-authentication and a
       // single-use privileged grant.
       return command.payload.enabled ? base : 'critical';
+    }
+    case 'service.control': {
+      // Starting is the safe direction: it restores function, and a service that should not
+      // have been started can be stopped again — which is not true the other way round.
+      if (command.payload.action === 'start') return base;
+
+      // The cloud's copy of the refusal list. It exists to tell an operator what they are
+      // about to attempt rather than letting them find out from the agent's refusal; the
+      // agent's copy is the one that actually stops it.
+      if (isUnstoppableService(command.payload.name)) return 'critical';
+
+      return maxRisk(base, 'high');
+    }
+    case 'service.set-start-type': {
+      // Disabling is the one that does not come back, so it takes a confirmation, a
+      // re-authentication and a single-use privileged grant.
+      if (command.payload.startType === 'disabled') return 'critical';
+      if (isUnstoppableService(command.payload.name)) return 'critical';
+      return base;
     }
     case 'process.set-priority':
       // Realtime priority can starve the input and capture threads, which is how an

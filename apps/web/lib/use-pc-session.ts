@@ -66,8 +66,23 @@ export interface PcSession {
  * capability is not the same as using it: the viewer starts every stream silent and view-only,
  * takes keyboard control only when asked and on a lease that expires, and never touches
  * either clipboard without an explicit click.
+ *
+ * `terminal` and `file-transfer` are here for the same reason and used the same way: neither
+ * does anything until the operator asks for its lease, and the cloud arbitrates each one
+ * separately. `services` is different in kind — it has no lease, because a service change is
+ * a single audited command rather than a session over something.
  */
-const CAPABILITIES = ['processes', 'power', 'screen', 'audio', 'input', 'clipboard'];
+const CAPABILITIES = [
+  'processes',
+  'power',
+  'screen',
+  'audio',
+  'input',
+  'clipboard',
+  'terminal',
+  'file-transfer',
+  'services',
+];
 
 export function usePcSession(pcId: string): PcSession {
   const [sessionId, setSessionId] = useState<string | null>(null);

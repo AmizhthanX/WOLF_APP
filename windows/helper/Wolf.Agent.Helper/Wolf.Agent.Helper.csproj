@@ -6,6 +6,10 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>Wolf.Agent.Helper</RootNamespace>
     <AssemblyName>Wolf.Agent.Helper</AssemblyName>
+    <!-- The service control manager is reached through advapi32: reading a start type needs
+         QueryServiceConfig, which ServiceController has no equivalent for. The source-generated
+         interop the LibraryImport attribute produces is unsafe code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,6 +19,10 @@
     <!-- SMART data is published through WMI. Reading it through the storage IOCTLs directly
          would mean hand-writing the ATA pass-through structures for every bus type. -->
     <PackageReference Include="System.Management" Version="9.0.0" />
+    <!-- Listing, starting and stopping services. Declared rather than inherited from the
+         hosting package: this is a dependency the helper uses directly, and a transitive one
+         disappears the day the package that brought it in changes. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup>

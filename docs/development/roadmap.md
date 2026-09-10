@@ -527,7 +527,43 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - A directory listing that hits the cap **says it was truncated**. A folder showing 2000 of its
   40000 files with no indication is one an operator concludes does not hold what they want
 
+**Done — services**
+
+- Listing, starting, stopping, restarting and reconfiguring Windows services, through the
+  privileged helper. `ServiceController` covers the first four; start types need `advapi32`
+  directly, because `ServiceController` cannot read or set one
+- **On the command path rather than the data channel, and deliberately.** The terminal and the
+  file manager go peer-to-peer because they carry content no server should hold. A service
+  change carries no content — it is a name and a verb — and what matters about it is the
+  reverse: risk classification, confirmation, re-authentication, and an audit record. All of
+  that lives in the cloud
+- **WOLF never creates or deletes a service.** `CreateService` and `DeleteService` are not
+  called and no operation reaches them: installing a service is a persistence mechanism, and a
+  remote-management tool that can do it is a remote-persistence tool
+- `ServiceProtection` refuses outright the services whose loss cannot be undone from the other
+  end of a network: WOLF's own, the RPC and COM core, and everything the connection depends on.
+  `BFE` earns its place by not looking dangerous — stopping the base filtering engine takes the
+  firewall, IPsec and often the network stack with it
+- Starting anything is allowed, whatever it is. The asymmetry is the same one the device rules
+  make: starting restores function and can be undone by stopping; the reverse is not true
+- Disabling is `critical` where stopping is `high`, because it survives a reboot. A service
+  stopped by mistake comes back when the machine does; a disabled one does not
+- The display name is checked against the live service before anything happens, the way a pid
+  is checked against a process name before it is terminated
+- Every result reports **the state Windows is in afterwards, never the state that was asked
+  for**. A service that was told to stop and did not is the case that exists to be made visible
+- `boot` and `system` start types are readable but not settable: they belong to drivers that
+  load before the service control manager exists
+
 **Still open in this milestone**
+- **Scheduled tasks and startup items are not built.** They belong beside services — the same
+  helper, the same command path, the same "manage what exists, never create" rule — and are the
+  next slice rather than a different design
+- **Service start and stop have not been run against a real machine.** They need an elevated
+  test host, and a suite that stopped services on whatever machine it happened to run on would
+  be a worse idea than an untested path. `WOLF_TEST_SERVICE_CONTROL=1` runs it elevated against
+  the print spooler. The read-only half, the refusals, and the path through `advapi32` for start
+  types *are* exercised against the real service control manager
 - **Delete, rename, move and new folders are not built.** They are mutations with real blast
   radius and belong on the command path, where risk levels and confirmations live; putting them
   on the data channel would route them around the machinery that makes them accountable
@@ -541,7 +577,7 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - **No terminal grid.** Editors, pagers and in-place progress displays are not rendered
   correctly. Stated in the UI above the output rather than approximated, so an operator
   reading a partial screen knows it is partial
-- Services, scheduled tasks, startup items
+- Scheduled tasks and startup items
 - Network diagnostics, Windows event logs, hardware inventory
 - Clipboard sync is done (milestone 2) and is never persisted in cloud history
 

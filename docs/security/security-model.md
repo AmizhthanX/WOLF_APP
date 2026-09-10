@@ -400,5 +400,15 @@ Stated plainly rather than left to be discovered:
   checks it before anything reaches the disk. Uploads accumulate in a part file and are renamed
   into place only after the declared size matches, so a half-finished transfer never looks like
   a finished one. Windows' own folders are refused as a destination.
+- **Service control goes through the privileged helper and the command path, not the data
+  channel.** It needs administrator, so it runs in the process that is not holding the network
+  connection; and it carries no content, so what matters is that it is risk-classified,
+  confirmed, and audited rather than that it is private. WOLF refuses outright to stop or
+  disable its own services, the RPC and COM core, and anything the connection back into the
+  machine depends on — those are refusals no confirmation can unlock, distinct from the risk
+  levels that gate everything else. See [the privileged helper](../architecture/privileged-helper.md).
+- **WOLF cannot install or remove a service.** `CreateService` and `DeleteService` are never
+  called and no command reaches them. Installing a service is a persistence mechanism, and a
+  remote-management tool that can do it is a remote-persistence tool.
 - **No penetration test has been run.** The security tests here are the author's, not an
   independent assessment.

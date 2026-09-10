@@ -186,3 +186,111 @@ test('a device change must name the device it expects', () => {
 
   assert.equal(withoutName.success, false);
 });
+
+/* ------------------------------------------------------------------------- */
+/* Services                                                                   */
+/* ------------------------------------------------------------------------- */
+
+test('starting a service is safer than stopping one, and the risk says so', () => {
+  const control = (name: string, action: 'start' | 'stop' | 'restart') =>
+    classifyRisk({
+      type: 'service.control',
+      payload: { name, action, expectedDisplayName: 'Print Spooler' },
+    });
+
+  // The asymmetry is the whole point: starting restores function, and a service that should
+  // not have been started can be stopped again. The reverse is not true from the other end of
+  // a network.
+  assert.equal(control('Spooler', 'start'), 'medium');
+  assert.equal(control('Spooler', 'stop'), 'high');
+  assert.equal(control('Spooler', 'restart'), 'high');
+});
+
+test('a service the way back in depends on is critical however it is asked for', () => {
+  const stop = (name: string) =>
+    classifyRisk({
+      type: 'service.control',
+      payload: { name, action: 'stop', expectedDisplayName: 'x' },
+    });
+
+  // The cloud's copy of the agent's refusal list. It exists so an operator is told what they
+  // are about to attempt rather than discovering it from a refusal; the agent's copy is the
+  // one that actually stops it, and it is the one that survives a tampered-with cloud.
+  assert.equal(stop('Dhcp'), 'critical');
+  assert.equal(stop('RpcSs'), 'critical');
+  assert.equal(stop('BFE'), 'critical');
+  assert.equal(stop('WolfAgent'), 'critical');
+
+  // Case does not save you.
+  assert.equal(stop('dhcp'), 'critical');
+  assert.equal(stop('WOLFAGENT'), 'critical');
+});
+
+test('disabling a service is critical even when stopping it is not', () => {
+  const setStartType = (name: string, startType: 'automatic' | 'manual' | 'disabled') =>
+    classifyRisk({
+      type: 'service.set-start-type',
+      payload: { name, startType, expectedDisplayName: 'Print Spooler' },
+    });
+
+  // It survives a reboot, which makes it the more dangerous of the two: a service stopped by
+  // mistake comes back when the machine does, and a disabled one does not.
+  assert.equal(setStartType('Spooler', 'disabled'), 'critical');
+  assert.equal(setStartType('Spooler', 'manual'), 'high');
+  assert.equal(setStartType('Spooler', 'automatic'), 'high');
+});
+
+test('a service command needs the display name it was last seen under', () => {
+  // Checked against the live service before anything happens, the same way terminating a
+  // process checks the name against the pid. A list read a minute ago can describe a machine
+  // that has changed since.
+  assert.equal(
+    agentCommandBody.safeParse({
+      type: 'service.control',
+      payload: { name: 'Spooler', action: 'stop' },
+    }).success,
+    false,
+  );
+
+  assert.ok(
+    agentCommandBody.safeParse({
+      type: 'service.control',
+      payload: { name: 'Spooler', action: 'stop', expectedDisplayName: 'Print Spooler' },
+    }).success,
+  );
+});
+
+test('a service name is a name, not a path or a command line', () => {
+  const parse = (name: string) =>
+    agentCommandBody.safeParse({
+      type: 'service.control',
+      payload: { name, action: 'start', expectedDisplayName: 'x' },
+    }).success;
+
+  assert.ok(parse('Spooler'));
+  assert.equal(parse('C:\\Windows\\System32\\spoolsv.exe'), false);
+  assert.equal(parse('Spooler && whoami'), false);
+  assert.equal(parse(''), false);
+});
+
+test('WOLF has no command that installs or removes a service', () => {
+  // Stated as a test rather than only as a comment. Creating a service is a persistence
+  // mechanism; a remote-management tool that can install one is a remote-persistence tool,
+  // which is a different product with a different threat model.
+  for (const type of ALL_COMMAND_TYPES) {
+    assert.ok(
+      !/^service\.(create|install|delete|remove|uninstall)/.test(type),
+      `${type} would let WOLF install or remove a service`,
+    );
+  }
+});
+
+test('reading the service list is low risk but still its own capability', () => {
+  // Changing nothing is not the same as being nothing: the service list tells you what a
+  // machine runs, which is the first thing anybody looking for a way in wants to know.
+  assert.equal(COMMAND_REGISTRY['service.list'].risk, 'low');
+  assert.equal(COMMAND_REGISTRY['service.list'].mutating, false);
+  assert.equal(requiredCapability('service.list'), 'services');
+  assert.equal(requiredCapability('service.control'), 'services');
+  assert.equal(requiredCapability('service.set-start-type'), 'services');
+});
