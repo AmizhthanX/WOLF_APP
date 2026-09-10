@@ -402,7 +402,159 @@ export const startupSetEnabledResult = z.object({
   at: isoDateTime,
 });
 
+/** One network adapter, as the machine sees itself. */
+export const networkAdapterInfo = z.object({
+  id: z.string().max(256),
+  name: z.string().max(256),
+  description: z.string().max(512).nullable().default(null),
+  /** ethernet, wifi, loopback, tunnel, other. */
+  kind: z.string().max(32),
+  status: z.string().max(32),
+  macAddress: z.string().max(64).nullable().default(null),
+  speedBitsPerSecond: z.number().nullable().default(null),
+  addresses: z.array(z.string().max(128)).max(16).default([]),
+  gateways: z.array(z.string().max(128)).max(8).default([]),
+  dnsServers: z.array(z.string().max(128)).max(8).default([]),
+  dhcpEnabled: z.boolean().nullable().default(null),
+});
+export type NetworkAdapterInfo = z.infer<typeof networkAdapterInfo>;
+
+/** One socket the machine has open. */
+export const networkConnectionInfo = z.object({
+  protocol: z.string().max(8),
+  localEndpoint: z.string().max(128),
+  remoteEndpoint: z.string().max(128).nullable().default(null),
+  state: z.string().max(32).nullable().default(null),
+});
+
+export const networkInfoResult = z.object({
+  hostName: z.string().max(256),
+  domain: z.string().max(256).nullable().default(null),
+  adapters: z.array(networkAdapterInfo).max(64),
+  connections: z.array(networkConnectionInfo).max(1000).default([]),
+  /** True when the connection list was cut short rather than being that long. */
+  connectionsTruncated: z.boolean().default(false),
+  at: isoDateTime,
+});
+
+export const networkTestResult = z.object({
+  test: z.string().max(16),
+  target: z.string().max(253),
+  /** Whether the machine could reach it. Not whether the command ran. */
+  reachable: z.boolean(),
+  /** What the target resolved to, when it was a name. */
+  resolved: z.array(z.string().max(128)).max(8).default([]),
+  /** One entry per probe, in order. Null where a probe got no answer. */
+  roundTripMs: z.array(z.number().nullable()).max(8).default([]),
+  /**
+   * What happened, in the operator's terms.
+   *
+   * The distinction that matters is between "the machine could not reach it" and "WOLF could
+   * not ask" — a firewall and a broken adapter look the same from a boolean.
+   */
+  detail: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
+/** One Windows event log entry. */
+export const eventLogEntry = z.object({
+  recordId: z.number().nullable().default(null),
+  log: z.string().max(64),
+  provider: z.string().max(256).nullable().default(null),
+  eventId: z.number().int().default(0),
+  level: z.string().max(16),
+  createdAt: z.string().max(64).nullable().default(null),
+  machine: z.string().max(256).nullable().default(null),
+  /** The rendered message, capped. Truncated ones say so rather than trailing off. */
+  message: z.string().max(4096).nullable().default(null),
+  messageTruncated: z.boolean().default(false),
+});
+export type EventLogEntry = z.infer<typeof eventLogEntry>;
+
+export const eventLogQueryResult = z.object({
+  log: z.string().max(64),
+  events: z.array(eventLogEntry).max(200),
+  /** True when the query stopped at its limit rather than running out of events. */
+  truncated: z.boolean().default(false),
+  /** Set when the log could not be read at all — the Security log without administrator. */
+  unavailableReason: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
+/** What a PC is made of. Every field nullable: not every machine reports every part. */
+export const hardwareInventoryResult = z.object({
+  manufacturer: z.string().max(256).nullable().default(null),
+  model: z.string().max(256).nullable().default(null),
+  serialNumber: z.string().max(128).nullable().default(null),
+  biosVendor: z.string().max(256).nullable().default(null),
+  biosVersion: z.string().max(128).nullable().default(null),
+  biosReleasedAt: z.string().max(64).nullable().default(null),
+  baseboard: z.string().max(256).nullable().default(null),
+  cpu: z
+    .object({
+      name: z.string().max(256).nullable().default(null),
+      cores: z.number().int().nullable().default(null),
+      threads: z.number().int().nullable().default(null),
+      maxClockMhz: z.number().int().nullable().default(null),
+      socket: z.string().max(64).nullable().default(null),
+    })
+    .nullable()
+    .default(null),
+  memoryModules: z
+    .array(
+      z.object({
+        slot: z.string().max(64).nullable().default(null),
+        capacityBytes: z.number().nullable().default(null),
+        speedMhz: z.number().int().nullable().default(null),
+        manufacturer: z.string().max(128).nullable().default(null),
+        partNumber: z.string().max(128).nullable().default(null),
+        serialNumber: z.string().max(128).nullable().default(null),
+      }),
+    )
+    .max(32)
+    .default([]),
+  disks: z
+    .array(
+      z.object({
+        model: z.string().max(256).nullable().default(null),
+        sizeBytes: z.number().nullable().default(null),
+        busType: z.string().max(32).nullable().default(null),
+        mediaType: z.string().max(32).nullable().default(null),
+        serialNumber: z.string().max(128).nullable().default(null),
+      }),
+    )
+    .max(32)
+    .default([]),
+  gpus: z
+    .array(
+      z.object({
+        name: z.string().max(256),
+        driverVersion: z.string().max(64).nullable().default(null),
+        memoryBytes: z.number().nullable().default(null),
+      }),
+    )
+    .max(8)
+    .default([]),
+  monitors: z
+    .array(
+      z.object({
+        name: z.string().max(256).nullable().default(null),
+        widthPixels: z.number().int().nullable().default(null),
+        heightPixels: z.number().int().nullable().default(null),
+      }),
+    )
+    .max(16)
+    .default([]),
+  /** False when serial numbers were not asked for, so a blank field is not read as absent. */
+  serialNumbersIncluded: z.boolean().default(false),
+  at: isoDateTime,
+});
+
 export const RESULT_SCHEMAS = {
+  'network.info': networkInfoResult,
+  'network.test': networkTestResult,
+  'eventlog.query': eventLogQueryResult,
+  'hardware.inventory': hardwareInventoryResult,
   'task.list': taskListResult,
   'task.control': taskControlResult,
   'startup.list': startupListResult,

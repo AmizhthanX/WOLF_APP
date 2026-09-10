@@ -18,6 +18,7 @@ import { AppShell } from '@/components/AppShell';
 import { RemoteDesktopPanel } from '@/components/RemoteDesktopPanel';
 import { ServicesPanel } from '@/components/ServicesPanel';
 import { AutorunPanel } from '@/components/AutorunPanel';
+import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import {
   ConfirmDialog,
   Empty,
@@ -38,7 +39,15 @@ import {
   UNAVAILABLE,
 } from '@/lib/format';
 
-type Tab = 'overview' | 'remote' | 'processes' | 'services' | 'autoruns' | 'power' | 'audit';
+type Tab =
+  | 'overview'
+  | 'remote'
+  | 'processes'
+  | 'services'
+  | 'autoruns'
+  | 'diagnostics'
+  | 'power'
+  | 'audit';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
@@ -46,6 +55,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'processes', label: 'Processes' },
   { id: 'services', label: 'Services' },
   { id: 'autoruns', label: 'Starts on its own' },
+  { id: 'diagnostics', label: 'Diagnostics' },
   { id: 'power', label: 'Power' },
   { id: 'audit', label: 'Audit log' },
 ];
@@ -152,6 +162,7 @@ function Workspace({ pcId }: { pcId: string }) {
       {tab === 'processes' ? <Processes session={session} /> : null}
       {tab === 'services' ? <ServicesPanel session={session} /> : null}
       {tab === 'autoruns' ? <AutorunPanel session={session} /> : null}
+      {tab === 'diagnostics' ? <DiagnosticsPanel session={session} /> : null}
       {tab === 'power' ? <Power pc={pc} session={session} onChanged={() => void load()} /> : null}
       {tab === 'audit' ? <AuditLog pcId={pcId} /> : null}
 

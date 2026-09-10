@@ -6,6 +6,7 @@ import {
   agentCommandBody,
   classifyRisk,
   isKnownCommandType,
+  isProbeableTarget,
   requiredCapability,
 } from './index.js';
 import { RESULT_SCHEMAS } from '../results.js';
@@ -388,4 +389,114 @@ test('reading what a machine runs on its own is low risk and audited anyway', ()
   // Startup items are machine configuration; scheduled tasks sit with services.
   assert.equal(requiredCapability('task.list'), 'services');
   assert.equal(requiredCapability('startup.list'), 'configuration');
+});
+
+/* ------------------------------------------------------------------------- */
+/* Diagnostics                                                                */
+/* ------------------------------------------------------------------------- */
+
+test('a network test is classified as an action, not a read', () => {
+  // It is not a read. It makes somebody else's machine send packets to a destination the
+  // operator chose, so it is mutating for audit purposes and sits above the reads around it.
+  assert.equal(COMMAND_REGISTRY['network.test'].mutating, true);
+  assert.notEqual(COMMAND_REGISTRY['network.test'].risk, 'low');
+
+  assert.equal(COMMAND_REGISTRY['network.info'].mutating, false);
+  assert.equal(COMMAND_REGISTRY['hardware.inventory'].mutating, false);
+});
+
+test('a probe target is one host and never a range', () => {
+  const parse = (target: string) =>
+    agentCommandBody.safeParse({
+      type: 'network.test',
+      payload: { test: 'ping', target },
+    }).success;
+
+  assert.ok(parse('192.168.1.1'));
+  assert.ok(parse('fileserver.corp.example'));
+  assert.ok(parse('2606:4700:4700::1111'));
+
+  // Each of these turns one command into a sweep, which is the thing this is built not to be.
+  assert.equal(parse('192.168.1.0/24'), false);
+  assert.equal(parse('10.0.0.1,10.0.0.2'), false);
+  assert.equal(parse('10.0.0.1 10.0.0.2'), false);
+  assert.equal(parse(''), false);
+});
+
+test('WOLF refuses the addresses that reach a whole segment, and nothing else', () => {
+  // It does not try to tell a legitimate destination from an illegitimate one, because it
+  // cannot: "can this PC reach the file server" and "can this PC reach the internet" are the
+  // two most common diagnostics there are.
+  assert.ok(isProbeableTarget('192.168.1.10'));
+  assert.ok(isProbeableTarget('8.8.8.8'));
+  assert.ok(isProbeableTarget('127.0.0.1'));
+
+  assert.equal(isProbeableTarget('255.255.255.255'), false);
+  assert.equal(isProbeableTarget('192.168.1.255'), false);
+  assert.equal(isProbeableTarget('224.0.0.1'), false);
+  assert.equal(isProbeableTarget('ff02::1'), false);
+});
+
+test('a tcp test takes one port, and there is no field for a range', () => {
+  const parsed = agentCommandBody.safeParse({
+    type: 'network.test',
+    payload: { test: 'tcp', target: '192.168.1.1', port: 445, portTo: 500 },
+  });
+
+  assert.ok(parsed.success);
+  if (parsed.success && parsed.data.type === 'network.test') {
+    // A port range is a port scan with a different name. An extra field is dropped rather
+    // than carried to the agent as something it might one day read.
+    assert.equal('portTo' in parsed.data.payload, false);
+  }
+
+  assert.equal(
+    agentCommandBody.safeParse({
+      type: 'network.test',
+      payload: { test: 'tcp', target: '192.168.1.1', port: 70_000 },
+    }).success,
+    false,
+  );
+});
+
+test('an event log query is bounded in every direction', () => {
+  const parse = (payload: Record<string, unknown>) =>
+    agentCommandBody.safeParse({ type: 'eventlog.query', payload }).success;
+
+  assert.ok(parse({ log: 'System' }));
+
+  // The list of logs is fixed rather than passed through: an arbitrary name would be one more
+  // string from the network deciding what a SYSTEM process opens.
+  assert.equal(parse({ log: 'ForwardedEvents' }), false);
+
+  // A week is the most WOLF will scan, and 200 events the most it will carry.
+  assert.equal(parse({ log: 'System', withinHours: 10_000 }), false);
+  assert.equal(parse({ log: 'System', limit: 10_000 }), false);
+
+  const defaults = agentCommandBody.parse({ type: 'eventlog.query', payload: { log: 'System' } });
+  if (defaults.type === 'eventlog.query') {
+    // Warnings and worse by default: `information` on a busy machine is thousands of rows of
+    // nothing, and somebody looking for a problem is not looking for those.
+    assert.equal(defaults.payload.minimumLevel, 'warning');
+  }
+});
+
+test('reading the Security log is escalated past the other logs', () => {
+  const level = (log: 'System' | 'Security') =>
+    classifyRisk({ type: 'eventlog.query', payload: { log, minimumLevel: 'warning', withinHours: 24, limit: 100 } });
+
+  // Still a read, and an investigation needs it — but reading it is reading who signed in,
+  // when, and from where, so the confirmation should say what is being opened.
+  assert.equal(level('System'), 'low');
+  assert.equal(level('Security'), 'medium');
+});
+
+test('serial numbers are off unless the inventory asks for them', () => {
+  const parsed = agentCommandBody.parse({ type: 'hardware.inventory', payload: {} });
+
+  // They are a stable identifier for a physical object, so taking them is a deliberate act
+  // rather than a side effect of asking what a PC is made of.
+  if (parsed.type === 'hardware.inventory') {
+    assert.equal(parsed.payload.includeSerialNumbers, false);
+  }
 });

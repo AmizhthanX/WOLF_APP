@@ -7,6 +7,7 @@ import { diskCommand } from './disk.js';
 import { powerCommand } from './power.js';
 import { remoteDesktopCommand } from './remote-desktop.js';
 import { autorunCommand, isProtectedTask } from './autorun.js';
+import { diagnosticsCommand } from './diagnostics.js';
 import { isUnstoppableService, serviceCommand } from './service.js';
 import { systemCommand } from './system.js';
 
@@ -16,6 +17,7 @@ export * from './disk.js';
 export * from './power.js';
 export * from './remote-desktop.js';
 export * from './autorun.js';
+export * from './diagnostics.js';
 export * from './service.js';
 export * from './system.js';
 
@@ -35,6 +37,7 @@ export const agentCommandBody = z.union([
   remoteDesktopCommand,
   serviceCommand,
   autorunCommand,
+  diagnosticsCommand,
   systemCommand,
 ]);
 export type AgentCommandBody = z.infer<typeof agentCommandBody>;
@@ -299,6 +302,50 @@ export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefiniti
       description: 'Turn a startup entry on or off',
       auditCategory: 'startup',
     },
+    /**
+     * What the machine's network looks like from inside it: addresses, gateways, DNS servers,
+     * routes, and optionally what it has open. Reads nothing off the disk and sends nothing
+     * anywhere.
+     */
+    'network.info': {
+      risk: 'low',
+      capability: 'processes',
+      mutating: false,
+      description: 'Read network configuration',
+      auditCategory: 'pc',
+    },
+    /**
+     * Not a read, whatever it looks like. This makes somebody else's machine send packets to
+     * a destination the operator chose, so it is audited as an action and classified above
+     * the reads around it — and the audit record names the target, which is what makes the
+     * difference between a diagnostic tool and a scanner accountable rather than assumed.
+     */
+    'network.test': {
+      risk: 'medium',
+      capability: 'processes',
+      mutating: true,
+      description: 'Test whether this PC can reach a host',
+      auditCategory: 'pc',
+    },
+    /**
+     * The one diagnostic read whose *content* crosses the cloud. An event message can carry an
+     * account name, a command line, or — from software that should know better — a credential.
+     * Bounded rather than blocked, and the exposure is written down in the security model.
+     */
+    'eventlog.query': {
+      risk: 'low',
+      capability: 'processes',
+      mutating: false,
+      description: 'Read Windows event log entries',
+      auditCategory: 'pc',
+    },
+    'hardware.inventory': {
+      risk: 'low',
+      capability: 'processes',
+      mutating: false,
+      description: 'Read what this PC is made of',
+      auditCategory: 'pc',
+    },
     'power.unlock': {
       risk: 'critical',
       capability: 'privileged',
@@ -366,6 +413,11 @@ export function classifyRisk(command: AgentCommandBody): RiskLevel {
       // attributes to the right cause months later.
       return isProtectedTask(command.payload.path) ? 'critical' : maxRisk(base, 'high');
     }
+    case 'eventlog.query':
+      // Reading the Security log is reading who signed in, when, and from where. Still low
+      // risk — it changes nothing and an investigation needs it — but escalated past the
+      // other logs so the confirmation says what is being opened.
+      return command.payload.log === 'Security' ? maxRisk(base, 'medium') : base;
     case 'process.set-priority':
       // Realtime priority can starve the input and capture threads, which is how an
       // operator loses the very session they are using to fix the problem.

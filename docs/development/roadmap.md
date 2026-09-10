@@ -610,8 +610,48 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - **No terminal grid.** Editors, pagers and in-place progress displays are not rendered
   correctly. Stated in the UI above the output rather than approximated, so an operator
   reading a partial screen knows it is partial
-- Network diagnostics, Windows event logs, hardware inventory
-- Clipboard sync is done (milestone 2) and is never persisted in cloud history
+**Done — network diagnostics, event logs and hardware inventory**
+
+- The three questions an operator asks when something is wrong and nothing has crashed: what
+  is the network doing, what has Windows been complaining about, and what is inside this
+  machine
+- All three run in the agent rather than the privileged helper. None needs administrator beyond
+  what the agent already is, and the helper exists to keep a *narrow* surface — adding four
+  reads to it that do not need its rights would widen it for nothing
+- **A network test is not a read, and is classified as an action.** It makes somebody else's
+  machine send packets to a destination the operator chose. WOLF does not try to tell a
+  legitimate destination from an illegitimate one, because it cannot: "can this PC reach the
+  file server" and "can this PC reach the internet" are the two most common diagnostics there
+  are, and a rule blocking private or public ranges would break one of them
+- What is bounded is the **shape**, not the destination: one host per command, never a range or
+  a list; a handful of packets; one port, never a range — a port range is a port scan with a
+  different name; and a short timeout. Broadcast and multicast are refused outright, because
+  one packet to either reaches every listener on a segment
+- A name that *resolves* to a multicast address is caught after resolution. A name is not a
+  shape, and that is the case a string check cannot catch
+- Every test is audited with its target recorded. The bounds stop a sweep; the trail catches
+  somebody assembling one out of many commands
+- **Event log text is the one diagnostic read whose content crosses the cloud**, and it is
+  written down rather than discovered. An event message can carry an account name, a command
+  line, or — from software that should know better — a credential. Bounded rather than blocked:
+  a count, a window, a level, and a cap on each message
+- The Security log is included, deliberately. It is the most sensitive and the one an
+  investigation actually needs; leaving it out would mean WOLF can tell you a machine was
+  compromised but not by whom. It is escalated past the other logs so the confirmation says
+  what is being opened, and an agent without the rights reports that rather than failing
+- The event log query is built from numbers and names checked against fixed lists; the only
+  operator string that reaches XPath is the provider, quote-escaped. An XPath concatenated from
+  network input would be an injection surface into a SYSTEM process
+- Hardware inventory leaves serial numbers out unless asked for, and says which it did — a
+  blank field then reads as "not asked for" rather than "not there". They are what an inventory
+  is *for*, and also a stable identifier for a physical object
+- A missing WMI class is ordinary: a virtual machine with no `Win32_PhysicalMemory`, a server
+  with no monitors. Each query fails on its own rather than taking the inventory with it
+
+**Everything milestone 4 set out to build is built.** What remains from it is listed under
+"still open" above: `terminal-admin`, the file manager's destructive operations, and the
+elevated test runs that several of these paths are waiting on. Clipboard sync landed in
+milestone 2 and is never persisted in cloud history.
 
 ## Milestone 5 — Intelligence
 

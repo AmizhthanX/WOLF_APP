@@ -420,5 +420,23 @@ Stated plainly rather than left to be discovered:
 - **WOLF cannot install or remove a service.** `CreateService` and `DeleteService` are never
   called and no command reaches them. Installing a service is a persistence mechanism, and a
   remote-management tool that can do it is a remote-persistence tool.
+- **A network test makes the PC emit traffic on the operator's behalf.** WOLF does not decide
+  whether a destination is legitimate, because it cannot without guessing about somebody else's
+  network — so what is bounded is the shape: one host per command, a handful of packets, one
+  port and never a range, a short timeout, and broadcast and multicast refused outright. Every
+  test is audited with the target recorded, which is what makes the difference between a
+  diagnostic tool and a scanner accountable rather than asserted. A name that resolves to a
+  multicast address is refused after resolution, because a name is not a shape.
+- **Event log text is the one diagnostic read whose content reaches the cloud.** An event
+  message can carry an account name, a command line, a file path, or — from software that
+  should know better — a credential. It travels with the command result and is retained with
+  it. This is a deliberate exception to keeping content off the cloud: the value of an event log
+  is in reading it beside everything else, and the entries are already a record the machine
+  keeps on disk. What is bounded is how much moves — a count, a window, a level, and a cap on
+  each message. The Security log is included and escalated a risk level, so the confirmation
+  says what is being opened.
+- **Hardware serial numbers are not collected unless asked for**, and the answer says which was
+  the case, so a blank field is never read as "this machine has none". They identify a physical
+  object, which is what makes them useful for an asset register and worth asking for explicitly.
 - **No penetration test has been run.** The security tests here are the author's, not an
   independent assessment.
