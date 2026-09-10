@@ -5,6 +5,7 @@ import {
   streamRequest,
   streamState,
   streamStats,
+  streamSurface,
   streamUnavailableReason,
 } from './remote-desktop.js';
 import { PROTOCOL_VERSION } from './envelope.js';
@@ -66,6 +67,13 @@ export const signalStreamState = z.object({
   /** Present whenever the stream is not running, so the UI never has to guess why. */
   unavailableReason: streamUnavailableReason.nullable().default(null),
   detail: z.string().max(200).nullable().default(null),
+  /**
+   * Which desktop the frames are coming from.
+   *
+   * Defaults to the ordinary one, so an agent that predates this field is read as showing
+   * the desktop rather than as showing nothing in particular.
+   */
+  showing: streamSurface.default('desktop'),
 });
 
 export const signalStreamStats = z.object({

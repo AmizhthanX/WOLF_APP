@@ -104,6 +104,16 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
     public event Action<HostSecureInputMessage>? SecureInputForwarded;
 
     /// <summary>
+    /// Raised when the number of streams the host is serving changes.
+    ///
+    /// The secure-desktop watcher needs it: a lock screen is captured only while somebody is
+    /// actually watching, and "somebody started watching" is not something the desktop
+    /// changing would ever say. Without this, a stream begun on an already-locked PC would
+    /// show the user host's view of a desktop it cannot see.
+    /// </summary>
+    public event Action<int>? ActiveStreamsChanged;
+
+    /// <summary>
     /// Raised when the host goes away, with the streams it was serving.
     ///
     /// The host exiting is not rare — it goes with the session, so signing out, switching
@@ -616,6 +626,7 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                 if (status is null) return;
 
                 string previousDesktop = State.InputDesktop;
+                int previousStreams = State.ActiveStreams;
 
                 UpdateState(state => state with
                 {
@@ -633,6 +644,11 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                         status.InputDesktop);
 
                     InputDesktopChanged?.Invoke(status.InputDesktop);
+                }
+
+                if (status.Streams.Count != previousStreams)
+                {
+                    ActiveStreamsChanged?.Invoke(status.Streams.Count);
                 }
                 return;
             }

@@ -16,6 +16,7 @@ import {
   isClientToAgent,
   signalEnvelope,
   signalPayload,
+  signalStreamState,
 } from './signaling.js';
 import { inputBatch, inputEvent, isExtendedKey, VirtualKeys } from './input.js';
 
@@ -391,4 +392,39 @@ test('extended keys are identified so Windows interprets them correctly', () => 
   assert.equal(isExtendedKey(VirtualKeys.Delete), true);
   assert.equal(isExtendedKey(VirtualKeys.MetaLeft), true);
   assert.equal(isExtendedKey(VirtualKeys.Space), false);
+});
+
+test('a stream says which desktop its frames are coming from', () => {
+  const secure = signalStreamState.parse({
+    type: 'stream.state',
+    state: 'STREAMING',
+    detail: 'the screen is locked',
+    showing: 'secure-desktop',
+  });
+
+  // The operator has to be told. The stream does not stop or restart when a PC locks —
+  // the picture simply becomes the lock screen — so nothing else in the protocol would
+  // say so, and what can be typed there is different from the desktop.
+  assert.equal(secure.showing, 'secure-desktop');
+  assert.equal(secure.state, 'STREAMING');
+});
+
+test('an agent that does not know about the secure desktop is read as showing the desktop', () => {
+  // The only thing such an agent can be showing. Defaulting the other way would put a
+  // lock-screen warning on an ordinary session.
+  const older = signalStreamState.parse({ type: 'stream.state', state: 'STREAMING' });
+
+  assert.equal(older.showing, 'desktop');
+  assert.equal(older.detail, null);
+});
+
+test('a surface WOLF does not have is refused rather than passed through', () => {
+  assert.equal(
+    signalStreamState.safeParse({
+      type: 'stream.state',
+      state: 'STREAMING',
+      showing: 'someone-elses-desktop',
+    }).success,
+    false,
+  );
 });

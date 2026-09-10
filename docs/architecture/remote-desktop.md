@@ -82,9 +82,14 @@ user-session process cannot capture it or inject into it. Honest consequences:
 | --- | --- | --- |
 | Desktop, user signed in | Full | Full |
 | Locked | `LOCKED`, and the lock screen itself where the agent runs as a service; **no frames** otherwise | Delivered to the lock screen where there are frames; refused otherwise |
-| Sign-in screen | `LOGIN`, and the sign-in screen on the same terms | As above |
+| Sign-in screen | `LOGIN`; **no frames**, even where the secure desktop could be captured | Refused |
 | Restarting | `RESTARTING` | Refused |
 | Signed out | `LOGIN` | Refused |
+
+A locked PC can be *reached*, not only kept: a stream can be started while the screen is
+already locked, provided the agent runs as a service and somebody is signed in. The sign-in
+screen cannot, because with nobody signed in there is no user host to carry the frames — see
+[reaching a PC that is already locked](#reaching-a-pc-that-is-already-locked).
 
 "Delivered to the lock screen" is the whole of what WOLF does there. The operator sees their
 own PC's lock screen and signs in to it, typing their password themselves as keystrokes on
@@ -224,14 +229,48 @@ What is logged about a forwarded batch is a count and a stream id. Never the con
 those keystrokes is somebody's password, and there is a test that asserts it does not appear
 in the log.
 
-**One gap, and it is on the capture side rather than this one.** A stream that is already
-running when the screen locks keeps going, and that is the case this was built for. Starting
-a *new* stream while the screen is already locked is still refused: `RemoteDesktopAvailability`
-answers `locked` before it looks at anything else, and it does not yet know that a secure host
-could be started. Nothing about input is missing — the operator simply has to have been
-streaming before the lock. Closing it means teaching the availability check about
-`secureDesktopCaptureAvailable`, and teaching the client that "available, showing the lock
-screen" is a state of its own.
+### Reaching a PC that is already locked
+
+A stream that is running when the screen locks keeps going, and for a while that was the only
+way to see a lock screen at all: `RemoteDesktopAvailability` answered `locked` before it
+looked at anything else, so a PC that was locked before anybody connected simply refused. That
+is exactly backwards — locking the machine and walking away is the normal thing to do, and it
+made the feature reachable only by having predicted needing it.
+
+`locked` is now a fall-through rather than a refusal. It needs **both halves**:
+
+- a host that can be put on the secure desktop, for the pixels — `secureDesktopCaptureAvailable`,
+  asked at call time rather than cached; and
+- the **user** host, because that is what holds the peer connection the frames travel on.
+
+Missing either one still reports `locked`, and falling through is not the same as skipping:
+a locked PC with no encoder is refused for the encoder, which is the answer that stays true
+after somebody signs in.
+
+**The sign-in screen is still refused, and that is a real limit rather than caution.** With
+nobody signed in there is no user session, so there is no user host and no peer connection.
+The secure host could capture the sign-in screen perfectly well; it would have nowhere to send
+it. Moving the connection into the secure host is what it would take, and that is the design
+the [frame hand-off](#carrying-the-lock-screen-to-the-client) deliberately rejected.
+
+**Somebody starting to watch is now an event.** The secure host is started when the screen
+locks but is not asked for frames until a stream is running, and until this existed the only
+thing that could begin a capture was the desktop *changing* — so a stream begun on an already
+locked PC would have shown the user host's view of a desktop it is not allowed to see, which
+is a black picture and no explanation. The session host reports its stream count, and both
+edges act on it: the first viewer starts the capture, the last one stops it. The host itself
+stays while the screen is locked, because nothing else would ever start it again.
+
+**The client is told which desktop it is looking at.** `stream.state` carries `showing`:
+`desktop` or `secure-desktop`. It has to, because nothing else would say so — the stream does
+not stop, restart or renegotiate when a PC locks; the picture simply becomes the lock screen.
+The state word stays `STREAMING`, so the message is published on a change of `showing` alone.
+An agent that predates the field is read as showing the desktop, which is the only thing such
+an agent can be showing.
+
+The web client turns that into a standing notice rather than a badge: what the operator types
+there reaches the lock screen and nothing else, WOLF neither stores nor logs it, and system
+combinations are refused until they have signed in.
 
 ### What has not run
 

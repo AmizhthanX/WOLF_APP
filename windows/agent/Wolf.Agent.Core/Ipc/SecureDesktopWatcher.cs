@@ -7,19 +7,23 @@ namespace Wolf.Agent.Core.Ipc;
 /// Shows the operator the lock screen while the secure desktop has the input.
 ///
 /// The whole policy is short, which is the point: the session host says which desktop has the
-/// input, and that turns into a host on the secure one existing or not, and into frames going
-/// onto the connection the user host already holds. Everything hard is on either side —
-/// knowing the desktop, running a process on it, and putting H.264 on a track.
+/// input and how many people are watching, and that turns into a host on the secure one
+/// existing or not, and into frames going onto the connection the user host already holds.
+/// Everything hard is on either side — knowing the desktop, running a process on it, and
+/// putting H.264 on a track.
 ///
 /// Two things it will not do:
 ///
 /// **Capture when nobody is watching.** The secure host starts as soon as the screen locks,
 /// so the agent knows what it can see, but it is not asked for frames until a stream is
 /// actually running. Encoding a lock screen for nobody would be a SYSTEM process burning a
-/// GPU on a still picture.
+/// GPU on a still picture. Both edges matter: somebody starting a stream on a PC that was
+/// already locked has to start the capture, and the last of them leaving has to stop it.
 ///
 /// **Keep the host alive after the unlock.** It holds a duplication of the display and runs
-/// as SYSTEM. Two seconds to start beats hours of that.
+/// as SYSTEM. Two seconds to start beats hours of that. Viewers leaving while the screen is
+/// still locked is a different case, and there the host stays: the desktop has not changed,
+/// so nothing else would ever start it again.
 ///
 /// **Never run.** Starting the host needs the agent installed as a Windows service, and the
 /// screen locked. See <see cref="SecureDesktopSupervisor"/>.
@@ -69,6 +73,7 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
     {
         _sessionHost.InputDesktopChanged += OnInputDesktopChanged;
         _sessionHost.SecureInputForwarded += OnSecureInput;
+        _sessionHost.ActiveStreamsChanged += OnActiveStreams;
         _secureHost.FrameReceived += OnFrame;
         _secureHost.StateChanged += OnSecureStateChanged;
     }
@@ -87,6 +92,28 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
         Fire(_secureHost.SendInputAsync(
             new ServiceSecureInputMessage(input.StreamId, input.Batch),
             CancellationToken.None));
+    }
+
+    /// <summary>
+    /// Somebody started watching, or stopped.
+    ///
+    /// The other half of "capture only while somebody is looking". Until this existed, the
+    /// only moment that could start a capture was the desktop changing — so a stream begun
+    /// on a PC that was *already* locked showed the user host's view of a desktop it is not
+    /// allowed to see, which is a black picture and no explanation.
+    /// </summary>
+    private void OnActiveStreams(int count)
+    {
+        if (count > 0)
+        {
+            if (_secureHost.State.Connected) Fire(StartShowingAsync());
+            return;
+        }
+
+        // The last viewer left, and the screen is still locked. Stop encoding, but keep the
+        // host: the desktop has not changed, so nothing would start it again, and a locked
+        // PC somebody may come back to is exactly the case this whole path is for.
+        if (_secureShowing) Fire(StopShowingFramesAsync());
     }
 
     private void OnInputDesktopChanged(string inputDesktop)
@@ -153,22 +180,32 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
         _logger.LogInformation("The client is now being shown the secure desktop.");
     }
 
+    /// <summary>
+    /// Stop sending the lock screen, and stop the host that produces it.
+    ///
+    /// For the cases where the secure desktop is no longer what has the input, or the host
+    /// has gone. When the screen is still locked and only the viewers have left, use
+    /// <see cref="StopShowingFramesAsync"/> instead.
+    /// </summary>
     private async Task StopShowingAsync()
     {
-        if (_secureShowing)
-        {
-            _secureShowing = false;
-
-            await _sessionHost
-                .SendAsync(new ServiceSecureStateMessage(false, null), CancellationToken.None)
-                .ConfigureAwait(false);
-
-            // Best effort: the host is about to be killed anyway, and if the pipe has already
-            // gone there is nothing to stop.
-            await _secureHost.RequestCaptureAsync(StopRequest, CancellationToken.None).ConfigureAwait(false);
-        }
-
+        await StopShowingFramesAsync().ConfigureAwait(false);
         await _secureHost.StopAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Stop encoding the lock screen, leaving the host where it is.</summary>
+    private async Task StopShowingFramesAsync()
+    {
+        if (!_secureShowing) return;
+
+        _secureShowing = false;
+
+        await _sessionHost
+            .SendAsync(new ServiceSecureStateMessage(false, null), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        // Best effort: if the pipe has already gone there is nothing to stop.
+        await _secureHost.RequestCaptureAsync(StopRequest, CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -207,6 +244,7 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
     {
         _sessionHost.InputDesktopChanged -= OnInputDesktopChanged;
         _sessionHost.SecureInputForwarded -= OnSecureInput;
+        _sessionHost.ActiveStreamsChanged -= OnActiveStreams;
         _secureHost.FrameReceived -= OnFrame;
         _secureHost.StateChanged -= OnSecureStateChanged;
 

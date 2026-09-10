@@ -149,6 +149,7 @@ interface Recorded {
   tracks: unknown[];
   control: { granted: boolean; reason: string | null }[];
   degraded: (string | null)[];
+  surfaces: { surface: string; detail: string | null }[];
   clipboard: { kind: string; text: string | null; detail: string | null }[];
 }
 
@@ -160,6 +161,7 @@ function makeStream(requestAudio = false) {
     tracks: [],
     control: [],
     degraded: [],
+    surfaces: [],
     clipboard: [],
   };
 
@@ -180,6 +182,7 @@ function makeStream(requestAudio = false) {
       onInputControl: (control) =>
         recorded.control.push({ granted: control.granted, reason: control.reason }),
       onDegraded: (reason) => recorded.degraded.push(reason),
+      onSurface: (surface, detail) => recorded.surfaces.push({ surface, detail }),
       onClipboard: (event) =>
         recorded.clipboard.push({ kind: event.kind, text: event.text, detail: event.detail }),
     },
@@ -961,6 +964,82 @@ test('the PC answers a display switch with what it actually switched to', async 
   const negotiation = recorded.negotiations.at(-1) as { display: { name: string; widthPixels: number } };
   assert.equal(negotiation.display.name, 'Second monitor');
   assert.equal(negotiation.display.widthPixels, 1920);
+
+  stream.stop();
+});
+
+test('a stream that becomes the lock screen says so', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  socketMessage({
+    kind: 'cloud.signal',
+    envelope: {
+      streamId: stream.id,
+      payload: {
+        type: 'stream.state',
+        state: 'STREAMING',
+        unavailableReason: null,
+        detail: 'the screen is locked',
+        showing: 'secure-desktop',
+      },
+    },
+  });
+
+  // The stream did not stop, restart or renegotiate — the picture simply became the lock
+  // screen. Without this the operator would be looking at a sign-in prompt with no way to
+  // tell whether WOLF put it there, and no warning that Ctrl+Alt+Delete will not work.
+  assert.deepEqual(recorded.surfaces.at(-1), {
+    surface: 'secure-desktop',
+    detail: 'the screen is locked',
+  });
+  assert.equal(recorded.phases.at(-1), 'streaming');
+
+  stream.stop();
+});
+
+test('unlocking puts the picture back and drops the warning', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  const showing = (surface: string, detail: string | null) =>
+    socketMessage({
+      kind: 'cloud.signal',
+      envelope: {
+        streamId: stream.id,
+        payload: {
+          type: 'stream.state',
+          state: 'STREAMING',
+          unavailableReason: null,
+          detail,
+          showing: surface,
+        },
+      },
+    });
+
+  showing('secure-desktop', 'the screen is locked');
+  showing('desktop', null);
+
+  // A lock-screen warning left standing over somebody's actual desktop is worse than none:
+  // it says input is going somewhere it is not.
+  assert.deepEqual(recorded.surfaces.at(-1), { surface: 'desktop', detail: null });
+
+  stream.stop();
+});
+
+test('an agent that says nothing about the desktop is read as showing the ordinary one', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  socketMessage({
+    kind: 'cloud.signal',
+    envelope: {
+      streamId: stream.id,
+      payload: { type: 'stream.state', state: 'STREAMING', unavailableReason: null, detail: null },
+    },
+  });
+
+  assert.deepEqual(recorded.surfaces.at(-1), { surface: 'desktop', detail: null });
 
   stream.stop();
 });

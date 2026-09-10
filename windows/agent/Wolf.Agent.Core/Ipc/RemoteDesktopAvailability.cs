@@ -10,6 +10,12 @@ namespace Wolf.Agent.Core.Ipc;
 /// The order of the checks is the order an operator can act on. A locked workstation is
 /// reported before a missing encoder, because "sign in and it will work" is more useful
 /// than "this machine has no hardware encoder" when both happen to be true.
+///
+/// One state is not a refusal any more. A locked PC that can put a host on the secure
+/// desktop *is* streamable: the operator sees their own lock screen and signs in to it. That
+/// needs both halves — a host on `winsta0\Winlogon` for the pixels, and the user host for
+/// the connection they travel on — so it is a fall-through rather than a special case, and a
+/// PC missing either half reports `locked` exactly as it did before.
 /// </summary>
 public static class RemoteDesktopAvailability
 {
@@ -28,7 +34,8 @@ public static class RemoteDesktopAvailability
     public static (bool Available, string? Reason) Evaluate(
         SessionHostState host,
         string windowsSessionState,
-        bool killSwitchEngaged)
+        bool killSwitchEngaged,
+        bool secureDesktopCaptureAvailable)
     {
         if (killSwitchEngaged)
         {
@@ -40,9 +47,25 @@ public static class RemoteDesktopAvailability
         switch (windowsSessionState)
         {
             case "locked":
-                return (false, Locked);
+                // Except where the lock screen itself can be shown. A host on the secure
+                // desktop captures it, and the operator signs in to it themselves — which
+                // needs the *user* host as well, because that is what holds the connection
+                // the frames go out on. So this falls through to the checks below rather
+                // than answering here, and a PC missing either half still reports `locked`.
+                if (!secureDesktopCaptureAvailable || !host.Connected)
+                {
+                    return (false, Locked);
+                }
+
+                break;
+
             case "login":
+                // Nobody is signed in, so there is no user host and no peer connection. The
+                // secure host could capture the sign-in screen; it would have nowhere to
+                // send it. This is a limit of routing the frames through the user host, and
+                // it is reported rather than dressed up.
                 return (false, Login);
+
             case "restarting":
                 return (false, Restarting);
         }

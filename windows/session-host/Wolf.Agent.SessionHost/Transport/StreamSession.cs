@@ -682,7 +682,11 @@ public sealed class StreamSession : IDisposable
             reason is null ? string.Empty : $" ({reason})");
 
         _degradedReason = null;
-        SetState("STREAMING", detail: null);
+
+        // Carries the reason this time. "Showing the lock screen" is not a fault, but it is
+        // something the operator has to be told: what they can type there reaches the lock
+        // screen, and system combinations are refused on it.
+        SetState("STREAMING", detail: active ? reason : null);
     }
 
     /// <summary>
@@ -928,10 +932,16 @@ public sealed class StreamSession : IDisposable
 
     private void SetState(string state, string? detail)
     {
+        string showing = _secureActive ? "secure-desktop" : "desktop";
+
         lock (_gate)
         {
-            if (_state == state) return;
+            // Which desktop is showing counts as a change even when the state word does not.
+            // The stream stays STREAMING across a lock, and saying nothing there would leave
+            // the operator looking at a lock screen with no way to know WOLF put it there.
+            if (_state == state && _showing == showing) return;
             _state = state;
+            _showing = showing;
         }
 
         Fire(_send(SignalTypes.StreamState, new
@@ -939,8 +949,11 @@ public sealed class StreamSession : IDisposable
             state,
             unavailableReason = (string?)null,
             detail,
+            showing,
         }));
     }
+
+    private string _showing = "desktop";
 
     private void PublishStats()
     {

@@ -87,6 +87,15 @@ export interface StreamAdjustment {
   reason: string;
 }
 
+/**
+ * Which desktop's pixels are on the track, mirroring `packages/protocol`.
+ *
+ * A running stream switches between them without renegotiating: when the screen locks, the
+ * frames start coming from a host on the Winlogon desktop and go out on the connection that
+ * is already open.
+ */
+export type StreamSurface = 'desktop' | 'secure-desktop';
+
 export interface StreamNegotiation {
   streamId: string;
   display: {
@@ -212,6 +221,14 @@ export interface StreamEvents {
   onInputControl(control: InputControl): void;
   /** The reason the stream is running below its profile, or null when it is not. */
   onDegraded(reason: string | null): void;
+  /**
+   * Which desktop the frames are coming from, whenever it changes.
+   *
+   * The operator has to be told when the picture becomes their own lock screen: what they
+   * type there goes to the lock screen, and system combinations are refused on it. The
+   * stream itself does not stop or restart, so nothing else would say so.
+   */
+  onSurface(surface: StreamSurface, detail: string | null): void;
   /** Something happened to the clipboard: content arrived, or an exchange was refused. */
   onClipboard(event: ClipboardEvent): void;
 }
@@ -576,6 +593,12 @@ export class RemoteDesktopStream {
       case 'stream.state': {
         const state = String(payload['state']);
         const detail = (payload['detail'] as string | null) ?? null;
+
+        // Absent from an agent that predates the field, and read as the ordinary desktop —
+        // which is what such an agent can only ever be showing.
+        const showing: StreamSurface =
+          payload['showing'] === 'secure-desktop' ? 'secure-desktop' : 'desktop';
+        this.options.events.onSurface(showing, showing === 'desktop' ? null : detail);
 
         if (state === 'STREAMING') this.setPhase('streaming', null);
         else if (state === 'RECONNECTING') this.setPhase('reconnecting', detail);

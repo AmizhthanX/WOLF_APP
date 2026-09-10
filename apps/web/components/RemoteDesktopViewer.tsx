@@ -379,6 +379,10 @@ export function RemoteDesktopViewer({
   // for.
   const degraded = view.degradedReason ?? agent?.degradedReason ?? null;
 
+  // Not a fault, and not something to leave the operator to work out from the picture: what
+  // they can type on a lock screen, and what they cannot, is different from the desktop.
+  const secure = view.showing === 'secure-desktop';
+
   // What the PC settled on, not what was asked for: a session without the `audio`
   // capability, or a machine with no sound device, comes back with this null and an
   // adjustment saying which.
@@ -421,12 +425,26 @@ export function RemoteDesktopViewer({
             {client?.route ? <span className="route-badge">{client.route}</span> : null}
             {audible ? <span className="route-badge">sound</span> : null}
             {degraded ? <span className="status status-warn">below profile</span> : null}
+            {secure ? <span className="status status-warn">lock screen</span> : null}
           </div>
 
           {degraded ? (
             <div className="muted">
               {DEGRADED_REASONS[degraded] ?? degraded} WOLF has lowered the quality to keep
               the stream running, and will raise it again when it can.
+            </div>
+          ) : null}
+
+          {secure ? (
+            <div className="notice">
+              <strong>This is the PC&rsquo;s lock screen.</strong>
+              <div style={{ marginTop: 6 }}>
+                You can sign in here as you would at the machine itself. What you type goes
+                to the lock screen and nowhere else &mdash; WOLF does not store it, log it,
+                or know which of the keystrokes was the password. Ctrl+Alt+Delete and other
+                system combinations are not delivered here; sign in first and they work as
+                usual.
+              </div>
             </div>
           ) : null}
 

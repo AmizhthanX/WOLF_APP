@@ -229,6 +229,19 @@ export const streamState = z.enum(REMOTE_DESKTOP_STATES);
 export type StreamState = z.infer<typeof streamState>;
 
 /**
+ * Which desktop's pixels are on the track.
+ *
+ * A running stream can switch between them without renegotiating: when the screen locks,
+ * the frames start coming from a host on `winsta0\Winlogon` and go out on the connection
+ * that is already open. The operator has to be told, because the two look different and
+ * behave differently — input on the secure desktop reaches the lock screen, and system
+ * combinations are refused there.
+ */
+export const STREAM_SURFACES = ['desktop', 'secure-desktop'] as const;
+export const streamSurface = z.enum(STREAM_SURFACES);
+export type StreamSurface = z.infer<typeof streamSurface>;
+
+/**
  * Live stream statistics, surfaced to the operator.
  *
  * These exist so "why is this laggy" has an answer on screen. Every field is nullable

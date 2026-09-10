@@ -135,7 +135,8 @@ public sealed class MachineInfoProvider
     {
         SessionHostState host = _sessionHost.State;
         (bool available, string? reason) =
-            RemoteDesktopAvailability.Evaluate(host, windowsSessionState, _killSwitchEngaged());
+            RemoteDesktopAvailability.Evaluate(
+                host, windowsSessionState, _killSwitchEngaged(), _secureDesktop());
 
         IReadOnlyList<string> encoders = host.Connected
             ? host.Encoders.Where(encoder => encoder.Hardware).Select(encoder => encoder.Id).ToList()

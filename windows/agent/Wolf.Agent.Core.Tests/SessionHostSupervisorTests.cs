@@ -101,7 +101,7 @@ public sealed class SessionHostSupervisorTests
         Assert.True(state.TransportAvailable);
 
         (bool available, string? reason) = RemoteDesktopAvailability.Evaluate(
-            state, "desktop", killSwitchEngaged: false);
+            state, "desktop", killSwitchEngaged: false, secureDesktopCaptureAvailable: false);
         Assert.True(available, $"a capable host was refused: {reason}");
         Assert.Null(reason);
 

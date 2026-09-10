@@ -105,6 +105,11 @@ public sealed class StreamSessionTests : IClassFixture<ScreenActivity>
         {
             lock (_messages) return _messages.Count(message => message.Type == type);
         }
+
+        public Outbound? LastOf(string type)
+        {
+            lock (_messages) return _messages.LastOrDefault(message => message.Type == type);
+        }
     }
 
     private static ServiceSignalMessage Signal(string json) =>
@@ -495,4 +500,54 @@ public sealed class StreamSessionTests : IClassFixture<ScreenActivity>
         element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number
             ? value.GetInt32()
             : null;
+
+    /* --------------------------------------------------------------------- */
+    /* Which desktop the client is looking at                                 */
+    /* --------------------------------------------------------------------- */
+
+    [Fact]
+    public async Task A_stream_says_when_the_picture_becomes_the_lock_screen()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        var displays = new DisplayEnumerator(loggers.CreateLogger<DisplayEnumerator>());
+        var relay = new Relay(_output);
+
+        using var coordinator = new StreamCoordinator(displays, relay.AcceptAsync, loggers);
+
+        await coordinator.HandleAsync(Signal(StreamRequest()), CancellationToken.None);
+        Assert.NotNull(relay.FirstOf("stream.ready"));
+
+        coordinator.SetSecureDesktopActive(true, "the screen is locked");
+
+        Outbound? locked = relay.LastOf("stream.state");
+        Assert.NotNull(locked);
+
+        _output.WriteLine(locked!.Payload.ToString());
+
+        // The state word does not change — the stream is still STREAMING — so this message
+        // exists only to say which desktop the frames are now coming from. Saying nothing
+        // would leave the operator looking at a sign-in prompt with no way to tell whether
+        // WOLF put it there, and no warning that what they type goes to the lock screen.
+        Assert.Equal("secure-desktop", locked.Payload.GetProperty("showing").GetString());
+        Assert.Equal("STREAMING", locked.Payload.GetProperty("state").GetString());
+        Assert.Equal("the screen is locked", locked.Payload.GetProperty("detail").GetString());
+
+        int afterLock = relay.CountOf("stream.state");
+
+        coordinator.SetSecureDesktopActive(false, null);
+
+        Outbound? unlocked = relay.LastOf("stream.state");
+        Assert.NotNull(unlocked);
+
+        // And back again. A lock-screen warning left standing over somebody's real desktop
+        // says input is going somewhere it is not.
+        Assert.Equal("desktop", unlocked!.Payload.GetProperty("showing").GetString());
+        Assert.True(
+            relay.CountOf("stream.state") > afterLock,
+            "unlocking has to be published, not inferred from the absence of anything");
+
+        coordinator.Stop(null, "test-finished");
+    }
 }

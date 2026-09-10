@@ -496,6 +496,7 @@ test('an agent cannot signal a session belonging to another PC', async () => {
     state: 'STREAMING',
     unavailableReason: null,
     detail: null,
+    showing: 'desktop',
   });
 
   await new Promise((resolve) => setTimeout(resolve, 300));

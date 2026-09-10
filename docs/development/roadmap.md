@@ -407,6 +407,29 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   indistinguishable to WOLF from any other keystroke. It is **not** remote unlock, and
   `power.unlock` stays unimplemented and refused
 
+**Done — reaching a PC that is already locked**
+
+- `locked` is a fall-through in `RemoteDesktopAvailability` rather than a refusal. It needs
+  both halves: a host that can be put on the secure desktop for the pixels, and the user host,
+  because that is what holds the connection they travel on. Missing either still reports
+  `locked`, and a locked PC with no encoder is still refused for the encoder
+- Locking the machine and walking away is the normal thing to do. Refusing that case made the
+  whole secure-desktop path reachable only by having predicted needing it
+- **The sign-in screen is still refused**, and stated as a limit rather than caution: with
+  nobody signed in there is no user host and no peer connection, so the secure host could
+  capture the sign-in screen and would have nowhere to send it
+- Somebody starting to watch is now an event. Until it existed, the only thing that could
+  begin a capture was the desktop *changing* — so a stream begun on an already locked PC would
+  have shown the user host's view of a desktop it cannot see: a black picture, no explanation.
+  The first viewer starts the capture and the last one stops it; the host stays while the
+  screen is locked, because nothing else would start it again
+- `stream.state` carries `showing` — `desktop` or `secure-desktop`. The stream does not stop,
+  restart or renegotiate when a PC locks, so nothing else in the protocol would say so, and
+  the message is published on a change of `showing` alone. An agent that predates the field is
+  read as showing the desktop
+- The web turns that into a standing notice rather than a badge: what is typed there reaches
+  the lock screen and nothing else, and system combinations are refused until sign-in
+
 **Still open in this milestone**
 - **None of the secure-desktop path has ever run.** It needs the agent installed as a Windows
   service and a machine whose screen is locked while somebody watches. Every failure carries
@@ -415,12 +438,6 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   test in a context that has both. Both ends of the input path do run and are tested for real;
   the relay in the middle — and with it the drop-after-unlock rule — is the part waiting on
   that context, and it is the rule whose failure would be worst
-- **A stream cannot be *started* while the screen is already locked.** One that is running
-  when the lock happens keeps going and shows the lock screen, which is the case the
-  secure-desktop path was built for. `RemoteDesktopAvailability` still answers `locked` before
-  it looks at anything else, and does not yet know a secure host could be started. Closing it
-  means teaching that check about `secureDesktopCaptureAvailable`, and teaching the client
-  that "available, showing the lock screen" is a state of its own
 - **Remote unlock is blocked on a Windows constraint, not on effort.** Investigated rather
   than attempted: see [remote unlock](../architecture/remote-unlock.md). There is no Windows
   API that unlocks a session — Winlogon needs credentials LSA accepts — and on a workgroup PC

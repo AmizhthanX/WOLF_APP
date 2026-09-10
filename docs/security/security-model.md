@@ -344,6 +344,13 @@ Stated plainly rather than left to be discovered:
   Windows as keystrokes on the encrypted stream, indistinguishable to WOLF from any other
   input. What the log carries about a forwarded batch is a count and a stream id, asserted by
   test. This is *not* remote unlock — see the entry above — and WOLF does not claim it is.
+- **A locked PC can be connected to, not only kept connected.** `locked` stops being a
+  refusal when a host can be put on the secure desktop *and* the user host is there to carry
+  the frames; missing either half still refuses. This widens what an authorised session can
+  reach — a session with the `screen` capability can now open a stream onto a lock screen — and
+  it changes nothing about who may open one: the same session, the same capabilities, the same
+  control lease, the same audit. The sign-in screen stays refused, because with nobody signed
+  in there is no connection to carry it.
 - **Frames of the lock screen cross the agent service.** The only media path that does, and a
   deliberate exception: they are produced by a SYSTEM process and relayed by another, so
   nothing is exposed that was not already, and a pipe directly between the two hosts would put

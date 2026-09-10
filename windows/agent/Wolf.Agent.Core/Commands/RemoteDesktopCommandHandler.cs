@@ -27,17 +27,23 @@ public sealed class RemoteDesktopCommandHandler : ICommandHandler
     private readonly SessionHostSupervisor _sessionHost;
     private readonly WindowsSessionMonitor _sessions;
     private readonly AgentStore _store;
+    private readonly Func<bool> _secureDesktop;
     private readonly ILogger<RemoteDesktopCommandHandler> _logger;
 
     public RemoteDesktopCommandHandler(
         SessionHostSupervisor sessionHost,
         WindowsSessionMonitor sessions,
+        SecureDesktopSupervisor secureDesktop,
         AgentStore store,
         ILogger<RemoteDesktopCommandHandler> logger)
     {
         _sessionHost = sessionHost;
         _sessions = sessions;
         _store = store;
+        // Asked at call time, like the capability report: whether a host could be put on the
+        // secure desktop is the difference between a locked PC that can be streamed and one
+        // that cannot, and the two answers must not come from different moments.
+        _secureDesktop = secureDesktop.CanCapture;
         _logger = logger;
     }
 
@@ -86,8 +92,8 @@ public sealed class RemoteDesktopCommandHandler : ICommandHandler
         SessionHostState host = _sessionHost.State;
         SystemSessionStateResult session = _sessions.Query();
 
-        (bool available, string? reason) =
-            RemoteDesktopAvailability.Evaluate(host, session.State, _store.KillSwitchEngaged);
+        (bool available, string? reason) = RemoteDesktopAvailability.Evaluate(
+            host, session.State, _store.KillSwitchEngaged, _secureDesktop());
 
         return CommandExecution.Success(new
         {

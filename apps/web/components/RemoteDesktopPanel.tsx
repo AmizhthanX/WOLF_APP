@@ -107,6 +107,12 @@ export function RemoteDesktopPanel({
   const reason = capabilities?.remoteDesktopUnavailableReason;
   const explanation = reason ? REASONS[reason] : null;
 
+  // Available *and* locked means the stream will open on the lock screen. Worth saying
+  // before the operator starts one, because it changes what they are about to be able to
+  // do — sign in, rather than use the desktop.
+  const willShowLockScreen =
+    (capabilities?.remoteDesktopAvailable ?? false) && pc.windowsSessionState === 'locked';
+
   return (
     <div className="stack">
       {error ? <Problem problem={error} onRetry={() => void loadDisplays()} /> : null}
@@ -126,7 +132,11 @@ export function RemoteDesktopPanel({
                       : 'status status-offline'
                 }
               >
-                {capabilities.remoteDesktopAvailable ? 'ready to stream' : 'not available'}
+                {capabilities.remoteDesktopAvailable
+                  ? willShowLockScreen
+                    ? 'ready — showing the lock screen'
+                    : 'ready to stream'
+                  : 'not available'}
               </span>
               {reachability ? (
                 <span className="route-badge">
@@ -142,6 +152,18 @@ export function RemoteDesktopPanel({
                   {explanation?.transient
                     ? 'This resolves on its own — WOLF will offer the stream as soon as it can.'
                     : 'This will not resolve on its own.'}
+                </div>
+              </div>
+            ) : null}
+
+            {willShowLockScreen ? (
+              <div className="notice">
+                <strong>This PC is locked, and WOLF can show you its lock screen.</strong>
+                <div style={{ marginTop: 6 }}>
+                  You can sign in from here as you would at the machine itself. WOLF cannot
+                  unlock it for you — Windows has no way to do that without credentials — so
+                  the password is typed by you, over the encrypted stream, and is never
+                  stored or logged.
                 </div>
               </div>
             ) : null}

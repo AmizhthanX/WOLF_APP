@@ -15,6 +15,7 @@ import {
   type StreamNegotiation,
   type StreamPhase,
   type StreamProfile,
+  type StreamSurface,
 } from './remote-desktop';
 
 /**
@@ -39,6 +40,10 @@ export interface RemoteDesktopView {
   readonly control: InputControl | null;
   /** Why the stream is running below its profile, or null when it is not. */
   readonly degradedReason: string | null;
+  /** Which desktop the frames are coming from. */
+  readonly showing: StreamSurface;
+  /** Why the secure desktop is showing, when it is. */
+  readonly showingReason: string | null;
   /**
    * The last thing the PC put on its clipboard, waiting for the operator to take it.
    *
@@ -73,6 +78,8 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [control, setControl] = useState<InputControl | null>(null);
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
+  const [showing, setShowing] = useState<StreamSurface>('desktop');
+  const [showingReason, setShowingReason] = useState<string | null>(null);
   const [clipboardFromPc, setClipboardFromPc] = useState<string | null>(null);
   const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
 
@@ -153,6 +160,10 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
             onError: setError,
             onInputControl: setControl,
             onDegraded: setDegradedReason,
+            onSurface: (surface, why) => {
+              setShowing(surface);
+              setShowingReason(why);
+            },
             onClipboard: (event: ClipboardEvent) => {
               if (event.kind === 'content') {
                 setClipboardFromPc(event.text);
@@ -207,6 +218,8 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     active: stream.current !== null && phase !== 'stopped' && phase !== 'failed',
     control,
     degradedReason,
+    showing,
+    showingReason,
     clipboardFromPc,
     clipboardNotice,
     sendClipboard,
