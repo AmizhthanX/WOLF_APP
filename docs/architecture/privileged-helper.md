@@ -104,6 +104,22 @@ around:
 4. Route it from an agent command handler. The handler translates a command into one helper
    operation and its answer back; it does not do privileged work itself.
 
+## What does *not* belong here
+
+Remote lock, which was refused for a while with "install the privileged helper". That was
+wrong, and the correction is the useful part: locking the console session needs a process
+*inside* the interactive session, not more privilege. The agent service is already
+`LocalSystem` and still cannot do it, because `LockWorkStation` affects only the caller's own
+session and a service's is session 0.
+
+The session host is already running in the interactive session for screen capture, so it is
+what carries out the lock — over one service-to-host message that expects an answer,
+correlated by request id and bounded by a timeout. The helper is not involved.
+
+The general rule this suggests: something being *refused* is not evidence that it needs
+elevation. Session isolation and privilege are different walls, and putting an operation
+behind the wrong one buys a privileged code path that did not need to exist.
+
 ## What is not built yet
 
 - **Device management** — enabling and disabling hardware.

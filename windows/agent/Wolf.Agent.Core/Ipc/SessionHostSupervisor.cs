@@ -62,6 +62,17 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
     private CancellationTokenSource? _running;
     private Task? _loop;
 
+    /// <summary>
+    /// Actions sent to the host and still waiting for an answer, by request id.
+    ///
+    /// Kept here rather than on the connection because the host can die mid-request — and a
+    /// caller left awaiting an answer from a process that has gone is a command that never
+    /// completes. Losing the channel fails all of them at once.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<
+        string,
+        TaskCompletionSource<HostActionResultMessage>> _pendingActions = new();
+
     /// <summary>Raised when a signaling message arrives from the host. </summary>
     public event Func<HostSignalMessage, Task>? SignalReceived;
 
@@ -450,6 +461,21 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
 
             IReadOnlyList<IpcStreamStatus> lost = State.Streams;
 
+            // Anything waiting on this host is never going to be answered by it. Failed here
+            // rather than left to time out, so a command completes with the real reason.
+            foreach (string requestId in _pendingActions.Keys)
+            {
+                if (_pendingActions.TryRemove(requestId, out var pending))
+                {
+                    pending.TrySetResult(new HostActionResultMessage(
+                        requestId,
+                        Ok: false,
+                        Code: "no-session-host",
+                        Message: "The WOLF session host stopped before it could answer.",
+                        Limitation: true));
+                }
+            }
+
             UpdateState(state => state with
             {
                 Connected = false,
@@ -520,6 +546,28 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                 return;
             }
 
+            case "host.action-result":
+            {
+                HostActionResultMessage? result =
+                    document.Deserialize<HostActionResultMessage>(WolfIpc.Json);
+
+                if (result is null) return;
+
+                if (_pendingActions.TryRemove(result.RequestId, out var pending))
+                {
+                    pending.TrySetResult(result);
+                }
+                else
+                {
+                    // An answer to something nobody is waiting for: a request that already
+                    // timed out, or a host answering twice. Logged rather than ignored,
+                    // because on this channel neither should happen.
+                    _logger.LogDebug("Ignored a session host answer for an unknown request.");
+                }
+
+                return;
+            }
+
             case "host.status":
             {
                 HostStatusMessage? status = document.Deserialize<HostStatusMessage>(WolfIpc.Json);
@@ -565,6 +613,78 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                 return;
         }
     }
+
+    /// <summary>
+    /// Ask the host to do something in the interactive session, and wait for the answer.
+    ///
+    /// The one place the service waits on the host. Everything else it sends concerns a
+    /// stream that reports its own state; this concerns an action whose outcome somebody is
+    /// waiting to be told. Bounded, because "no answer" and "it worked" must never look the
+    /// same to the operator.
+    /// </summary>
+    public async Task<HostActionResultMessage> PerformActionAsync(
+        string action,
+        CancellationToken cancellationToken)
+    {
+        if (!IpcActions.IsAllowed(action))
+        {
+            // Checked on both sides. The host is the boundary that matters, but the service
+            // asking for something it knows is not an action has a bug worth failing on.
+            throw new ArgumentException($"'{action}' is not a session host action.", nameof(action));
+        }
+
+        string requestId = Guid.NewGuid().ToString("N");
+        var pending = new TaskCompletionSource<HostActionResultMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingActions[requestId] = pending;
+
+        try
+        {
+            if (!await SendAsync(new ServiceActionMessage(requestId, action), cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                return new HostActionResultMessage(
+                    requestId,
+                    Ok: false,
+                    Code: "no-session-host",
+                    Message: State.UnavailableReason ?? "No WOLF session host is running on this PC.",
+                    Limitation: true);
+            }
+
+            using var waiting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            waiting.CancelAfter(ActionTimeout);
+
+            using (waiting.Token.Register(() => pending.TrySetCanceled()))
+            {
+                return await pending.Task.ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning("The session host did not answer the {Action} request in time.", action);
+
+            return new HostActionResultMessage(
+                requestId,
+                Ok: false,
+                Code: "no-answer",
+                Message: "The WOLF session host did not answer in time.",
+                Limitation: false);
+        }
+        finally
+        {
+            _pendingActions.TryRemove(requestId, out _);
+        }
+    }
+
+    /// <summary>
+    /// How long to wait for the host to answer an action.
+    ///
+    /// Generous for something that should take milliseconds, because the host runs at the
+    /// user's priority in a session that may be busy — and short enough that a command does
+    /// not sit unanswered while somebody watches.
+    /// </summary>
+    private static readonly TimeSpan ActionTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Send a message to the host. Returns false when there is no host connected. </summary>
     public async Task<bool> SendAsync<T>(T message, CancellationToken cancellationToken)

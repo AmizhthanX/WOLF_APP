@@ -246,6 +246,23 @@ public static class Program
                 return;
             }
 
+            case "service.action":
+            {
+                ServiceActionMessage? request = document.Deserialize<ServiceActionMessage>(WolfIpc.Json);
+                if (request is null)
+                {
+                    logger.LogWarning("An action request could not be read and was dropped.");
+                    return;
+                }
+
+                // Answered whatever happens, including a refusal: the service is waiting on
+                // this, and silence would leave a command unanswered until it timed out.
+                await channel
+                    .SendAsync(SessionActions.Perform(request.RequestId, request.Action, logger), cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             case "service.stop":
             {
                 ServiceStopMessage? stop = document.Deserialize<ServiceStopMessage>(WolfIpc.Json);

@@ -218,6 +218,57 @@ public sealed record ServiceStopMessage(
     public int IpcVersion { get; init; } = WolfIpc.Version;
 }
 
+/// <summary>
+/// Ask the host to do something in the interactive session and say whether it worked.
+///
+/// The only service-to-host message that expects an answer. Everything else here is
+/// fire-and-forget because it concerns a stream that reports its own state; an action like
+/// locking the screen either happened or it did not, and the operator is owed which.
+/// </summary>
+public sealed record ServiceActionMessage(
+    /// <summary>Correlates the answer. Generated per request, never reused.</summary>
+    [property: JsonPropertyName("requestId")] string RequestId,
+    /// <summary>One of <see cref="IpcActions"/>. Anything else is refused by the host.</summary>
+    [property: JsonPropertyName("action")] string Action)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "service.action";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}
+
+/// <summary>Everything the service may ask the session host to do. Anything else is refused.</summary>
+public static class IpcActions
+{
+    /// <summary>
+    /// Lock the interactive session.
+    ///
+    /// Needs to run *in* that session — `LockWorkStation` affects only the caller's own —
+    /// which is what the session host is for. It is not a question of privilege: the agent
+    /// service is already LocalSystem and still cannot do it.
+    /// </summary>
+    public const string LockSession = "lock";
+
+    public static bool IsAllowed(string action) => action == LockSession;
+}
+
+/// <summary>What happened to a <see cref="ServiceActionMessage"/>.</summary>
+public sealed record HostActionResultMessage(
+    [property: JsonPropertyName("requestId")] string RequestId,
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("message")] string? Message,
+    /// <summary>True when Windows prevents it, rather than WOLF failing.</summary>
+    [property: JsonPropertyName("limitation")] bool Limitation)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "host.action-result";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}
+
 /// <summary>Ask the host to re-enumerate displays and encoders. </summary>
 public sealed record ServiceRefreshMessage
 {

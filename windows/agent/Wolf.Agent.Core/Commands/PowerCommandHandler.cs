@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Wolf.Agent.Core.Ipc;
 using Wolf.Agent.Core.Native;
 using Wolf.Agent.Core.Protocol;
 using Wolf.Agent.Core.Storage;
@@ -22,13 +23,18 @@ namespace Wolf.Agent.Core.Commands;
 public sealed class PowerCommandHandler : ICommandHandler, IDisposable
 {
     private readonly AgentStore _store;
+    private readonly SessionHostSupervisor _sessionHost;
     private readonly ILogger<PowerCommandHandler> _logger;
     private readonly Timer _scheduler;
     private readonly object _gate = new();
 
-    public PowerCommandHandler(AgentStore store, ILogger<PowerCommandHandler> logger)
+    public PowerCommandHandler(
+        AgentStore store,
+        SessionHostSupervisor sessionHost,
+        ILogger<PowerCommandHandler> logger)
     {
         _store = store;
+        _sessionHost = sessionHost;
         _logger = logger;
 
         DiscardOverdueActions();
@@ -43,21 +49,29 @@ public sealed class PowerCommandHandler : ICommandHandler, IDisposable
         "power.pending",
     };
 
-    public Task<CommandExecution> ExecuteAsync(CommandEnvelope envelope, CancellationToken cancellationToken) =>
-        Task.FromResult(envelope.Type switch
+    public async Task<CommandExecution> ExecuteAsync(
+        CommandEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+
+        return envelope.Type switch
         {
-            "power.action" => Act(envelope),
+            // Locking is the one action that has to be carried out by another process, so
+            // this is the only branch that waits on anything.
+            "power.action" => await ActAsync(envelope).ConfigureAwait(false),
             "power.schedule" => Schedule(envelope),
             "power.cancel" => Cancel(envelope.Payload),
             "power.pending" => Pending(),
             _ => CommandExecution.Failed("unsupported-command", $"Unhandled type {envelope.Type}."),
-        });
+        };
+    }
 
     // -----------------------------------------------------------------------
     // Commands
     // -----------------------------------------------------------------------
 
-    private CommandExecution Act(CommandEnvelope envelope)
+    private async Task<CommandExecution> ActAsync(CommandEnvelope envelope)
     {
         string action = envelope.Payload.GetProperty("action").GetString() ?? string.Empty;
         bool force = envelope.Payload.TryGetProperty("force", out JsonElement forceElement) &&
@@ -115,7 +129,7 @@ public sealed class PowerCommandHandler : ICommandHandler, IDisposable
             });
         }
 
-        CommandExecution immediate = Perform(action, force);
+        CommandExecution immediate = await PerformAsync(action, force).ConfigureAwait(false);
         if (immediate.Failure is not null)
         {
             return immediate;
@@ -216,18 +230,51 @@ public sealed class PowerCommandHandler : ICommandHandler, IDisposable
     // Execution
     // -----------------------------------------------------------------------
 
-    private CommandExecution Perform(string action, bool force)
+    /// <summary>
+    /// Lock the console session, through the process that can.
+    ///
+    /// Not a question of privilege: this service is already LocalSystem and still cannot do
+    /// it, because `LockWorkStation` affects only the caller's own session and a service's is
+    /// session 0, which has no desktop to lock. The session host is already running in the
+    /// interactive session for screen capture, so it is asked.
+    ///
+    /// Nobody being signed in is a real answer rather than a failure — there is no session to
+    /// lock, and a PC at the sign-in screen is in the state the operator wanted anyway.
+    /// </summary>
+    private async Task<CommandExecution> LockAsync()
+    {
+        HostActionResultMessage result = await _sessionHost
+            .PerformActionAsync(IpcActions.LockSession, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (result.Ok)
+        {
+            _logger.LogInformation("Locked the console session.");
+
+            // Windows queues the lock and returns; there is no supported way to observe it
+            // completing. Reported as requested rather than as done, because claiming the
+            // screen is locked when the call has only been accepted would be a claim about
+            // somebody's privacy that WOLF cannot check.
+            return CommandExecution.Success(new { action = "lock", requested = true });
+        }
+
+        return result.Limitation
+            ? CommandExecution.Limitation(
+                result.Code ?? "capability-unavailable",
+                result.Message ?? "This PC cannot lock its console session right now.",
+                "Locking needs somebody signed in at the PC. It works again once they are.")
+            : CommandExecution.Failed(
+                result.Code ?? "agent-error",
+                result.Message ?? "The console session could not be locked.",
+                "Try again in a moment.");
+    }
+
+    private async Task<CommandExecution> PerformAsync(string action, bool force)
     {
         switch (action)
         {
             case "lock":
-                // LockWorkStation only affects the caller's own interactive session, and this
-                // agent runs in session 0. Locking the console session from a service needs a
-                // process launched into that session, which is the privileged helper's job.
-                return CommandExecution.Limitation(
-                    "capability-unavailable",
-                    "Locking the console session is not possible from the WOLF agent service.",
-                    "Install the WOLF privileged helper to enable remote lock.");
+                return await LockAsync().ConfigureAwait(false);
 
             case "sign-out":
                 return SignOut();
@@ -423,7 +470,10 @@ public sealed class PowerCommandHandler : ICommandHandler, IDisposable
 
                 _store.DeletePendingPowerAction(action.PendingActionId);
                 _logger.LogInformation("Running scheduled {Action}.", action.Action);
-                CommandExecution outcome = Perform(action.Action, action.Force);
+                CommandExecution outcome = PerformAsync(action.Action, action.Force)
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult();
                 _store.RecordLocalAudit(
                     $"power.{action.Action}",
                     outcome.Failure is null ? "success" : "failure",

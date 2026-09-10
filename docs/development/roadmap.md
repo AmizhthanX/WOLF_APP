@@ -15,7 +15,9 @@ not dangerous.
 - Sessions, per-capability grants, exclusive resource arbitration, privileged grants
 - Telemetry ingest, day-partitioned storage, aggregate tiers, retention policy
 - Processes: list, tree, details, terminate (PID-reuse guarded), priority
-- Power: lock, sign out, sleep, hibernate, restart, shut down, schedule, cancel
+- Power: sign out, sleep, hibernate, restart, shut down, schedule, cancel. Lock was refused
+  until milestone 3, for a reason worth keeping: it needs a process *in* the interactive
+  session, not more privilege
 - Kill switch, one-way from the cloud
 - Forensic audit log with structural redaction
 - Web dashboard and PC workspace (overview, processes, power, audit), PWA manifest
@@ -313,6 +315,28 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   reassurance about somebody's data
 - `privilegedHelperAvailable` is answered by opening the pipe at call time rather than
   assumed, because the helper is a separate service and can be stopped
+
+**Done — remote lock, through the session host rather than the helper**
+
+- The old refusal said remote lock needed the privileged helper. It does not, and the
+  correction matters: `LockWorkStation` affects only the caller's own session, and the agent
+  service runs in session 0, which has no desktop to lock. It is already `LocalSystem` and
+  still cannot do it. The session host is already inside the interactive session for screen
+  capture, so it is what gets asked
+- One new service-to-host message that expects an answer, correlated by request id and
+  bounded by a timeout — everything else the service sends concerns a stream that reports its
+  own state, while an action either happened or did not and the operator is owed which
+- Losing the host fails every outstanding request at once rather than leaving them to time
+  out, so a command completes with the real reason
+- Nobody signed in is reported as a limitation rather than a failure: there is no session to
+  lock, and a PC at the sign-in screen is already in the state that was wanted
+- Reported as *requested*, not as done. Windows queues the lock and returns; there is no
+  supported way to observe it completing, and inferring one from the presence of LogonUI
+  would be a guess about somebody's privacy that WOLF cannot check
+- The test that really locks the screen is opt-in behind `WOLF_TEST_ALLOW_LOCK=1`. It locks
+  the machine running it and takes every capture test after it with it, which is too much to
+  do to somebody who typed `npm test`. Everything around it — the allow-list, the host's
+  refusal of an unknown action, the answer when no host is connected — runs normally
 
 **Still open in this milestone**
 
