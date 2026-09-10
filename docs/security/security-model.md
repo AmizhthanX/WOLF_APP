@@ -321,7 +321,12 @@ Stated plainly rather than left to be discovered:
   SYSTEM could not do. What it stops is a bug in the network-facing process becoming
   arbitrary privileged action: the only things reachable through it are the operations on its
   allow-list. See [the privileged helper](../architecture/privileged-helper.md).
-- **Remote unlock is still not built**, and is refused with a stated limitation.
+- **Remote unlock is not built, and the requirement as written is not achievable on a
+  workgroup PC.** Windows has no API that unlocks a session, and the only route that avoids
+  the Windows password needs a DLL loaded into `lsass`, which refuses unsigned code when LSA
+  protection is on — the Windows 11 default. `power.unlock` is refused with a stated
+  limitation rather than redefined to mean something weaker. The full analysis is in
+  [remote unlock](../architecture/remote-unlock.md).
 - **The secure-desktop path has never been executed.** The host that captures the lock screen
   is written and supervised, but running it needs the agent installed as a Windows service
   and a machine whose screen is locked. Neither was available where it was written, and the

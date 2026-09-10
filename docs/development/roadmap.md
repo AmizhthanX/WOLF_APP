@@ -391,7 +391,18 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   a distinct code, because those messages are what the first person to run it will be reading
   to find out which assumption was wrong. `WOLF_TEST_SECURE_DESKTOP=1` runs the end-to-end
   test in a context that has both
-- Remote unlock using a dedicated WOLF credential, never the Windows password
+- **Remote unlock is blocked on a Windows constraint, not on effort.** Investigated rather
+  than attempted: see [remote unlock](../architecture/remote-unlock.md). There is no Windows
+  API that unlocks a session — Winlogon needs credentials LSA accepts — and on a workgroup PC
+  the only route that avoids the Windows password is a custom LSA authentication package,
+  which lsass will not load without Microsoft-attested signing (`RunAsPPL = 2` is the Windows
+  11 default). `power.unlock` stays unimplemented and refused rather than being redefined to
+  mean something weaker
+- **Input on the secure desktop** is the piece worth building instead, and is small: the
+  secure host already runs as SYSTEM on `winsta0\Winlogon`, so the existing input path
+  reaches it. That gives the operator a lock screen they can sign in to themselves — the
+  password typed as keystrokes over the encrypted stream, never stored — which is what remote
+  unlock means to most people and is what every commercial remote-desktop tool does
 - **The elevated half of the helper's tests has never run here.** Reading SMART and opening
   the helper's own pipe both need administrator, and this development session is not
   elevated. The guard logic and the attribute decoding are tested directly and do run; the
