@@ -165,6 +165,17 @@ public sealed class StreamCoordinator : IDisposable
 
                 return;
 
+            case SignalTypes.FileControl:
+                if (TryFind(signal, out StreamSession? filed))
+                {
+                    filed.ApplyFileControl(
+                        ReadBool(signal.Payload, "granted"),
+                        ReadString(signal.Payload, "holderSessionId"),
+                        ReadTimestamp(signal.Payload, "expiresAt"));
+                }
+
+                return;
+
             case SignalTypes.SetDisplay:
                 if (TryFind(signal, out StreamSession? switching))
                 {
@@ -247,6 +258,7 @@ public sealed class StreamCoordinator : IDisposable
                 signal.AudioAllowed,
                 signal.ClipboardAllowed,
                 signal.TerminalAllowed,
+                signal.FilesAllowed,
                 _displays,
                 send,
                 _loggers,

@@ -21,6 +21,15 @@ import {
 import { inputBatch, inputEvent, isExtendedKey, VirtualKeys } from './input.js';
 import { controlMessage } from './control-channel.js';
 import {
+  MAX_FILE_CHUNK,
+  MAX_TRANSFER_BYTES,
+  fileEntry,
+  fileList,
+  fileRead,
+  fileRefused,
+  fileWrite,
+} from './files.js';
+import {
   MAX_TERMINAL_CHUNK,
   MAX_TERMINALS_PER_STREAM,
   terminalInput,
@@ -269,7 +278,7 @@ test('direction is part of the contract, not a convention', () => {
  * exemption deliberate — a payload added without a direction fails this test until somebody
  * decides which of the two it is, which is how `terminal.control` arrived here.
  */
-const RELAY_AUTHORED: readonly string[] = ['input.control', 'terminal.control'];
+const RELAY_AUTHORED: readonly string[] = ['input.control', 'terminal.control', 'file.control'];
 
 test('every payload type has a declared direction, or is one only the relay may author', () => {
   const declared = new Set([...CLIENT_TO_AGENT_PAYLOADS, ...AGENT_TO_CLIENT_PAYLOADS]);
@@ -571,4 +580,159 @@ test('a stream may hold only a few shells at once', () => {
   // Each is a process on somebody's machine. Opening them without bound is a denial of
   // service against the PC the operator is trying to fix.
   assert.ok(MAX_TERMINALS_PER_STREAM > 0 && MAX_TERMINALS_PER_STREAM <= 8);
+});
+
+/* ------------------------------------------------------------------------- */
+/* Files                                                                      */
+/* ------------------------------------------------------------------------- */
+
+test('file traffic rides the data channel, contents and names alike', () => {
+  // The rule about contents is written down. A directory listing is not innocent either:
+  // `Divorce settlement.docx` is a fact about somebody whether or not the file is opened, and
+  // a server that never receives a listing cannot store one.
+  for (const kind of [
+    'file.list',
+    'file.stat',
+    'file.read',
+    'file.write',
+    'file.cancel',
+    'file.listing',
+    'file.info',
+    'file.chunk',
+    'file.written',
+    'file.refused',
+  ]) {
+    assert.ok(
+      controlMessage.options.some((option) => option.shape.kind.value === kind),
+      `${kind} is not carried on the control channel`,
+    );
+  }
+
+  const signals = new Set(signalPayload.options.map((option) => option.shape.type.value));
+  assert.equal(signals.has('file.chunk' as never), false);
+  assert.equal(signals.has('file.listing' as never), false);
+});
+
+test('a listing request may name a folder or ask for the drives', () => {
+  const drives = fileList.parse({ kind: 'file.list', requestId: ID });
+  assert.equal(drives.path, null, 'no path means the drives, which is the root of the tree');
+
+  const folder = fileList.parse({ kind: 'file.list', requestId: ID, path: 'C:\\Users' });
+  assert.equal(folder.path, 'C:\\Users');
+});
+
+test('a read is bounded to one chunk', () => {
+  const read = (length: number) =>
+    fileRead.safeParse({ kind: 'file.read', requestId: ID, path: 'C:\\a.bin', offset: 0, length })
+      .success;
+
+  assert.ok(read(MAX_FILE_CHUNK));
+  assert.equal(read(MAX_FILE_CHUNK + 1), false);
+  assert.equal(read(0), false);
+
+  // Offsets rather than a stream is what makes a transfer resumable across a reconnect, and
+  // on a data channel over somebody's home internet a reconnect is not an edge case.
+  assert.ok(
+    fileRead.safeParse({
+      kind: 'file.read',
+      requestId: ID,
+      path: 'C:\\a.bin',
+      offset: 4_000_000,
+      length: 1024,
+    }).success,
+  );
+});
+
+test('every chunk carries a checksum, and it has to look like one', () => {
+  const write = (sha256: string) =>
+    fileWrite.safeParse({
+      kind: 'file.write',
+      requestId: ID,
+      transferId: ID,
+      path: 'C:\\Users\\operator\\a.bin',
+      offset: 0,
+      data: 'aGVsbG8=',
+      sha256,
+      totalBytes: 5,
+    }).success;
+
+  assert.ok(write('a'.repeat(64)));
+
+  // Not for security — the channel is already DTLS-encrypted and authenticated — but because
+  // a file that arrives subtly wrong is worse than one that fails: nobody notices until they
+  // try to use it, and by then the source may be gone.
+  assert.equal(write('not-a-digest'), false);
+  assert.equal(write('A'.repeat(64)), false, 'uppercase hex would make two spellings of one digest');
+  assert.equal(write(''), false);
+});
+
+test('overwriting is off unless the transfer asks for it', () => {
+  const parsed = fileWrite.parse({
+    kind: 'file.write',
+    requestId: ID,
+    transferId: ID,
+    path: 'C:\\Users\\operator\\a.bin',
+    offset: 0,
+    data: '',
+    sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    totalBytes: 0,
+  });
+
+  // Defaulted off, so a client that forgot the field cannot replace somebody's file by
+  // omission.
+  assert.equal(parsed.overwrite, false);
+  assert.equal(parsed.final, false);
+});
+
+test('a transfer larger than WOLF moves is refused by the schema', () => {
+  assert.equal(
+    fileWrite.safeParse({
+      kind: 'file.write',
+      requestId: ID,
+      transferId: ID,
+      path: 'C:\\Users\\operator\\huge.bin',
+      offset: 0,
+      data: '',
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      totalBytes: MAX_TRANSFER_BYTES + 1,
+    }).success,
+    false,
+  );
+});
+
+test('an entry says when it is a link or a Windows folder', () => {
+  const entry = fileEntry.parse({ name: 'junction', kind: 'directory', reparse: true });
+
+  // An operator about to copy a folder should know when it is really a link to somewhere
+  // else on the machine.
+  assert.equal(entry.reparse, true);
+  assert.equal(entry.protectedLocation, false);
+  assert.equal(entry.sizeBytes, null, 'a size that was not measured is null, never zero');
+});
+
+test('a refusal separates what WOLF will not do from what Windows cannot', () => {
+  const denied = fileRefused.parse({
+    kind: 'file.refused',
+    requestId: ID,
+    reason: 'access-denied',
+    detail: 'The account WOLF is running as cannot read that folder.',
+    limitation: true,
+  });
+  assert.equal(denied.limitation, true);
+
+  const refused = fileRefused.parse({
+    kind: 'file.refused',
+    requestId: ID,
+    reason: 'rejected',
+    detail: 'That path is not one WOLF will open.',
+  });
+
+  // Three different things with three different next steps: WOLF refused it, Windows refused
+  // it, or there is nothing there.
+  assert.equal(refused.limitation, false);
+  assert.ok(fileRefused.safeParse({ kind: 'file.refused', requestId: ID, reason: 'not-found', detail: 'x' }).success);
+  assert.equal(
+    fileRefused.safeParse({ kind: 'file.refused', requestId: ID, reason: 'whatever', detail: 'x' }).success,
+    false,
+  );
 });

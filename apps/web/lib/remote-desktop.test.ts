@@ -153,6 +153,7 @@ interface Recorded {
   degraded: (string | null)[];
   surfaces: { surface: string; detail: string | null }[];
   terminalControl: { granted: boolean; reason: string | null }[];
+  fileControl: { granted: boolean; reason: string | null }[];
   terminal: { kind: string; terminalId: string; data: string | null; detail: string | null }[];
   clipboard: { kind: string; text: string | null; detail: string | null }[];
 }
@@ -167,6 +168,7 @@ function makeStream(requestAudio = false) {
     degraded: [],
     surfaces: [],
     terminalControl: [],
+    fileControl: [],
     terminal: [],
     clipboard: [],
   };
@@ -191,6 +193,8 @@ function makeStream(requestAudio = false) {
       onSurface: (surface, detail) => recorded.surfaces.push({ surface, detail }),
       onTerminalControl: (control) =>
         recorded.terminalControl.push({ granted: control.granted, reason: control.reason }),
+      onFileControl: (control) =>
+        recorded.fileControl.push({ granted: control.granted, reason: control.reason }),
       onTerminal: (event) =>
         recorded.terminal.push({
           kind: event.kind,
@@ -1249,4 +1253,269 @@ test('an oversized paste into a terminal is refused before it is sent', async ()
   assert.equal(sentOnChannel.length, before);
 
   stream.stop();
+});
+
+/* ------------------------------------------------------------------------- */
+/* Files                                                                      */
+/* ------------------------------------------------------------------------- */
+
+function grantFiles(streamId: string): void {
+  socketMessage({
+    kind: 'cloud.signal',
+    envelope: {
+      streamId,
+      payload: {
+        type: 'file.control',
+        granted: true,
+        holderSessionId: 'a-session',
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        reason: 'granted',
+      },
+    },
+  });
+}
+
+/**
+ * Wait for the client to actually put a file request on the channel.
+ *
+ * `writeFile` hashes the chunk before sending it, and WebCrypto's digest is a promise — so
+ * the message is not on the channel in the same turn the call was made. Reading it
+ * synchronously is a test that passes on a fast machine and fails on a slow one.
+ */
+async function sentFileRequest(before: number): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 200 && sentOnChannel.length <= before; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  return JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+}
+
+/** Answer the last file request the client sent, as the PC would. */
+function answerFile(extra: Record<string, unknown>): void {
+  const asked = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+  deliverControl({ requestId: asked['requestId'], ...extra });
+}
+
+test('files cannot be browsed without the lease', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+
+  // Refused here as well as on the PC. A client that sent a listing without a lease would be
+  // answered with a refusal — not sending it means the PC never sees a request it has to
+  // reason about.
+  await assert.rejects(() => stream.listFiles(null), /does not hold/);
+  assert.equal(sentOnChannel.length, 0);
+
+  stream.stop();
+});
+
+test('the file lease is asked for separately from the keyboard and the terminal', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+
+  stream.requestControl();
+  stream.requestTerminal();
+  assert.equal(signalsOfType('file.request').length, 0, 'another lease asked for this one');
+
+  stream.requestFiles();
+
+  // Three grants, three asks. Being allowed to watch, to type, and to take files off a
+  // machine are three different things to be given.
+  assert.equal(signalsOfType('file.request').length, 1);
+
+  stream.stop();
+});
+
+test('a listing goes on the data channel and comes back to the caller that asked', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const pending = stream.listFiles('C:\\Users\\operator');
+
+  const asked = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+  assert.equal(asked['kind'], 'file.list');
+  assert.equal(asked['path'], 'C:\\Users\\operator');
+  assert.ok(asked['requestId'], 'a request with no id could not be answered');
+
+  answerFile({
+    kind: 'file.listing',
+    path: 'C:\\Users\\operator',
+    entries: [{ name: 'notes.txt', kind: 'file', sizeBytes: 12 }],
+    truncated: false,
+  });
+
+  const listing = await pending;
+  assert.equal(listing.entries.length, 1);
+  assert.equal(listing.entries[0]!.name, 'notes.txt');
+
+  // Names never touch the cloud either. `Divorce settlement.docx` is a fact about somebody
+  // whether or not the file is opened.
+  assert.equal(signalsOfType('file.list').length, 0, 'a listing reached the cloud');
+
+  stream.stop();
+});
+
+test('two file requests in flight get their own answers', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const listing = stream.listFiles('C:\\A');
+  const first = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+
+  const info = stream.statFile('C:\\B\\file.bin');
+  const second = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+
+  // Answered out of order on purpose. Correlating by position rather than by id would hand
+  // each caller the other's answer, which for a browse and a transfer is a file manager
+  // showing one folder's contents under another folder's name.
+  deliverControl({
+    kind: 'file.info',
+    requestId: second['requestId'],
+    path: 'C:\\B\\file.bin',
+    entry: null,
+    partialBytes: 4096,
+  });
+  deliverControl({
+    kind: 'file.listing',
+    requestId: first['requestId'],
+    path: 'C:\\A',
+    entries: [],
+    truncated: false,
+  });
+
+  assert.equal((await info).partialBytes, 4096);
+  assert.equal((await listing).path, 'C:\\A');
+
+  stream.stop();
+});
+
+test('a chunk whose checksum does not match is rejected rather than assembled', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const pending = stream.readFile('C:\\Users\\operator\\a.bin', 0, 1024);
+
+  answerFile({
+    kind: 'file.chunk',
+    offset: 0,
+    data: btoa('the real bytes'),
+    sha256: 'f'.repeat(64),
+    eof: true,
+    totalBytes: 14,
+  });
+
+  // Verified at this end rather than trusted. A byte that arrives wrong is caught where it
+  // happened, and this is the end that can ask for it again.
+  await assert.rejects(() => pending, /checksum/);
+
+  stream.stop();
+});
+
+test('a chunk that checks out comes back as bytes', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const contents = new Uint8Array([0, 1, 2, 250, 251, 255]);
+  const digest = await crypto.subtle.digest('SHA-256', contents);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+
+  const pending = stream.readFile('C:\\Users\\operator\\a.bin', 0, 1024);
+
+  answerFile({
+    kind: 'file.chunk',
+    offset: 0,
+    data: btoa(String.fromCharCode(...contents)),
+    sha256: hex,
+    eof: true,
+    totalBytes: contents.length,
+  });
+
+  const chunk = await pending;
+
+  // Bytes rather than a string. High bytes survive the base64 round trip only if nothing
+  // along the way decided they were text.
+  assert.deepEqual(Array.from(chunk.bytes), Array.from(contents));
+  assert.equal(chunk.eof, true);
+
+  stream.stop();
+});
+
+test('a write carries a checksum the PC can check', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const before = sentOnChannel.length;
+
+  const pending = stream.writeFile({
+    transferId: 'transfer-1',
+    path: 'C:\\Users\\operator\\out.bin',
+    offset: 0,
+    bytes,
+    final: true,
+    overwrite: false,
+    totalBytes: 4,
+  });
+
+  const sent = await sentFileRequest(before);
+  assert.equal(sent['kind'], 'file.write');
+  assert.match(String(sent['sha256']), /^[0-9a-f]{64}$/);
+  assert.equal(sent['overwrite'], false, 'overwriting must never be the default');
+
+  answerFile({
+    kind: 'file.written',
+    transferId: 'transfer-1',
+    bytesWritten: 4,
+    sha256: sent['sha256'],
+    complete: true,
+  });
+
+  assert.equal((await pending).complete, true);
+
+  stream.stop();
+});
+
+test('a refusal from the PC becomes an error the caller cannot ignore', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const pending = stream.listFiles('C:\\Windows\\System32\\config');
+  answerFile({
+    kind: 'file.refused',
+    reason: 'access-denied',
+    detail: 'The account WOLF is running as cannot read that folder on this PC.',
+    limitation: true,
+  });
+
+  // Thrown rather than returned, because every one of these ends a transfer: a caller that
+  // forgot to check a returned status would carry on sending chunks into a file that is not
+  // being written.
+  await assert.rejects(() => pending, (error: Error) => {
+    assert.equal(error.name, 'FileRefusal');
+    assert.match(error.message, /cannot read/);
+    return true;
+  });
+
+  stream.stop();
+});
+
+test('stopping the stream fails the requests still waiting', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const pending = stream.listFiles('C:\\Users');
+  stream.stop();
+
+  // Left hanging, these would be promises the caller awaits forever — a file manager showing
+  // a spinner until the tab is closed.
+  await assert.rejects(() => pending, /ended/);
 });

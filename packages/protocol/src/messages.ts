@@ -228,6 +228,15 @@ export const cloudSignalMessage = z.object({
    * nobody authorised.
    */
   terminalAllowed: z.boolean().default(false),
+  /**
+   * Whether this session may browse and move this PC's files.
+   *
+   * Separate again. Watching a screen is not being handed the disks behind it, and the two
+   * are asked for and granted independently. Defaulted false, so a message that lost the
+   * field produces a stream that cannot read a directory rather than one that can read
+   * everything the signed-in user can.
+   */
+  filesAllowed: z.boolean().default(false),
 });
 
 export const cloudPingMessage = z.object({

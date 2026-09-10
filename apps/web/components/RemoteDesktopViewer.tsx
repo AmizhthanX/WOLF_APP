@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRemoteDesktop } from '@/lib/use-remote-desktop';
 import { TerminalPanel } from '@/components/TerminalPanel';
+import { FilePanel } from '@/components/FilePanel';
 import { NO_OVERRIDES } from '@/lib/remote-desktop';
 import type {
   InputEvent,
@@ -854,6 +855,12 @@ export function RemoteDesktopViewer({
         meant being allowed to run commands on the machine behind it.
       */}
       <TerminalPanel view={view} />
+
+      {/*
+        Files travel on the same data channel, so like the terminal they exist only while the
+        stream does — and like the terminal they are their own capability and their own lease.
+      */}
+      <FilePanel view={view} />
     </div>
   );
 }

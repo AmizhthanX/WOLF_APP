@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Wolf.Agent.Core.Ipc;
 using Wolf.Agent.SessionHost.Clipboard;
 using Wolf.Agent.SessionHost.Input;
+using Wolf.Agent.SessionHost.Files;
 using Wolf.Agent.SessionHost.Terminal;
 
 namespace Wolf.Agent.SessionHost.Transport;
@@ -32,6 +33,7 @@ public sealed class ControlChannel
     private readonly InputChannel _input;
     private readonly ClipboardChannel _clipboard;
     private readonly TerminalChannel _terminal;
+    private readonly FileChannel _files;
     private readonly ILogger<ControlChannel> _logger;
 
     public ControlChannel(
@@ -39,12 +41,14 @@ public sealed class ControlChannel
         InputChannel input,
         ClipboardChannel clipboard,
         TerminalChannel terminal,
+        FileChannel files,
         ILogger<ControlChannel> logger)
     {
         _streamId = streamId;
         _input = input;
         _clipboard = clipboard;
         _terminal = terminal;
+        _files = files;
         _logger = logger;
     }
 
@@ -88,6 +92,11 @@ public sealed class ControlChannel
             // capability and the lease before it looks at anything else in the message.
             "terminal.open" or "terminal.input" or "terminal.resize" or "terminal.close" =>
                 _terminal.Handle(kind, message),
+
+            // Same again for files: one place that checks the capability, the lease and the
+            // path before it looks at anything else in the message.
+            "file.list" or "file.stat" or "file.read" or "file.write" or "file.cancel" =>
+                _files.Handle(kind, message),
 
             _ => null,
         };

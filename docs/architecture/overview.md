@@ -129,9 +129,13 @@ them instead of queueing work that would never run:
 - **Remote unlock**, which is refused rather than unbuilt: Windows has no API that unlocks a
   session, and the analysis is in [remote unlock](remote-unlock.md). What WOLF does instead is
   show the lock screen and let the operator sign in to it themselves
-- File manager, services, scheduled tasks, startup items
+- Services, scheduled tasks, startup items
 - Wake-on-LAN
 - GPU telemetry, CPU package power, thermal sensors
+
+The file manager is built and is described in [the file manager](file-manager.md). Delete,
+rename and move are not: they are mutations that belong on the command path, where risk levels
+and confirmations live.
 
 The terminal is built and is described in [the terminal](terminal.md). What is *not* built
 there is `terminal-admin`, the elevated shell: it needs a token the session host does not

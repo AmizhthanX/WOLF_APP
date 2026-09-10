@@ -38,6 +38,14 @@ const INPUT_LEASE_SECONDS = 120;
  */
 const TERMINAL_LEASE_SECONDS = 600;
 
+/**
+ * How long a grant of file access lasts before it has to be renewed.
+ *
+ * The same as the terminal, and for the same reason: browsing is punctuated by reading, and
+ * a lease that lapsed mid-transfer would abandon a file somebody was halfway through moving.
+ */
+const FILE_LEASE_SECONDS = 600;
+
 type LinkState = 'connecting' | 'authenticated' | 'closed';
 
 export interface ClientLinkOptions {
@@ -76,6 +84,8 @@ export class ClientLink implements ClientLinkHandle {
   private readonly heldInputStreams = new Set<string>();
   /** Streams for which this session currently holds the terminal lease. */
   private readonly heldTerminalStreams = new Set<string>();
+  /** Streams for which this session currently holds the file lease. */
+  private readonly heldFileStreams = new Set<string>();
 
   constructor(options: ClientLinkOptions) {
     this.socket = options.socket;
@@ -342,6 +352,7 @@ export class ClientLink implements ClientLinkHandle {
     if (!pc || !pc.remoteAccessEnabled) {
       await this.releaseAllInput('kill-switch');
       await this.releaseAllTerminals('kill-switch');
+      await this.releaseAllFiles('kill-switch');
       this.notifyPeerGone('kill-switch', 'Remote access is disabled for this PC.');
       this.close('kill-switch');
       return;
@@ -363,6 +374,7 @@ export class ClientLink implements ClientLinkHandle {
       this.openStreams.delete(envelope.streamId);
       await this.releaseInput(envelope.streamId, 'released');
       await this.releaseTerminal(envelope.streamId, 'released');
+      await this.releaseFiles(envelope.streamId, 'released');
     }
 
     // Control of the keyboard and mouse is arbitrated here rather than forwarded. The PC
@@ -388,6 +400,18 @@ export class ClientLink implements ClientLinkHandle {
 
     if (envelope.payload.type === 'terminal.release') {
       await this.releaseTerminal(envelope.streamId, 'released');
+      return;
+    }
+
+    // And files, which is the third exclusive thing on a PC and the one that takes data off
+    // it rather than acting on it.
+    if (envelope.payload.type === 'file.request') {
+      await this.acquireFiles(envelope.streamId);
+      return;
+    }
+
+    if (envelope.payload.type === 'file.release') {
+      await this.releaseFiles(envelope.streamId, 'released');
       return;
     }
 
@@ -636,6 +660,125 @@ export class ClientLink implements ClientLinkHandle {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // File arbitration
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Take the file lease for this session, or report who has it.
+   *
+   * Exclusive like the other two, and for a plainer reason: two sessions writing into one
+   * destination produce a file that is neither of the things either of them sent.
+   */
+  private async acquireFiles(streamId: string): Promise<void> {
+    if (!this.capabilities.includes('file-transfer')) {
+      // Its own capability. Being able to see a screen is not being handed the disks behind
+      // it, and a session that asked only to watch does not acquire them by asking again on
+      // a different channel.
+      this.publishFileControl(streamId, {
+        granted: false,
+        holderSessionId: null,
+        expiresAt: null,
+        reason: 'capability-missing',
+      });
+      return;
+    }
+
+    const expiresAt = new Date(this.context.now().getTime() + FILE_LEASE_SECONDS * 1000);
+    const outcome = await this.context.repos.sessions.acquireResource({
+      pcId: this.pcId,
+      resource: 'file-operations',
+      sessionId: this.sessionId,
+      expiresAt,
+    });
+
+    if (!outcome.acquired) {
+      this.publishFileControl(streamId, {
+        granted: false,
+        holderSessionId: outcome.heldBy,
+        expiresAt: null,
+        reason: 'held-by-another-session',
+      });
+      return;
+    }
+
+    this.heldFileStreams.add(streamId);
+    this.publishFileControl(streamId, {
+      granted: true,
+      holderSessionId: this.sessionId,
+      expiresAt: expiresAt.toISOString(),
+      reason: 'granted',
+    });
+  }
+
+  private async releaseFiles(
+    streamId: string,
+    reason: 'released' | 'session-ended' | 'kill-switch',
+  ): Promise<void> {
+    if (!this.heldFileStreams.delete(streamId)) return;
+
+    await this.context.repos.sessions.releaseResource(this.pcId, 'file-operations', this.sessionId);
+    this.publishFileControl(streamId, {
+      granted: false,
+      holderSessionId: null,
+      expiresAt: null,
+      reason,
+    });
+  }
+
+  private async releaseAllFiles(reason: 'session-ended' | 'kill-switch'): Promise<void> {
+    for (const streamId of [...this.heldFileStreams]) {
+      await this.releaseFiles(streamId, reason);
+    }
+  }
+
+  /**
+   * Tell both ends who holds the files.
+   *
+   * What is logged is the decision and nothing about what was browsed or moved. This service
+   * never sees a path or a byte — that is the whole reason file traffic rides the data
+   * channel — and a log line here naming a file would put it exactly where the routing exists
+   * to keep it from.
+   */
+  private publishFileControl(
+    streamId: string,
+    control: {
+      granted: boolean;
+      holderSessionId: string | null;
+      expiresAt: string | null;
+      reason:
+        | 'granted'
+        | 'capability-missing'
+        | 'held-by-another-session'
+        | 'released'
+        | 'session-ended'
+        | 'kill-switch'
+        | 'unsupported';
+    },
+  ): void {
+    const envelope: SignalEnvelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      sessionId: this.sessionId,
+      streamId,
+      sentAt: this.context.now().toISOString(),
+      payload: { type: 'file.control', ...control },
+    };
+
+    this.deliverSignal(envelope);
+    this.context.agents.get(this.pcId)?.sendSignal(envelope, this.deviceId, this.capabilities);
+
+    this.logger.info(
+      {
+        pcId: this.pcId,
+        sessionId: this.sessionId,
+        streamId,
+        granted: control.granted,
+        reason: control.reason,
+      },
+      'File access decided',
+    );
+  }
+
   /**
    * Record a new stream and enforce the per-session limit.
    *
@@ -772,6 +915,7 @@ export class ClientLink implements ClientLinkHandle {
     // too many when the answer is already known.
     await this.releaseAllInput('session-ended');
     await this.releaseAllTerminals('session-ended');
+    await this.releaseAllFiles('session-ended');
 
     // A client that vanishes also leaves an encoder running on someone's PC. Tell the agent
     // to stop, and close the records, rather than waiting for a timeout to notice.

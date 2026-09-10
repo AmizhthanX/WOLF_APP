@@ -585,6 +585,7 @@ export class AgentLink implements AgentLinkHandle {
       audioAllowed: this.capabilitiesForSignals.includes('audio'),
       clipboardAllowed: this.capabilitiesForSignals.includes('clipboard'),
       terminalAllowed: this.capabilitiesForSignals.includes('terminal'),
+      filesAllowed: this.capabilitiesForSignals.includes('file-transfer'),
     });
   }
 

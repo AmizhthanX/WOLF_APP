@@ -226,7 +226,15 @@ public sealed record ServiceSignalMessage(
     /// field produces a stream with no terminal rather than one with a shell nobody
     /// authorised.
     /// </summary>
-    [property: JsonPropertyName("terminalAllowed")] bool TerminalAllowed = false)
+    [property: JsonPropertyName("terminalAllowed")] bool TerminalAllowed = false,
+    /// <summary>
+    /// Whether the session that sent this may browse and move this PC's files.
+    ///
+    /// Its own grant. Watching a screen is not being handed the disks behind it. False by
+    /// default, so a message that lost the field produces a stream that cannot read a
+    /// directory rather than one that can read everything the signed-in user can.
+    /// </summary>
+    [property: JsonPropertyName("filesAllowed")] bool FilesAllowed = false)
 {
     [JsonPropertyName("kind")]
     public string Kind { get; init; } = "service.signal";

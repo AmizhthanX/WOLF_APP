@@ -1063,3 +1063,128 @@ test('a client cannot grant itself a terminal', async () => {
     'a client forged a terminal grant',
   );
 });
+
+/* ------------------------------------------------------------------------- */
+/* File arbitration                                                           */
+/*                                                                            */
+/* The third exclusive thing on a PC, and the one that takes data off it       */
+/* rather than acting on it.                                                   */
+/* ------------------------------------------------------------------------- */
+
+test('a session granted file transfer receives the lease, and so does the PC', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'file-transfer']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+
+  client.sendSignal(sessionId, streamId, { type: 'file.request' });
+
+  const answer = await client.waitForSignal('file.control');
+  if (answer.payload.type !== 'file.control') throw new Error('wrong payload');
+
+  assert.equal(answer.payload.granted, true);
+  assert.equal(answer.payload.holderSessionId, sessionId);
+  assert.ok(answer.payload.expiresAt, 'a lease with no expiry would never lapse');
+
+  // The PC is told too, because the PC is what actually opens the files. A grant that reached
+  // only the browser would show a file manager the machine then refuses to fill.
+  const toAgent = await agentA.waitForSignal('file.control');
+  if (toAgent.payload.type !== 'file.control') throw new Error('wrong payload');
+  assert.equal(toAgent.payload.granted, true);
+
+  client.sendSignal(sessionId, streamId, { type: 'file.release' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+});
+
+test('a screen session is not handed the disks behind the screen', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'input', 'terminal']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+
+  client.sendSignal(sessionId, streamId, { type: 'file.request' });
+
+  const answer = await client.waitForSignal('file.control');
+  if (answer.payload.type !== 'file.control') throw new Error('wrong payload');
+
+  // Not even a terminal implies it — and a terminal could copy a file out by other means,
+  // which is exactly why the capability is about intent and audit rather than about what is
+  // theoretically reachable.
+  assert.equal(answer.payload.granted, false);
+  assert.equal(answer.payload.reason, 'capability-missing');
+});
+
+test('two sessions cannot write into one PC at once', async () => {
+  const firstToken = await openSession(pcA, ['screen', 'file-transfer']);
+  const first = await openControlledStream(firstToken);
+
+  first.client.sendSignal(first.sessionId, first.streamId, { type: 'file.request' });
+  const granted = await first.client.waitForSignal('file.control');
+  if (granted.payload.type !== 'file.control') throw new Error('wrong payload');
+  assert.equal(granted.payload.granted, true);
+
+  const secondToken = await openSession(pcA, ['screen', 'file-transfer']);
+  const second = await openControlledStream(secondToken);
+
+  second.client.sendSignal(second.sessionId, second.streamId, { type: 'file.request' });
+  const refused = await second.client.waitForSignal('file.control');
+  if (refused.payload.type !== 'file.control') throw new Error('wrong payload');
+
+  // Two transfers into one destination produce a file that is neither of the things either
+  // of them sent.
+  assert.equal(refused.payload.granted, false);
+  assert.equal(refused.payload.reason, 'held-by-another-session');
+  assert.equal(refused.payload.holderSessionId, first.sessionId);
+
+  first.client.sendSignal(first.sessionId, first.streamId, { type: 'file.release' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+});
+
+test('the file lease is released when the stream ends, and the PC is told', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'file-transfer']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+
+  client.sendSignal(sessionId, streamId, { type: 'file.request' });
+  await client.waitForSignal('file.control');
+
+  client.sendSignal(sessionId, streamId, {
+    type: 'stream.stop',
+    reason: 'client-closed',
+    detail: null,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const decisions = agentA.signalsReceived.filter(
+    (envelope) => envelope.payload.type === 'file.control',
+  );
+  const last = decisions.at(-1);
+  assert.ok(last);
+  if (last.payload.type !== 'file.control') throw new Error('wrong payload');
+
+  // The session host acts on this to abandon every transfer in flight and delete its part
+  // files. Half a file on somebody's disk, with nothing to finish it, is worse than none.
+  assert.equal(last.payload.granted, false);
+  assert.equal(last.payload.reason, 'released');
+});
+
+test('a client cannot grant itself access to a PC\'s files', async () => {
+  const sessionToken = await openSession(pcA, ['screen']);
+  const client = await connectClient(sessionToken);
+  const outcome = await client.connect();
+  assert.ok(outcome.accepted && outcome.sessionId);
+
+  const before = agentA.signalsReceived.length;
+  client.sendSignal(outcome.sessionId, newId(), {
+    type: 'file.control',
+    granted: true,
+    holderSessionId: outcome.sessionId,
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    reason: 'granted',
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // `file.control` is authored by the relay and nobody else. A client that could send it
+  // would be granting itself everything the signed-in user can read.
+  assert.equal(
+    agentA.signalsReceived.slice(before).some((e) => e.payload.type === 'file.control'),
+    false,
+    'a client forged a file grant',
+  );
+});

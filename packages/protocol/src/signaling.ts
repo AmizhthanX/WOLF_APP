@@ -207,6 +207,42 @@ export const signalTerminalControl = z.object({
     .default(null),
 });
 
+export const signalFileRequest = z.object({
+  type: z.literal('file.request'),
+});
+
+export const signalFileRelease = z.object({
+  type: z.literal('file.release'),
+});
+
+/**
+ * Who may browse and move this PC's files, decided by the cloud.
+ *
+ * The third of these, with the same shape and the same rules — relay-authored, expiry
+ * enforced on the PC as well as here. What it gates is different in kind from the other two:
+ * input and a terminal act on a machine, and this one takes things off it. A session holding
+ * this lease can read anything the signed-in user can read, so it is granted separately and
+ * lapses on its own.
+ */
+export const signalFileControl = z.object({
+  type: z.literal('file.control'),
+  granted: z.boolean(),
+  holderSessionId: wolfId.nullable().default(null),
+  expiresAt: isoDateTime.nullable().default(null),
+  reason: z
+    .enum([
+      'granted',
+      'capability-missing',
+      'held-by-another-session',
+      'released',
+      'session-ended',
+      'kill-switch',
+      'unsupported',
+    ])
+    .nullable()
+    .default(null),
+});
+
 export const signalError = z.object({
   type: z.literal('stream.error'),
   code: z.string().max(64),
@@ -234,6 +270,9 @@ export const signalPayload = z.discriminatedUnion('type', [
   signalTerminalRequest,
   signalTerminalRelease,
   signalTerminalControl,
+  signalFileRequest,
+  signalFileRelease,
+  signalFileControl,
   signalError,
 ]);
 export type SignalPayload = z.infer<typeof signalPayload>;
@@ -276,6 +315,8 @@ export const CLIENT_TO_AGENT_PAYLOADS: readonly SignalPayloadType[] = [
   'input.release',
   'terminal.request',
   'terminal.release',
+  'file.request',
+  'file.release',
 ];
 
 export const AGENT_TO_CLIENT_PAYLOADS: readonly SignalPayloadType[] = [

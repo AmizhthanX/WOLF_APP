@@ -102,6 +102,68 @@ export type TerminalShell = 'cmd' | 'powershell' | 'pwsh';
 /** Matches the protocol's per-message cap on terminal traffic. */
 export const MAX_TERMINAL_CHUNK = 64 * 1024;
 
+/** Matches the protocol's per-message cap on file traffic. */
+export const MAX_FILE_CHUNK = 64 * 1024;
+
+/** One thing in a directory on the PC, mirroring `packages/protocol`. */
+export interface FileEntry {
+  readonly name: string;
+  readonly kind: 'file' | 'directory' | 'drive';
+  readonly sizeBytes: number | null;
+  readonly modifiedAt: string | null;
+  readonly readOnly: boolean;
+  readonly hidden: boolean;
+  /** True for a symlink or junction — a folder that is really somewhere else. */
+  readonly reparse: boolean;
+  readonly protectedLocation: boolean;
+  /** Present on drives, where the name is a label rather than a path. */
+  readonly path?: string;
+}
+
+export interface FileListing {
+  readonly path: string | null;
+  readonly entries: readonly FileEntry[];
+  readonly truncated: boolean;
+}
+
+export interface FileInfo {
+  readonly path: string;
+  readonly entry: FileEntry | null;
+  /** Bytes already written to a partial upload here, or null when there is none. */
+  readonly partialBytes: number | null;
+}
+
+export interface FileChunk {
+  readonly offset: number;
+  readonly bytes: Uint8Array;
+  readonly eof: boolean;
+  readonly totalBytes: number;
+}
+
+export interface FileWritten {
+  readonly bytesWritten: number;
+  readonly sha256: string | null;
+  readonly complete: boolean;
+}
+
+/**
+ * A refusal from the PC, as an error the caller can catch.
+ *
+ * Thrown rather than returned because every one of these ends a transfer, and a caller that
+ * forgot to check a returned status would carry on sending chunks into a file that is not
+ * being written.
+ */
+export class FileRefusal extends Error {
+  constructor(
+    readonly reason: string,
+    message: string,
+    readonly limitation: boolean,
+  ) {
+    super(message);
+    this.name = 'FileRefusal';
+  }
+}
+
 /** Something the PC said about a shell. */
 export interface TerminalEvent {
   readonly kind: 'opened' | 'output' | 'exited' | 'refused';
@@ -242,6 +304,8 @@ export interface StreamEvents {
   onDegraded(reason: string | null): void;
   /** Who holds the terminal, as the cloud last decided. */
   onTerminalControl(control: InputControl): void;
+  /** Who holds this PC's files, as the cloud last decided. */
+  onFileControl(control: InputControl): void;
   /**
    * Something a shell said, or something the PC refused to do with one.
    *
@@ -315,6 +379,21 @@ export class RemoteDesktopStream {
   private renewTimer: ReturnType<typeof setInterval> | null = null;
   private terminalRenewTimer: ReturnType<typeof setInterval> | null = null;
   private hasTerminal = false;
+  private fileRenewTimer: ReturnType<typeof setInterval> | null = null;
+  private hasFiles = false;
+
+  /**
+   * File requests waiting for their answer.
+   *
+   * Files are request/response, unlike everything else on this channel: a listing is asked
+   * for and arrives once. Correlating by id rather than by order matters because a browse and
+   * a transfer chunk can be in flight together, and a client that assumed order would hand
+   * one the other's answer.
+   */
+  private readonly pendingFiles = new Map<
+    string,
+    { resolve: (message: Record<string, unknown>) => void; reject: (error: Error) => void }
+  >();
 
   private readonly options: StreamOptions;
   private readonly streamId = newId();
@@ -473,6 +552,156 @@ export class RemoteDesktopStream {
   }
 
   /**
+   * Ask to be allowed at this PC's files.
+   *
+   * Its own lease again, and asked for separately: watching a screen is not being handed the
+   * disks behind it.
+   */
+  requestFiles(): void {
+    this.signal({ type: 'file.request' });
+
+    if (this.fileRenewTimer) return;
+    this.fileRenewTimer = setInterval(() => {
+      if (this.hasFiles) this.signal({ type: 'file.request' });
+    }, RENEW_INTERVAL_MS);
+  }
+
+  releaseFiles(): void {
+    this.stopRenewingFiles();
+    this.hasFiles = false;
+    this.signal({ type: 'file.release' });
+  }
+
+  /** Whether this session currently holds the file lease. */
+  get holdsFiles(): boolean {
+    return this.hasFiles;
+  }
+
+  /** List a folder, or the PC's drives when `path` is null. */
+  async listFiles(path: string | null): Promise<FileListing> {
+    const answer = await this.askFiles({ kind: 'file.list', path });
+
+    return {
+      path: (answer['path'] as string | null) ?? null,
+      entries: (answer['entries'] as FileEntry[] | undefined) ?? [],
+      truncated: answer['truncated'] === true,
+    };
+  }
+
+  /** What is at a path, and how far a partial upload there got. */
+  async statFile(path: string): Promise<FileInfo> {
+    const answer = await this.askFiles({ kind: 'file.stat', path });
+
+    return {
+      path: String(answer['path'] ?? path),
+      entry: (answer['entry'] as FileEntry | null) ?? null,
+      partialBytes: (answer['partialBytes'] as number | null) ?? null,
+    };
+  }
+
+  /**
+   * Read one chunk of a file.
+   *
+   * The checksum is verified here rather than trusted. A byte that arrives wrong is caught
+   * where it happened, instead of as a file that turns out to be broken a week later — and
+   * this is the end that can retry.
+   */
+  async readFile(path: string, offset: number, length: number): Promise<FileChunk> {
+    const answer = await this.askFiles({
+      kind: 'file.read',
+      path,
+      offset,
+      length: Math.min(length, MAX_FILE_CHUNK),
+    });
+
+    const bytes = decodeBase64(String(answer['data'] ?? ''));
+    const digest = await sha256Hex(bytes);
+
+    if (digest !== String(answer['sha256'])) {
+      throw new FileRefusal(
+        'corrupt',
+        'A chunk of that file arrived with the wrong checksum and was discarded.',
+        false,
+      );
+    }
+
+    return {
+      offset: Number(answer['offset'] ?? offset),
+      bytes,
+      eof: answer['eof'] === true,
+      totalBytes: Number(answer['totalBytes'] ?? 0),
+    };
+  }
+
+  /** Write one chunk to the PC. The checksum goes with it so the far end can check. */
+  async writeFile(options: {
+    transferId: string;
+    path: string;
+    offset: number;
+    bytes: Uint8Array;
+    final: boolean;
+    overwrite: boolean;
+    totalBytes: number;
+  }): Promise<FileWritten> {
+    const answer = await this.askFiles({
+      kind: 'file.write',
+      transferId: options.transferId,
+      path: options.path,
+      offset: options.offset,
+      data: encodeBase64(options.bytes),
+      sha256: await sha256Hex(options.bytes),
+      final: options.final,
+      overwrite: options.overwrite,
+      totalBytes: options.totalBytes,
+    });
+
+    return {
+      bytesWritten: Number(answer['bytesWritten'] ?? 0),
+      sha256: (answer['sha256'] as string | null) ?? null,
+      complete: answer['complete'] === true,
+    };
+  }
+
+  /** Abandon a transfer. The part file on the PC goes with it. */
+  async cancelTransfer(transferId: string): Promise<void> {
+    await this.askFiles({ kind: 'file.cancel', transferId });
+  }
+
+  /**
+   * Send one file request and wait for the answer with the matching id.
+   *
+   * Refusals arrive as rejections, so a caller that forgot to check cannot carry on sending
+   * chunks into a file that is not being written.
+   */
+  private askFiles(message: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.hasFiles) {
+      return Promise.reject(
+        new FileRefusal('not-permitted', 'This session does not hold this PC\'s files.', false),
+      );
+    }
+
+    if (this.control?.readyState !== 'open') {
+      return Promise.reject(
+        new FileRefusal('failed', 'The connection to this PC is not ready.', false),
+      );
+    }
+
+    const requestId = newId();
+
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      this.pendingFiles.set(requestId, { resolve, reject });
+      this.control!.send(JSON.stringify({ ...message, requestId }));
+    });
+  }
+
+  private stopRenewingFiles(): void {
+    if (this.fileRenewTimer) {
+      clearInterval(this.fileRenewTimer);
+      this.fileRenewTimer = null;
+    }
+  }
+
+  /**
    * Send input events to the PC.
    *
    * Straight down the data channel, never through the cloud: a keystroke that took a
@@ -549,6 +778,14 @@ export class RemoteDesktopStream {
   private stopAllRenewing(): void {
     this.stopRenewing();
     this.stopRenewingTerminal();
+    this.stopRenewingFiles();
+
+    // Nothing is coming back for these. Left hanging they would be promises the caller awaits
+    // forever, which is a file manager that shows a spinner until the tab is closed.
+    for (const pending of this.pendingFiles.values()) {
+      pending.reject(new FileRefusal('failed', 'The connection to this PC ended.', false));
+    }
+    this.pendingFiles.clear();
   }
 
   /**
@@ -732,6 +969,19 @@ export class RemoteDesktopStream {
 
         this.options.events.onTerminalControl({
           granted: this.hasTerminal,
+          holderSessionId: (payload['holderSessionId'] as string | null) ?? null,
+          expiresAt: (payload['expiresAt'] as string | null) ?? null,
+          reason: (payload['reason'] as string | null) ?? null,
+        });
+        return;
+      }
+
+      case 'file.control': {
+        this.hasFiles = payload['granted'] === true;
+        if (!this.hasFiles) this.stopRenewingFiles();
+
+        this.options.events.onFileControl({
+          granted: this.hasFiles,
           holderSessionId: (payload['holderSessionId'] as string | null) ?? null,
           expiresAt: (payload['expiresAt'] as string | null) ?? null,
           reason: (payload['reason'] as string | null) ?? null,
@@ -957,6 +1207,35 @@ export class RemoteDesktopStream {
         });
         return;
 
+      case 'file.listing':
+      case 'file.info':
+      case 'file.chunk':
+      case 'file.written': {
+        // Handed to whoever asked and nowhere else. Nothing here keeps a copy of a listing or
+        // a chunk: the browser holds a transfer only while it is running.
+        const pending = this.pendingFiles.get(String(message['requestId'] ?? ''));
+        if (!pending) return;
+
+        this.pendingFiles.delete(String(message['requestId']));
+        pending.resolve(message);
+        return;
+      }
+
+      case 'file.refused': {
+        const pending = this.pendingFiles.get(String(message['requestId'] ?? ''));
+        if (!pending) return;
+
+        this.pendingFiles.delete(String(message['requestId']));
+        pending.reject(
+          new FileRefusal(
+            String(message['reason'] ?? 'failed'),
+            String(message['detail'] ?? 'The PC refused that file operation.'),
+            message['limitation'] === true,
+          ),
+        );
+        return;
+      }
+
       case 'terminal.refused':
         this.options.events.onTerminal({
           kind: 'refused',
@@ -1120,4 +1399,43 @@ export class RemoteDesktopStream {
     this.phase = phase;
     this.options.events.onPhase(phase, detail);
   }
+}
+
+/**
+ * Base64 without a data URL round trip.
+ *
+ * `btoa` takes a string of code points below 256, so the bytes are widened one at a time. In
+ * chunks, because spreading a 64 KB array into `String.fromCharCode` is an argument list long
+ * enough to overflow the stack in some browsers — which shows up as a transfer that works
+ * everywhere except one person's laptop.
+ */
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const step = 8192;
+
+  for (let index = 0; index < bytes.length; index += step) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + step));
+  }
+
+  return btoa(binary);
+}
+
+function decodeBase64(encoded: string): Uint8Array {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
+}
+
+/** SHA-256 as lowercase hex, matching what the agent computes over the same bytes. */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer);
+
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }

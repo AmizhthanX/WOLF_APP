@@ -380,5 +380,25 @@ Stated plainly rather than left to be discovered:
   privileged helper. A remote shell with more rights than the person sitting at the machine
   would be a different product. Shells are named rather than pathed, so the capability cannot
   be widened into "run this executable" by a caller choosing what to start.
+- **Neither the contents of a transferred file nor the name of one reaches the cloud.** The
+  file manager rides the data channel between the browser and the PC. The rule about contents
+  is written down; a directory listing is not innocent either, and a server that never receives
+  one cannot store it, log it, or be compelled to produce it. The agent's own log carries no
+  path either, refusals included, and there are tests that assert it. See
+  [the file manager](../architecture/file-manager.md).
+- **Access to files is the signed-in user's access, enforced by Windows.** The session host
+  runs as that user, so a folder they cannot read is a folder WOLF cannot read — with no extra
+  code and no way to get it wrong. `file-transfer` is its own capability and `file-operations`
+  its own exclusive lease; nothing else implies either, not even a terminal.
+- **Every path passes two gates before anything is opened.** A syntactic one that refuses
+  traversal, device-namespace prefixes, reserved device names, alternate data streams, and
+  trailing dots and spaces — each a real way one path impersonates another on Windows — and a
+  filesystem one that follows reparse points and re-checks the target. Network paths are
+  refused outright: the session host holds the user's credentials, and browsing a share would
+  turn a granted session into reach over machines that were never granted.
+- **Transfers are verified in both directions.** Every chunk carries a SHA-256, and the agent
+  checks it before anything reaches the disk. Uploads accumulate in a part file and are renamed
+  into place only after the declared size matches, so a half-finished transfer never looks like
+  a finished one. Windows' own folders are refused as a destination.
 - **No penetration test has been run.** The security tests here are the author's, not an
   independent assessment.

@@ -85,6 +85,7 @@ public sealed class StreamSession : IDisposable
     private readonly bool _audioAllowed;
     private readonly bool _clipboardAllowed;
     private readonly bool _terminalAllowed;
+    private readonly bool _filesAllowed;
     private readonly object _signalGate = new();
     private readonly List<SignalCandidate> _candidatesBeforeOffer = new();
     private bool _offerSent;
@@ -93,6 +94,7 @@ public sealed class StreamSession : IDisposable
     private InputChannel? _input;
     private ClipboardChannel? _clipboard;
     private Terminal.TerminalChannel? _terminal;
+    private Files.FileChannel? _files;
     private ControlChannel? _control;
     private AudioPipeline? _audio;
     private RateController? _rate;
@@ -136,6 +138,7 @@ public sealed class StreamSession : IDisposable
         bool audioAllowed,
         bool clipboardAllowed,
         bool terminalAllowed,
+        bool filesAllowed,
         SignalSender send,
         ILoggerFactory loggers,
         bool preferDuplication)
@@ -146,6 +149,7 @@ public sealed class StreamSession : IDisposable
         _audioAllowed = audioAllowed;
         _clipboardAllowed = clipboardAllowed;
         _terminalAllowed = terminalAllowed;
+        _filesAllowed = filesAllowed;
         _streamId = streamId;
         SessionId = sessionId;
         _request = request;
@@ -181,6 +185,7 @@ public sealed class StreamSession : IDisposable
         bool audioAllowed,
         bool clipboardAllowed,
         bool terminalAllowed,
+        bool filesAllowed,
         DisplayEnumerator displays,
         SignalSender send,
         ILoggerFactory loggers,
@@ -193,6 +198,7 @@ public sealed class StreamSession : IDisposable
             audioAllowed,
             clipboardAllowed,
             terminalAllowed,
+            filesAllowed,
             send,
             loggers,
             preferDuplication);
@@ -388,11 +394,17 @@ public sealed class StreamSession : IDisposable
             SendControl,
             _loggers);
 
+        // Refuses everything until the cloud grants the file lease, and refuses everything
+        // forever when this session was not granted the capability. Built either way, so an
+        // early message is answered with the reason rather than dropped.
+        _files = new Files.FileChannel(_streamId, _filesAllowed, _loggers);
+
         _control = new ControlChannel(
             _streamId,
             _input,
             _clipboard,
             _terminal,
+            _files,
             _loggers.CreateLogger<ControlChannel>());
 
         _clipboard.Start(_clipboardAllowed);
@@ -1326,6 +1338,20 @@ public sealed class StreamSession : IDisposable
     public bool HasTerminalControl => _terminal?.HasControl ?? false;
 
     /// <summary>
+    /// Apply the cloud's decision about who may browse and move this PC's files.
+    ///
+    /// Losing it abandons every transfer in flight, which is the difference between a lease
+    /// and a suggestion.
+    /// </summary>
+    public void ApplyFileControl(bool granted, string? holderSessionId, DateTimeOffset? expiresAt)
+    {
+        _files?.ApplyControl(granted, holderSessionId, expiresAt);
+    }
+
+    /// <summary>Whether this stream may touch files right now.</summary>
+    public bool HasFileControl => _files?.HasControl ?? false;
+
+    /// <summary>
     /// Put one message on the data channel.
     ///
     /// The terminal is the caller that needs this: its output arrives on a pump thread that
@@ -1383,6 +1409,10 @@ public sealed class StreamSession : IDisposable
         // Every shell this stream opened goes with it. A command prompt left running on
         // somebody's PC after the viewer disconnected is exactly what a lease is for.
         _terminal?.Dispose();
+
+        // And every transfer, with its part file. Half a file on somebody's disk, with
+        // nothing to finish it and nothing to explain it, is worse than none.
+        _files?.Dispose();
 
         // Order matters: stop producing pictures before tearing down the thing that sends
         // them, so no frame is handed to a disposed transport.

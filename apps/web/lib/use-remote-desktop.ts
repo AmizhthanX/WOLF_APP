@@ -18,6 +18,10 @@ import {
   type StreamSurface,
   type TerminalEvent,
   type TerminalShell,
+  type FileChunk,
+  type FileInfo,
+  type FileListing,
+  type FileWritten,
 } from './remote-desktop';
 
 /**
@@ -72,6 +76,28 @@ export interface RemoteDesktopView {
    */
   onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
   /**
+   * Who holds this PC's files, as the cloud last decided.
+   *
+   * Its own lease again. Watching a screen is not being handed the disks behind it.
+   */
+  readonly fileControl: InputControl | null;
+  requestFiles(): void;
+  releaseFiles(): void;
+  /** Browse. Null lists the drives, which is the root of the tree. */
+  listFiles(path: string | null): Promise<FileListing>;
+  statFile(path: string): Promise<FileInfo>;
+  readFile(path: string, offset: number, length: number): Promise<FileChunk>;
+  writeFile(options: {
+    transferId: string;
+    path: string;
+    offset: number;
+    bytes: Uint8Array;
+    final: boolean;
+    overwrite: boolean;
+    totalBytes: number;
+  }): Promise<FileWritten>;
+  cancelTransfer(transferId: string): Promise<void>;
+  /**
    * The last thing the PC put on its clipboard, waiting for the operator to take it.
    *
    * Held in memory for as long as the panel shows it and no longer. WOLF never writes it to
@@ -108,6 +134,7 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
   const [showing, setShowing] = useState<StreamSurface>('desktop');
   const [showingReason, setShowingReason] = useState<string | null>(null);
   const [terminalControl, setTerminalControl] = useState<InputControl | null>(null);
+  const [fileControl, setFileControl] = useState<InputControl | null>(null);
 
   // Held in a ref rather than state: these fire continuously while a shell is producing
   // output, and re-rendering the page for each chunk would make a busy command unusable.
@@ -193,6 +220,7 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
             onInputControl: setControl,
             onDegraded: setDegradedReason,
             onTerminalControl: setTerminalControl,
+            onFileControl: setFileControl,
             onTerminal: (event: TerminalEvent) => {
               for (const listener of terminalListeners.current) listener(event);
             },
@@ -271,6 +299,49 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     };
   }, []);
 
+  const requestFiles = useCallback(() => stream.current?.requestFiles(), []);
+  const releaseFiles = useCallback(() => stream.current?.releaseFiles(), []);
+
+  /**
+   * A stream that has gone is the ordinary way these fail.
+   *
+   * Rejecting with the same error the client uses keeps one shape for the panel to handle,
+   * rather than a null it has to remember to check.
+   */
+  const noStream = () =>
+    Promise.reject(new Error('There is no connection to this PC right now.'));
+
+  const listFiles = useCallback(
+    (path: string | null) => stream.current?.listFiles(path) ?? noStream(),
+    [],
+  );
+
+  const statFile = useCallback((path: string) => stream.current?.statFile(path) ?? noStream(), []);
+
+  const readFile = useCallback(
+    (path: string, offset: number, length: number) =>
+      stream.current?.readFile(path, offset, length) ?? noStream(),
+    [],
+  );
+
+  const writeFile = useCallback(
+    (options: {
+      transferId: string;
+      path: string;
+      offset: number;
+      bytes: Uint8Array;
+      final: boolean;
+      overwrite: boolean;
+      totalBytes: number;
+    }) => stream.current?.writeFile(options) ?? noStream(),
+    [],
+  );
+
+  const cancelTransfer = useCallback(
+    (transferId: string) => stream.current?.cancelTransfer(transferId) ?? Promise.resolve(),
+    [],
+  );
+
   const requestControl = useCallback(() => stream.current?.requestControl(), []);
   const releaseControl = useCallback(() => stream.current?.releaseControl(), []);
   const sendInput = useCallback((events: InputEvent[]) => stream.current?.sendInput(events), []);
@@ -297,6 +368,14 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     resizeTerminal,
     closeTerminal,
     onTerminalEvent,
+    fileControl,
+    requestFiles,
+    releaseFiles,
+    listFiles,
+    statFile,
+    readFile,
+    writeFile,
+    cancelTransfer,
     clipboardFromPc,
     clipboardNotice,
     sendClipboard,

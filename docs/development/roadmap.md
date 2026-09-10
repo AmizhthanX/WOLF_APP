@@ -490,7 +490,50 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   carriage returns, backspace and clear-screen are applied, and anything that paints a
   full-screen interface is reported as unrendered rather than approximated
 
+**Done — the file manager**
+
+- Browsing this PC's disks, and moving files off them and onto them, all on the data channel —
+  **contents and names alike**. The rule about contents is written down; a directory listing is
+  not innocent either, and a server that never receives one cannot store it, log it, or be
+  compelled to produce it
+- The agent's own log carries no path either, including in refusals — the easiest place to leak
+  one by accident. Tests put a tellingly-named file through a listing, a read and a refusal and
+  assert the name appears nowhere
+- `file-transfer` is its own capability and `file-operations` its own exclusive lease. Not even
+  the terminal capability implies it, and an end-to-end test says so: a terminal could copy a
+  file out by other means, which is exactly why the capability is about intent and audit rather
+  than about what is theoretically reachable
+- **Windows does most of the access control, for free.** The session host runs as the signed-in
+  user, so a folder they cannot read is a folder WOLF cannot read — no extra code, nothing to
+  get wrong, and no access gained by coming in remotely
+- A two-part path gate: a string half tested exhaustively (traversal, `\\?\`, device names at
+  any depth, alternate data streams, trailing dots and spaces, wildcards) and a filesystem half
+  that follows reparse points and puts the target back through the same rules. Passing the
+  first is permission to ask the second, never authorisation to act
+- **Network paths are refused deliberately**, and reported as unsupported rather than broken:
+  the session host holds the signed-in user's credentials, so browsing a share would let WOLF
+  reach machines the operator was never granted, with none of WOLF's audit trail on the far end
+- Transfers are offsets rather than a stream, which is what makes them resumable across the
+  reconnects a home-internet data channel produces as a matter of course. Every chunk carries a
+  SHA-256 and **both ends check** — the agent before anything reaches the disk, because a part
+  file with a corrupt middle is indistinguishable from a good one until the end
+- Uploads land in a `.wolfpart` file and are renamed into place only after the declared size is
+  verified. The rename is the moment the file exists: somebody double-clicking a 40%-complete
+  installer is a worse outcome than a transfer they restart
+- Everything expensive to get wrong is decided when a transfer *starts* — whether something is
+  already there, whether the drive has room, whether the destination is somewhere WOLF writes.
+  Overwriting is off by default, and Windows' own folders are refused outright rather than
+  confirmed
+- A directory listing that hits the cap **says it was truncated**. A folder showing 2000 of its
+  40000 files with no indication is one an operator concludes does not hold what they want
+
 **Still open in this milestone**
+- **Delete, rename, move and new folders are not built.** They are mutations with real blast
+  radius and belong on the command path, where risk levels and confirmations live; putting them
+  on the data channel would route them around the machinery that makes them accountable
+- **No search, and no directory transfers.** One file at a time: recursion turns "did that
+  work" into a report rather than an answer, and the naive recursive search is a session host
+  reading every file on the machine
 - **`terminal-admin` is not built.** An elevated shell needs a token the session host does
   not have, which makes it privileged-helper work and a slice of its own
 - **A terminal needs a running stream**, because the data channel belongs to one. Opening a
@@ -498,7 +541,6 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - **No terminal grid.** Editors, pagers and in-place progress displays are not rendered
   correctly. Stated in the UI above the output rather than approximated, so an operator
   reading a partial screen knows it is partial
-- File manager and chunked, resumable transfers with checksums
 - Services, scheduled tasks, startup items
 - Network diagnostics, Windows event logs, hardware inventory
 - Clipboard sync is done (milestone 2) and is never persisted in cloud history

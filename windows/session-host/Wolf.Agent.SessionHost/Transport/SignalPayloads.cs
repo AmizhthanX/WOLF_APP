@@ -39,6 +39,13 @@ public static class SignalTypes
     /// </summary>
     public const string TerminalControl = "terminal.control";
 
+    /// <summary>
+    /// Who may browse and move this PC's files, decided by the cloud.
+    ///
+    /// Authored only by the relay, like the other two.
+    /// </summary>
+    public const string FileControl = "file.control";
+
     // Agent -> client.
     public const string StreamReady = "stream.ready";
     public const string SdpOffer = "sdp.offer";

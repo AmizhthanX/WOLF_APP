@@ -738,3 +738,25 @@ tbody tr:hover {
 .terminal-line {
   min-height: 1.35em;
 }
+
+/* ---------------------------------------------------------------------------
+   A button that reads as a link
+
+   Used for folder names in the file browser: they navigate, so they should look
+   like navigation — but they are buttons, because a folder on somebody else's PC
+   has no URL and never should.
+   --------------------------------------------------------------------------- */
+
+.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
