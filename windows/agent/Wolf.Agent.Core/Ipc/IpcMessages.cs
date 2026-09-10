@@ -383,3 +383,39 @@ public sealed record ServiceSecureStateMessage(
     [JsonPropertyName("ipcVersion")]
     public int IpcVersion { get; init; } = WolfIpc.Version;
 }
+
+/// <summary>
+/// Input the user host has authorised, on its way to the secure desktop.
+///
+/// The batch is carried verbatim. Both hosts are the same executable and parse it with the
+/// same code, so re-shaping it in the middle would only create somewhere for the two to
+/// disagree.
+///
+/// Everything that decides whether this input is allowed happened before the message was
+/// sent: the session's control lease, its expiry, the batch bounds. The secure host injects
+/// what it is handed. That is the right split — the lease belongs to a session, and the
+/// secure host does not have one.
+/// </summary>
+public sealed record HostSecureInputMessage(
+    [property: JsonPropertyName("streamId")] string StreamId,
+    /// <summary>The batch exactly as it arrived on the data channel.</summary>
+    [property: JsonPropertyName("batch")] JsonElement Batch)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "host.secure-input";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}
+
+/// <summary>The same batch, relayed by the service to the host on the secure desktop.</summary>
+public sealed record ServiceSecureInputMessage(
+    [property: JsonPropertyName("streamId")] string StreamId,
+    [property: JsonPropertyName("batch")] JsonElement Batch)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "service.secure-input";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}

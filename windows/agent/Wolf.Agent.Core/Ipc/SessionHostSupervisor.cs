@@ -95,6 +95,15 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
     public event Action<string>? InputDesktopChanged;
 
     /// <summary>
+    /// Raised when the user host forwards input meant for the secure desktop.
+    ///
+    /// Already authorised: the host checked the session's control lease before sending it.
+    /// The service's job is to carry it to the process that can reach that desktop, not to
+    /// look at it — one of these keystrokes is somebody's password.
+    /// </summary>
+    public event Action<HostSecureInputMessage>? SecureInputForwarded;
+
+    /// <summary>
     /// Raised when the host goes away, with the streams it was serving.
     ///
     /// The host exiting is not rare — it goes with the session, so signing out, switching
@@ -587,6 +596,17 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                     _logger.LogDebug("Ignored a session host answer for an unknown request.");
                 }
 
+                return;
+            }
+
+            case "host.secure-input":
+            {
+                HostSecureInputMessage? input =
+                    document.Deserialize<HostSecureInputMessage>(WolfIpc.Json);
+
+                if (input is null) return;
+
+                SecureInputForwarded?.Invoke(input);
                 return;
             }
 

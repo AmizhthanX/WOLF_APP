@@ -68,8 +68,25 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
     public void Start()
     {
         _sessionHost.InputDesktopChanged += OnInputDesktopChanged;
+        _sessionHost.SecureInputForwarded += OnSecureInput;
         _secureHost.FrameReceived += OnFrame;
         _secureHost.StateChanged += OnSecureStateChanged;
+    }
+
+    /// <summary>
+    /// Carry authorised input to the desktop it was meant for.
+    ///
+    /// Dropped rather than redirected when the secure desktop is not what the client is
+    /// looking at. Input aimed at a lock screen that has just gone would land on the
+    /// operator's own desktop, typing a password into whatever has focus.
+    /// </summary>
+    private void OnSecureInput(HostSecureInputMessage input)
+    {
+        if (!_secureShowing) return;
+
+        Fire(_secureHost.SendInputAsync(
+            new ServiceSecureInputMessage(input.StreamId, input.Batch),
+            CancellationToken.None));
     }
 
     private void OnInputDesktopChanged(string inputDesktop)
@@ -189,6 +206,7 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _sessionHost.InputDesktopChanged -= OnInputDesktopChanged;
+        _sessionHost.SecureInputForwarded -= OnSecureInput;
         _secureHost.FrameReceived -= OnFrame;
         _secureHost.StateChanged -= OnSecureStateChanged;
 

@@ -48,11 +48,36 @@ public sealed class InputChannel
     private long _lastSequence = -1;
     private long _eventsInjected;
 
+    /// <summary>
+    /// Where to send events instead of injecting them, while the secure desktop is showing.
+    ///
+    /// Set when the client is watching the lock screen. This process cannot reach that
+    /// desktop — only a process running on it can — so the events go to the host that is,
+    /// having already been authorised here.
+    ///
+    /// The split is deliberate. Everything that decides *whether* input is allowed — the
+    /// control lease, its expiry, the batch bounds, the stream it belongs to — depends on the
+    /// session, and the session lives here. The far end injects what it is handed and knows
+    /// nothing about leases, which is the right amount for a process that exists for the few
+    /// seconds a screen is locked.
+    /// </summary>
+    private Action<JsonElement>? _forward;
+
     public InputChannel(string streamId, InputInjector injector, ILogger<InputChannel> logger)
     {
         _streamId = streamId;
         _injector = injector;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Send authorised input somewhere else, or stop.
+    ///
+    /// Null puts injection back in this process. Called when the desktop locks and unlocks.
+    /// </summary>
+    public void ForwardTo(Action<JsonElement>? forward)
+    {
+        lock (_gate) _forward = forward;
     }
 
     public long EventsInjected => Interlocked.Read(ref _eventsInjected);
@@ -183,6 +208,38 @@ public sealed class InputChannel
 
         NoteSequence(batch.Sequence);
 
+        Action<JsonElement>? forward;
+        lock (_gate) forward = _forward;
+
+        if (forward is not null)
+        {
+            // Checked before it crosses the pipe, not after. The far end runs as SYSTEM on a
+            // desktop nothing else can see, and it has no way to answer the client — so an
+            // event that is out of bounds has to be refused *here*, where there is still
+            // somebody to tell.
+            foreach (InputEventDto entry in batch.Events)
+            {
+                InputRejection? refusal = RefuseForSecureDesktop(entry, batch.Sequence);
+                if (refusal is not null) return refusal;
+            }
+
+            // Authorised here, injected elsewhere. Counted as injected because from the
+            // session's point of view it was: the events left this channel having passed
+            // every check, and what happens to them on the other desktop is reported by the
+            // host that is on it.
+            Interlocked.Add(ref _eventsInjected, batch.Events.Count);
+
+            // The count, never the content. These are keystrokes on a lock screen and one of
+            // them is somebody's password.
+            _logger.LogDebug(
+                "Stream {Stream}: forwarded {Count} event(s) to the secure desktop.",
+                _streamId,
+                batch.Events.Count);
+
+            forward(element);
+            return null;
+        }
+
         foreach (InputEventDto entry in batch.Events)
         {
             InjectionResult result = Inject(entry);
@@ -205,31 +262,94 @@ public sealed class InputChannel
         return null;
     }
 
-    private InjectionResult Inject(InputEventDto entry) => entry.Type switch
+    /// <summary>
+    /// Whether an event is one the protocol allows.
+    ///
+    /// Kept apart from <see cref="Inject"/> because the events are not always injected here:
+    /// while the secure desktop is showing they go to another process, and they have to have
+    /// been checked before they leave. One list of bounds, read by both paths, so the two
+    /// cannot drift into a batch that is refused on one desktop and accepted on the other.
+    /// </summary>
+    private static bool WithinBounds(InputEventDto entry) => entry.Type switch
     {
-        "pointer.move" when InRange(entry.X) && InRange(entry.Y) =>
-            _injector.MovePointer(entry.X!.Value, entry.Y!.Value),
+        "pointer.move" => InRange(entry.X) && InRange(entry.Y),
 
-        "pointer.button" when InRange(entry.X) && InRange(entry.Y) && entry.Button is not null =>
-            _injector.PressPointer(entry.Button, entry.Action == "down", entry.X!.Value, entry.Y!.Value),
+        "pointer.button" => InRange(entry.X) && InRange(entry.Y) && entry.Button is not null,
 
-        "pointer.scroll" when InRange(entry.X) && InRange(entry.Y) &&
-                              InScrollRange(entry.DeltaX) && InScrollRange(entry.DeltaY) =>
-            _injector.Scroll(entry.X!.Value, entry.Y!.Value, entry.DeltaX ?? 0, entry.DeltaY ?? 0),
+        "pointer.scroll" => InRange(entry.X) && InRange(entry.Y) &&
+                            InScrollRange(entry.DeltaX) && InScrollRange(entry.DeltaY),
 
-        "key" when entry.Key is >= 1 and <= 254 =>
-            _injector.PressKey(entry.Key.Value, entry.Action == "down", entry.ScanCode, entry.Extended),
+        "key" => entry.Key is >= 1 and <= 254,
 
-        "text" when entry.Value is { Length: > 0 and <= MaxTextLength } =>
-            _injector.TypeText(entry.Value),
+        "text" => entry.Value is { Length: > 0 and <= MaxTextLength },
 
-        "system.combo" when entry.Combo is not null =>
-            _injector.SystemCombo(entry.Combo),
+        "system.combo" => entry.Combo is not null,
 
-        // Anything that falls through failed a bounds check, which the protocol says cannot
-        // happen — so it means the sender is not speaking the protocol.
-        _ => InjectionResult.Refused($"A '{entry.Type}' event was outside the bounds the protocol allows."),
+        // An event type that does not exist. The protocol says this cannot happen, so it
+        // means the sender is not speaking the protocol.
+        _ => false,
     };
+
+    private static InjectionResult OutOfBounds(InputEventDto entry) =>
+        InjectionResult.Refused($"A '{entry.Type}' event was outside the bounds the protocol allows.");
+
+    private InjectionResult Inject(InputEventDto entry)
+    {
+        if (!WithinBounds(entry)) return OutOfBounds(entry);
+
+        return entry.Type switch
+        {
+            "pointer.move" => _injector.MovePointer(entry.X!.Value, entry.Y!.Value),
+
+            "pointer.button" =>
+                _injector.PressPointer(entry.Button!, entry.Action == "down", entry.X!.Value, entry.Y!.Value),
+
+            "pointer.scroll" =>
+                _injector.Scroll(entry.X!.Value, entry.Y!.Value, entry.DeltaX ?? 0, entry.DeltaY ?? 0),
+
+            "key" => _injector.PressKey(entry.Key!.Value, entry.Action == "down", entry.ScanCode, entry.Extended),
+
+            "text" => _injector.TypeText(entry.Value!),
+
+            "system.combo" => _injector.SystemCombo(entry.Combo!),
+
+            // Unreachable: WithinBounds named the same types and refused everything else.
+            // Present because a switch expression must be total, and a refusal is the answer
+            // that stays safe if the two ever stop naming the same list.
+            _ => OutOfBounds(entry),
+        };
+    }
+
+    /// <summary>
+    /// Whether an event has to be refused rather than sent to the secure desktop.
+    ///
+    /// Two reasons, and both are answered here because the far end cannot answer anything:
+    /// it injects on a desktop with no route back to the client.
+    /// </summary>
+    private InputRejection? RefuseForSecureDesktop(InputEventDto entry, long sequence)
+    {
+        if (!WithinBounds(entry))
+        {
+            return new InputRejection(_streamId, sequence, "rejected", OutOfBounds(entry).Reason!, false);
+        }
+
+        // System combinations are not delivered to a lock screen. Ctrl+Alt+Delete is
+        // Winlogon's to produce and no injected input can stand in for it, and the rest —
+        // Alt+Tab, Win+Tab — address a desktop that is not the one being shown. Saying so
+        // beats forwarding them into a process that would drop them silently.
+        if (entry.Type == "system.combo")
+        {
+            return new InputRejection(
+                _streamId,
+                sequence,
+                "unsupported",
+                "System key combinations are not delivered while the lock screen is showing. " +
+                "Sign in first, and they work as usual.",
+                true);
+        }
+
+        return null;
+    }
 
     private void NoteSequence(long sequence)
     {

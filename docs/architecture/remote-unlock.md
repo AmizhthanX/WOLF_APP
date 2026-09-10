@@ -33,18 +33,19 @@ Two related things that look like answers and are not:
 - An administrator at the lock screen can sign in as themselves. That does not unlock the
   locked session — it starts a second one, and Windows offers to sign the first one out.
 
-## Route 1 — the operator types the password on the lock screen
+## Route 1 — the operator types the password on the lock screen — **built**
 
-The one that works, is small, and is what every commercial remote-desktop tool does.
+The one that works, is small, and is what every commercial remote-desktop tool does. This is
+the route WOLF took; see [typing on the lock
+screen](remote-desktop.md#typing-on-the-lock-screen).
 
-WOLF can already *see* the secure desktop (see [the secure-desktop
-host](remote-desktop.md#the-secure-desktop-host)). What it cannot yet do is inject input
-there. The secure host runs as SYSTEM on `winsta0\Winlogon`, so `SendInput` from it reaches
-that desktop — the same mechanism the user host already uses, in a process that is already
-on the right desktop.
+The secure host runs as SYSTEM on `winsta0\Winlogon`, so `SendInput` from it reaches that
+desktop — the same mechanism the user host already uses, in a process that is already on the
+right desktop. Authorisation stays in the user host, which is the one that holds the session
+and the control lease; only the injection moves.
 
-- **Cost:** small. The input path exists; the secure host needs the input channel wired to it
-  and the cloud needs to allow input while the state is `LOCKED`.
+- **Cost:** small, and paid. Like the rest of the secure-desktop path, the relay in the
+  middle has never run — both ends have.
 - **What it gives:** the operator sees the lock screen and signs in as themselves.
 - **What it costs the security model:** the password crosses the encrypted stream as
   keystrokes. WOLF never stores it, never logs it, and never sees it as a password — it is
@@ -125,10 +126,10 @@ the case WOLF is for.
 
 The honest options are therefore:
 
-1. **Build route 1 and describe it accurately.** "You can reach the lock screen and sign in"
-   is a real, useful capability and is what the feature means to most people. It does not
-   satisfy `power.unlock` as specified, so `power.unlock` stays unimplemented and refused
-   rather than being quietly redefined to mean something weaker.
+1. **Build route 1 and describe it accurately.** **Chosen, and built.** "You can reach the
+   lock screen and sign in" is a real, useful capability and is what the feature means to
+   most people. It does not satisfy `power.unlock` as specified, so `power.unlock` stays
+   unimplemented and refused rather than being quietly redefined to mean something weaker.
 2. **Take route 3 as a deliberate product decision**, with the signing programme as part of
    the plan.
 3. **Offer route 4 for domain-joined machines only**, and say so — a capability that exists on

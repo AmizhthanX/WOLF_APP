@@ -143,6 +143,19 @@ public static class Program
         // The secure host has no peer connection of its own: it produces frames and the
         // service hands them to the host that already holds one. Only ever non-null on the
         // secure desktop, and the message that drives it is only ever sent there.
+        // On the user desktop this sends authorised input up to the service, which passes it
+        // to the host on the lock screen. Never set on the secure host itself, which is the
+        // far end of that path rather than the near one.
+        if (!secureDesktop)
+        {
+            streams.SecureInputForwarder = (streamId, batch) =>
+                _ = channel.SendAsync(new HostSecureInputMessage(streamId, batch), cancellationToken);
+        }
+
+        // Injects what arrives from the other side. Only on the secure desktop, which is the
+        // only process that can reach it.
+        SecureInputSink? secureInput = secureDesktop ? new SecureInputSink(displays, loggerFactory) : null;
+
         using SecureFrameProducer? secureFrames = secureDesktop
             ? new SecureFrameProducer(
                 displays,
@@ -188,7 +201,9 @@ public static class Program
                         return;
                     }
 
-                    await HandleAsync(document, channel, displays, encoders, streams, secureFrames, logger, sessionCts.Token)
+                    await HandleAsync(
+                        document, channel, displays, encoders, streams, secureFrames, secureInput,
+                        logger, sessionCts.Token)
                         .ConfigureAwait(false);
                 }
             }
@@ -267,6 +282,7 @@ public static class Program
         EncoderProbe encoders,
         StreamCoordinator streams,
         SecureFrameProducer? secureFrames,
+        SecureInputSink? secureInput,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -301,6 +317,26 @@ public static class Program
                 }
 
                 await streams.HandleAsync(signal, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            case "service.secure-input":
+            {
+                if (secureInput is null)
+                {
+                    // Only the secure host injects this way. A user host receiving it has
+                    // been sent somebody else's message, which is worth saying rather than
+                    // quietly injecting on the wrong desktop.
+                    logger.LogWarning("Ignored secure-desktop input on the user desktop.");
+                    return;
+                }
+
+                ServiceSecureInputMessage? input =
+                    document.Deserialize<ServiceSecureInputMessage>(WolfIpc.Json);
+
+                if (input is null) return;
+
+                secureInput.Inject(input.StreamId, input.Batch);
                 return;
             }
 

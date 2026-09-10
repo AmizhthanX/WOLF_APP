@@ -147,6 +147,32 @@ public sealed class SecureDesktopSupervisor : IAsyncDisposable
     }
 
     /// <summary>
+    /// Hand an authorised input batch to the host on the secure desktop.
+    ///
+    /// Returns false when there is no host to hand it to, which is the ordinary case the
+    /// instant a screen unlocks: input in flight arrives after the desktop it was meant for
+    /// has gone, and is dropped rather than injected somewhere else.
+    /// </summary>
+    public async Task<bool> SendInputAsync(
+        ServiceSecureInputMessage input,
+        CancellationToken cancellationToken)
+    {
+        IpcChannel? channel = _channel;
+        if (channel is null) return false;
+
+        try
+        {
+            await channel.SendAsync(input, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            _logger.LogWarning("Input for the secure desktop could not be delivered; the host has gone.");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Start capturing the secure desktop, if it is not already.
     ///
     /// Idempotent: called every time the input desktop is observed to be secure, which is on

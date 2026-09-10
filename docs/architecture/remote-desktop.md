@@ -81,10 +81,16 @@ user-session process cannot capture it or inject into it. Honest consequences:
 | PC state | Stream | Input |
 | --- | --- | --- |
 | Desktop, user signed in | Full | Full |
-| Locked | State reported as `LOCKED`; **no frames** | Refused |
-| Sign-in screen | State reported as `LOGIN`; **no frames** | Refused |
+| Locked | `LOCKED`, and the lock screen itself where the agent runs as a service; **no frames** otherwise | Delivered to the lock screen where there are frames; refused otherwise |
+| Sign-in screen | `LOGIN`, and the sign-in screen on the same terms | As above |
 | Restarting | `RESTARTING` | Refused |
 | Signed out | `LOGIN` | Refused |
+
+"Delivered to the lock screen" is the whole of what WOLF does there. The operator sees their
+own PC's lock screen and signs in to it, typing their password themselves as keystrokes on
+the encrypted stream — never stored, never logged, and indistinguishable to WOLF from any
+other keystroke. That is a smaller claim than "WOLF can unlock your PC", which is not
+available at all; see [remote unlock](remote-unlock.md).
 
 **How the state is known.** Not by inference any more. The session host runs inside the
 session and asks Windows whether it may open the desktop that currently has the input. Being
@@ -177,6 +183,56 @@ frame and the decoder re-initialises from it. While the secure desktop is on the
 user host's own pipeline output is dropped — on a locked screen it produces nothing anyway,
 and this is what stops the two encoders interleaving in the moment either side of a lock.
 
+### Typing on the lock screen
+
+Authorisation stays where the session is; only the injection moves.
+
+`InputChannel` runs in the user host, which holds the session, the control lease and its
+expiry. While the secure desktop is showing it makes exactly the same decisions it always
+makes — is this session allowed to drive, has the lease lapsed, is this batch for this
+stream, is every event within the bounds the protocol allows — and then hands the batch on
+instead of injecting it. `SecureInputSink`, on the other side, injects what it is handed. It
+is deliberately incapable of deciding whether input is allowed, because it has nothing to
+decide with: no session, no lease, no expiry.
+
+```
+browser ──data channel──▶ user host          service            secure host
+                          InputChannel  ──▶  relay        ──▶   SecureInputSink
+                          (authorises)       (drops when        (injects on
+                                              not showing)       winsta0\Winlogon)
+```
+
+Four rules, each of which is a way this could have gone wrong:
+
+- **Nothing is injected on both desktops.** The user host forwards *instead of* injecting.
+  Doing both would type the operator's password into whatever has focus in their own session
+  while they watch a lock screen.
+- **Everything is checked before it leaves.** The far end runs as SYSTEM and has no route
+  back to the client, so a batch that is out of bounds has to be refused where there is still
+  somebody to tell. The bounds live in one place and both paths read them.
+- **The service drops what arrives late.** Input aimed at a lock screen that has just gone
+  would land on the operator's own desktop. The relay forwards only while the client is
+  actually being shown the secure desktop.
+- **System combinations are refused, with a reason.** Ctrl+Alt+Delete is Winlogon's to
+  produce and no injected input can stand in for it; Alt+Tab addresses a desktop that is not
+  the one being shown. Forwarding either would be a keypress that vanished silently.
+
+The batch crosses both pipes **verbatim**, as the JSON the browser sent. Re-encoding it from
+the parsed events would mean the far end injects the middle's idea of what the client meant.
+
+What is logged about a forwarded batch is a count and a stream id. Never the content: one of
+those keystrokes is somebody's password, and there is a test that asserts it does not appear
+in the log.
+
+**One gap, and it is on the capture side rather than this one.** A stream that is already
+running when the screen locks keeps going, and that is the case this was built for. Starting
+a *new* stream while the screen is already locked is still refused: `RemoteDesktopAvailability`
+answers `locked` before it looks at anything else, and it does not yet know that a secure host
+could be started. Nothing about input is missing — the operator simply has to have been
+streaming before the lock. Closing it means teaching the availability check about
+`secureDesktopCaptureAvailable`, and teaching the client that "available, showing the lock
+screen" is a state of its own.
+
 ### What has not run
 
 **None of the secure-desktop path has ever executed.** It needs the agent installed as a
@@ -202,6 +258,12 @@ What that means in practice, for whoever runs it first:
   either looks like a decoder bug rather than a plumbing one.
 - The hand-off is written but, like the rest of this path, has never been observed. The two
   things most likely to be wrong are stated below.
+- **Input on the secure desktop is unverified in the middle only.** Both ends run here and
+  are tested for real — the user host's forward-instead-of-inject split against a low-level
+  hook, and `SecureInputSink` injecting on the desktop the test process is on. What has never
+  run is the relay between them, and with it the rule that drops input arriving after an
+  unlock. That rule is the one whose failure is worst: it would put a password on the
+  operator's own desktop.
 
 This is the PRD's §14 requirement read literally: the system "must not falsely claim that
 every Windows security boundary can be controlled identically to an ordinary desktop."

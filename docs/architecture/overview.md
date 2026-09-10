@@ -126,11 +126,17 @@ Milestone 1 covers the foundation and core management. These are *reported as un
 by the agent's capability handshake rather than stubbed, so the cloud refuses commands for
 them instead of queueing work that would never run:
 
-- The parts of the privileged helper that are not built yet: device management, remote
-  unlock, and secure-desktop capture. The helper itself exists and reads disk health — see
-  [the privileged helper](privileged-helper.md)
+- **Remote unlock**, which is refused rather than unbuilt: Windows has no API that unlocks a
+  session, and the analysis is in [remote unlock](remote-unlock.md). What WOLF does instead is
+  show the lock screen and let the operator sign in to it themselves
 - Terminal, file manager, services, scheduled tasks, startup items
 - Wake-on-LAN
 - GPU telemetry, CPU package power, thermal sensors
+
+Two things that used to be on this list are not, and the correction is worth keeping: the
+privileged helper exists and reads disk health, with device management running through it,
+and secure-desktop capture and input turned out not to be helper work at all. They are a
+session-isolation problem, solved by a second session host on `winsta0\Winlogon`. See
+[the privileged helper](privileged-helper.md) and [remote desktop](remote-desktop.md).
 
 See [the roadmap](../development/roadmap.md) for the order these land in.

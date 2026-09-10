@@ -385,12 +385,42 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - Captured modestly on purpose — 1080p, 10 fps, 2 Mbps — and not at all until somebody is
   actually watching
 
+**Done — input on the secure desktop**
+
+- Authorisation stays in the user host and only the injection moves: `InputChannel` checks the
+  control lease, its expiry, the stream id and every event's bounds exactly as it always does,
+  then forwards the batch instead of injecting it
+- `SecureInputSink`, on the other side, injects what it is handed and is deliberately
+  incapable of deciding whether input is allowed — it has no session to decide with, and must
+  not pretend to
+- Forwarding is not a way round the lease, and that is what the tests are for: no control, a
+  lapsed lease, a batch for another stream, or an event outside its bounds all forward nothing
+- Everything is checked *before* it crosses the pipe, because the far end runs as SYSTEM and
+  has no route back to the client. The bounds live in one place and both paths read them
+- The service drops input that arrives after the screen has unlocked, rather than redirecting
+  it — it would otherwise land on the operator's own desktop, typing a password into whatever
+  has focus
+- System combinations are refused with a stated limitation rather than forwarded into silence
+- The batch crosses both pipes verbatim, as the JSON the browser sent
+- What this gives the operator is a lock screen they can sign in to themselves, with the
+  password typed as keystrokes over the encrypted stream — never stored, never logged, and
+  indistinguishable to WOLF from any other keystroke. It is **not** remote unlock, and
+  `power.unlock` stays unimplemented and refused
+
 **Still open in this milestone**
 - **None of the secure-desktop path has ever run.** It needs the agent installed as a Windows
   service and a machine whose screen is locked while somebody watches. Every failure carries
   a distinct code, because those messages are what the first person to run it will be reading
   to find out which assumption was wrong. `WOLF_TEST_SECURE_DESKTOP=1` runs the end-to-end
-  test in a context that has both
+  test in a context that has both. Both ends of the input path do run and are tested for real;
+  the relay in the middle — and with it the drop-after-unlock rule — is the part waiting on
+  that context, and it is the rule whose failure would be worst
+- **A stream cannot be *started* while the screen is already locked.** One that is running
+  when the lock happens keeps going and shows the lock screen, which is the case the
+  secure-desktop path was built for. `RemoteDesktopAvailability` still answers `locked` before
+  it looks at anything else, and does not yet know a secure host could be started. Closing it
+  means teaching that check about `secureDesktopCaptureAvailable`, and teaching the client
+  that "available, showing the lock screen" is a state of its own
 - **Remote unlock is blocked on a Windows constraint, not on effort.** Investigated rather
   than attempted: see [remote unlock](../architecture/remote-unlock.md). There is no Windows
   API that unlocks a session — Winlogon needs credentials LSA accepts — and on a workgroup PC
@@ -398,11 +428,6 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   which lsass will not load without Microsoft-attested signing (`RunAsPPL = 2` is the Windows
   11 default). `power.unlock` stays unimplemented and refused rather than being redefined to
   mean something weaker
-- **Input on the secure desktop** is the piece worth building instead, and is small: the
-  secure host already runs as SYSTEM on `winsta0\Winlogon`, so the existing input path
-  reaches it. That gives the operator a lock screen they can sign in to themselves — the
-  password typed as keystrokes over the encrypted stream, never stored — which is what remote
-  unlock means to most people and is what every commercial remote-desktop tool does
 - **The elevated half of the helper's tests has never run here.** Reading SMART and opening
   the helper's own pipe both need administrator, and this development session is not
   elevated. The guard logic and the attribute decoding are tested directly and do run; the

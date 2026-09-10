@@ -71,6 +71,14 @@ public sealed class StreamCoordinator : IDisposable
         }
     }
 
+    /// <summary>
+    /// Where authorised input goes while the secure desktop is showing.
+    ///
+    /// Set once by the host and handed to every session as it starts, so a stream that begins
+    /// while the screen is already locked forwards from its first batch.
+    /// </summary>
+    public Action<string, System.Text.Json.JsonElement>? SecureInputForwarder { get; set; }
+
     /// <summary>Tell every running stream whether the secure desktop is what it is showing.</summary>
     public void SetSecureDesktopActive(bool active, string? reason)
     {
@@ -234,6 +242,8 @@ public sealed class StreamCoordinator : IDisposable
             .ConfigureAwait(false);
 
         if (session is null) return;
+
+        session.SecureInputForwarder = SecureInputForwarder;
 
         if (!_streams.TryAdd(signal.StreamId, session))
         {

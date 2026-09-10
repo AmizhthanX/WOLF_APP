@@ -670,6 +670,11 @@ public sealed class StreamSession : IDisposable
         if (_secureActive == active) return;
         _secureActive = active;
 
+        // Input follows the picture. While the client is looking at the lock screen, the
+        // events it sends belong on that desktop — this process cannot reach it, so they go
+        // to the host that can, after being authorised here exactly as they always are.
+        _input?.ForwardTo(active ? ForwardSecureInput : null);
+
         _logger.LogInformation(
             "Stream {Stream} is now showing {What}{Reason}.",
             _streamId,
@@ -721,6 +726,18 @@ public sealed class StreamSession : IDisposable
 
     private int _secureWidth;
     private int _secureHeight;
+
+    /// <summary>
+    /// Where authorised input goes while the secure desktop is showing.
+    ///
+    /// Set by the host, which owns the pipe to the service. Null on a session whose host has
+    /// not wired one, and input then stays on this desktop — where it would go anyway,
+    /// because a session with no forwarder is not showing a lock screen.
+    /// </summary>
+    public Action<string, System.Text.Json.JsonElement>? SecureInputForwarder { get; set; }
+
+    private void ForwardSecureInput(System.Text.Json.JsonElement batch) =>
+        SecureInputForwarder?.Invoke(_streamId, batch);
 
     /// <summary>
     /// Frame rate the secure desktop is captured at.

@@ -328,9 +328,22 @@ Stated plainly rather than left to be discovered:
   limitation rather than redefined to mean something weaker. The full analysis is in
   [remote unlock](../architecture/remote-unlock.md).
 - **The secure-desktop path has never been executed.** The host that captures the lock screen
-  is written and supervised, but running it needs the agent installed as a Windows service
-  and a machine whose screen is locked. Neither was available where it was written, and the
-  tests state which of the two they are waiting for rather than passing on nothing.
+  and injects on it is written and supervised, but running it needs the agent installed as a
+  Windows service and a machine whose screen is locked. Neither was available where it was
+  written, and the tests state which of the two they are waiting for rather than passing on
+  nothing. Both *ends* of the input path do run and are tested against a low-level hook; what
+  has never run is the relay between them.
+- **Input on the lock screen is authorised in the user host, not on the secure desktop.** The
+  process that holds the session checks the control lease, its expiry, the stream id and
+  every event's bounds, and only then forwards the batch; the process on `winsta0\Winlogon`
+  injects what it is handed and has no session to check anything against. That split is the
+  security property: forwarding is not a way round the lease, and the tests assert that a
+  session without control, with a lapsed lease, or sending an out-of-bounds event forwards
+  nothing at all.
+- **A password typed on a remote lock screen is never stored and never logged.** It reaches
+  Windows as keystrokes on the encrypted stream, indistinguishable to WOLF from any other
+  input. What the log carries about a forwarded batch is a count and a stream id, asserted by
+  test. This is *not* remote unlock — see the entry above — and WOLF does not claim it is.
 - **Frames of the lock screen cross the agent service.** The only media path that does, and a
   deliberate exception: they are produced by a SYSTEM process and relayed by another, so
   nothing is exposed that was not already, and a pipe directly between the two hosts would put
