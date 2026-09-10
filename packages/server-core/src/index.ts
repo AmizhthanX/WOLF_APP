@@ -6,5 +6,6 @@ export * from './db/pool.js';
 export * from './db/migrate.js';
 export * from './db/repositories/index.js';
 export * from './jobs/maintenance.js';
+export * from './jobs/rollup.js';
 export * from './services/command-audit.js';
 export * from './services/command-results.js';

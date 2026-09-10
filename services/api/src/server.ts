@@ -5,7 +5,7 @@ import { createDatabase } from '@wolf/server-core';
 import { createRepositories } from '@wolf/server-core';
 import { InMemoryRateLimiter } from './http/rate-limit.js';
 import { buildApp } from './http/app.js';
-import { MaintenanceJob } from '@wolf/server-core';
+import { MaintenanceJob, RollupJob } from '@wolf/server-core';
 import type { AppContext } from './http/context.js';
 
 async function main(): Promise<void> {
@@ -30,9 +30,16 @@ async function main(): Promise<void> {
   const maintenance = new MaintenanceJob(context);
   maintenance.start();
 
+  // Separate from maintenance because they fail differently and should not take each other
+  // down: a sweep that cannot expire a command is a correctness problem, and a rollup that
+  // falls a minute behind is not.
+  const rollup = new RollupJob(context);
+  rollup.start();
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutting down');
     maintenance.stop();
+    rollup.stop();
     try {
       await app.close();
       await db.end();

@@ -438,5 +438,10 @@ Stated plainly rather than left to be discovered:
 - **Hardware serial numbers are not collected unless asked for**, and the answer says which was
   the case, so a blank field is never read as "this machine has none". They identify a physical
   object, which is what makes them useful for an asset register and worth asking for explicitly.
+- **Telemetry retention is enforced by code, not by a cron entry.** Raw samples are kept for
+  days, five-minute buckets for a month, hourly for six, daily for a year, and the rollup job
+  drops what has run out on every pass. That is deliberate: a retention promise kept by
+  scheduling nobody can see from the source is one that quietly stops being kept, and telemetry
+  is a record of when somebody's machine was in use.
 - **No penetration test has been run.** The security tests here are the author's, not an
   independent assessment.

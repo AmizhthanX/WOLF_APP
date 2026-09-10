@@ -655,7 +655,49 @@ milestone 2 and is never persisted in cloud history.
 
 ## Milestone 5 — Intelligence
 
-- Long-term telemetry rollups and the aggregation job
+**Done — telemetry rollups and the aggregation job**
+
+- An agent produces a sample every few seconds. Kept forever that is unbounded growth on
+  somebody else's bill and useless besides: nobody asks what the CPU was doing at 14:03:07 last
+  March, they ask whether it has been getting worse. Raw samples live for days, five-minute
+  buckets for a month, hourly for six, daily for a year
+- **The rollup cascades — 5m from raw, 1h from 5m, 1d from 1h — rather than computing every
+  resolution from raw.** Raw samples are dropped after a couple of days, so an hourly bucket
+  recomputed from raw after that would come back empty and overwrite a good value with nothing.
+  Every resolution is built from one that outlives it
+- The arithmetic is pure and lives in `@wolf/telemetry-schema`, so the correctness — which is
+  the whole feature, because a chart that is subtly wrong is worse than one that is missing —
+  is tested without a database anywhere near it
+- **The merged p95 is honest about what it is.** A percentile cannot be recovered from
+  summaries of its parts; reconstructing one needs every original value, which is the thing
+  being thrown away. What is stored is the largest contributing p95 — the worst five-minute
+  spike in the hour — and the module says so, because a number that is quietly a different
+  statistic from the one its column is named after is worse than a missing one
+- Means are weighted by sample count. An unweighted mean of means lets a bucket with three
+  samples count as much as one with three hundred, which is what happens when an agent is
+  restarted mid-hour
+- The job is idempotent, resumable without a cursor, and bounded. Every write is an upsert of a
+  value computed only from its inputs, so two API instances doing it at once is not a problem
+  and needs no leader election. Where to resume is derived from what is already written, so a
+  crash between writing a bucket and advancing a cursor cannot lose a window
+- Retention is enforced here rather than by a database job: raw by dropping whole partitions,
+  aggregates by delete. It is a promise the product makes about somebody's data, and a promise
+  kept by a cron entry nobody can see from the code is one that quietly stops being kept
+
+**Three real bugs, all found by the tests rather than in production**
+
+- The cascade began at the *newest* finer bucket instead of the oldest, which silently lost
+  the beginning of a machine's history — the kind of wrong nobody notices until they go looking
+  for last Tuesday
+- The raw sample window was inclusive at both ends while the aggregate window was half-open, so
+  a sample landing exactly on a boundary was counted in two buckets. Caught by a test that
+  asked for two buckets and got three
+- A bounded pass finalised a coarse bucket from a partial finer one and never came back: the
+  first run rolled eight hours of five-minute buckets, built a *day* out of those eight hours,
+  and the daily watermark then sat past the day for ever. A cascade bucket is now eligible only
+  when the resolution beneath it covers all of it
+
+**Still open in this milestone**
 - Process, GPU, and storage intelligence
 - Notifications and the rule engine
 - The automation engine: triggers, conditions, actions, cooldowns
