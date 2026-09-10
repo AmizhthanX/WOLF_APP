@@ -34,14 +34,23 @@ public sealed class StreamCoordinator : IDisposable
     private readonly ILoggerFactory _loggers;
     private readonly ILogger<StreamCoordinator> _logger;
 
+    /// <summary>
+    /// True when every stream here must capture through Desktop Duplication.
+    ///
+    /// Set for the host on the secure desktop, where Graphics Capture has no item to create.
+    /// </summary>
+    private readonly bool _preferDuplication;
+
     public StreamCoordinator(
         DisplayEnumerator displays,
         Func<HostSignalMessage, CancellationToken, Task> send,
-        ILoggerFactory loggers)
+        ILoggerFactory loggers,
+        bool preferDuplication = false)
     {
         _displays = displays;
         _send = send;
         _loggers = loggers;
+        _preferDuplication = preferDuplication;
         _logger = loggers.CreateLogger<StreamCoordinator>();
     }
 
@@ -196,7 +205,8 @@ public sealed class StreamCoordinator : IDisposable
                 signal.ClipboardAllowed,
                 _displays,
                 send,
-                _loggers)
+                _loggers,
+                _preferDuplication)
             .ConfigureAwait(false);
 
         if (session is null) return;

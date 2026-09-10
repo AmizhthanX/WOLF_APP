@@ -358,16 +358,34 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   classified `system-critical`, because `SoftwareDevice` had been put in the system list.
   That would have been a confident, permanent refusal of something entirely safe
 
+**Done — the secure-desktop host**
+
+- A second session host, launched as SYSTEM onto `winsta0\\Winlogon`, on its own channel,
+  started only while the secure desktop has the input and stopped when it does not
+- The launch is the mechanism Windows' own accessibility components use: duplicate the
+  service's token, set its session id to the console session, and name the desktop at
+  creation — there is no supported way to move a process between desktops afterwards
+- Its pipe admits SYSTEM only. The user host's also admits the interactive user, which is
+  right for a channel carrying that user's own screen and wrong for one carrying the lock
+  screen
+- It captures through Desktop Duplication, because Graphics Capture has no item to create on
+  that desktop. That is reasoning rather than an observation, and it is labelled as such
+- Not kept running: it holds a duplication of the display and runs as SYSTEM, and the
+  alternative to a two-second start is a SYSTEM process watching a desktop nobody is looking
+  at for hours
+- `secureDesktopCaptureAvailable` answers whether a host could be started here, asked at call
+  time rather than cached
+
 **Still open in this milestone**
-- **Secure-desktop capture for the lock and sign-in screens.** The groundwork is done — the
-  agent now knows for certain when the secure desktop has the input, instead of inferring it
-  — but the capture itself is not, and was deliberately not written blind in the same breath.
-  It needs a second host launched as SYSTEM onto `winsta0\\Winlogon` with its own channel,
-  and a handover of the running stream as the desktop switches. None of that can be executed
-  on a development machine: it needs the agent installed as a service, and the screen locked.
-  Writing several hundred lines of privileged interop that has never run, behind a capability
-  flag claiming the lock screen can be captured, is the one thing this project has been
-  careful not to do
+- **Frames from the secure-desktop host do not yet reach a running stream.** The host
+  captures the lock screen; carrying those frames onto the peer connection the user host
+  already holds is the remaining piece, and it reuses the resolution-change machinery that
+  exists for switching display
+- **None of the secure-desktop path has ever run.** It needs the agent installed as a Windows
+  service and a machine whose screen is locked while somebody watches. Every failure carries
+  a distinct code, because those messages are what the first person to run it will be reading
+  to find out which assumption was wrong. `WOLF_TEST_SECURE_DESKTOP=1` runs the end-to-end
+  test in a context that has both
 - Remote unlock using a dedicated WOLF credential, never the Windows password
 - **The elevated half of the helper's tests has never run here.** Reading SMART and opening
   the helper's own pipe both need administrator, and this development session is not

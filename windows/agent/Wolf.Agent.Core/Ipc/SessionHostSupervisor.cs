@@ -86,6 +86,15 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
     public event Func<HostSignalMessage, Task>? SignalReceived;
 
     /// <summary>
+    /// Raised when the desktop holding the input changes.
+    ///
+    /// The signal the secure-desktop host is started and stopped on. Raised only on a change
+    /// rather than on every status report, because starting a host is not something to do
+    /// fifteen times a minute while somebody is away from their desk.
+    /// </summary>
+    public event Action<string>? InputDesktopChanged;
+
+    /// <summary>
     /// Raised when the host goes away, with the streams it was serving.
     ///
     /// The host exiting is not rare — it goes with the session, so signing out, switching
@@ -586,6 +595,8 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                 HostStatusMessage? status = document.Deserialize<HostStatusMessage>(WolfIpc.Json);
                 if (status is null) return;
 
+                string previousDesktop = State.InputDesktop;
+
                 UpdateState(state => state with
                 {
                     InputDesktop = status.InputDesktop,
@@ -593,6 +604,16 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                     Streams = status.Streams,
                     DesktopAccessible = status.DesktopAccessible,
                 });
+
+                if (status.InputDesktop != previousDesktop)
+                {
+                    _logger.LogInformation(
+                        "The input desktop changed from {Previous} to {Current}.",
+                        previousDesktop,
+                        status.InputDesktop);
+
+                    InputDesktopChanged?.Invoke(status.InputDesktop);
+                }
                 return;
             }
 

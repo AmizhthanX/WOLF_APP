@@ -32,8 +32,12 @@ public static class Program
     private static readonly TimeSpan StatusInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(3);
 
-    public static async Task<int> Main()
+    public static async Task<int> Main(string[] args)
     {
+        // The same executable serves both desktops. Which one it is on is decided by the
+        // service at launch and cannot be worked out afterwards, so it is passed in.
+        bool secureDesktop = args.Contains(SecureDesktopSupervisor.SecureModeArgument, StringComparer.Ordinal);
+
         using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.AddSimpleConsole(options => options.SingleLine = true);
@@ -41,7 +45,13 @@ public static class Program
             builder.SetMinimumLevel(LogLevel.Information);
         });
 
-        ILogger logger = loggerFactory.CreateLogger("Wolf.Agent.SessionHost");
+        ILogger logger = loggerFactory.CreateLogger(
+            secureDesktop ? "Wolf.Agent.SecureDesktopHost" : "Wolf.Agent.SessionHost");
+
+        if (secureDesktop)
+        {
+            logger.LogInformation("Starting on the secure desktop.");
+        }
 
         // Before any display API is touched: a DPI-unaware process is told a scaled monitor
         // is smaller than it is, which would make the reported resolution, the captured
@@ -70,7 +80,7 @@ public static class Program
         {
             try
             {
-                await RunAsync(displays, encoders, loggerFactory, logger, shutdown.Token)
+                await RunAsync(displays, encoders, loggerFactory, logger, secureDesktop, shutdown.Token)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
@@ -101,11 +111,12 @@ public static class Program
         EncoderProbe encoders,
         ILoggerFactory loggerFactory,
         ILogger logger,
+        bool secureDesktop,
         CancellationToken cancellationToken)
     {
         await using var pipe = new NamedPipeClientStream(
             ".",
-            WolfIpc.PipeName,
+            secureDesktop ? SecureDesktopSupervisor.PipeName : WolfIpc.PipeName,
             PipeDirection.InOut,
             PipeOptions.Asynchronous);
 
@@ -121,7 +132,8 @@ public static class Program
         using var streams = new StreamCoordinator(
             displays,
             (message, token) => channel.SendAsync(message, token),
-            loggerFactory);
+            loggerFactory,
+            preferDuplication: secureDesktop);
 
         logger.LogInformation(
             "Connected to the WOLF agent: {Displays} display(s), {Encoders} encoder(s).",
@@ -136,7 +148,7 @@ public static class Program
                     UserName: Environment.UserName,
                     Displays: currentDisplays,
                     Encoders: currentEncoders,
-                    CaptureApi: DetectCaptureApi(),
+                    CaptureApi: DetectCaptureApi(secureDesktop),
                     AudioCaptureAvailable: DetectAudioCapture(loggerFactory),
                     // WebRTC is present, so frames produced here have somewhere to go. This
                     // stays a separate field from the capture API because the two can fail
@@ -186,7 +198,22 @@ public static class Program
     /// answer, and a PC that says it cannot stream is better than one that offers to and
     /// then produces a black screen.
     /// </summary>
-    private static string DetectCaptureApi() => DisplayCaptureFactory.DetectApi();
+    /// <summary>
+    /// Which capture API this host will use.
+    ///
+    /// On the secure desktop the answer is Desktop Duplication and nothing else. Graphics
+    /// Capture works from a `GraphicsCaptureItem` for a monitor, and creating one requires a
+    /// window station and desktop it can reach — the Winlogon desktop is neither. Duplication
+    /// asks DXGI for the output the *calling process's desktop* is showing, which is exactly
+    /// the lock screen when the caller is sitting on it.
+    ///
+    /// **Not verified.** This is the reasoning the implementation is built on, not an
+    /// observation: it has never been run on the secure desktop. If Graphics Capture turns
+    /// out to work there, this becomes a missed opportunity rather than a fault — the
+    /// duplication path is the one with the fallback already tested.
+    /// </summary>
+    private static string DetectCaptureApi(bool secureDesktop) =>
+        secureDesktop ? DuplicationCapture.ApiName : DisplayCaptureFactory.DetectApi();
 
     /// <summary>
     /// Whether this PC has audio WOLF can capture.

@@ -57,6 +57,11 @@ public static class Program
         });
 
         builder.Services.AddSingleton<SessionHostSupervisor>();
+
+        // The lock screen lives on a desktop the session host cannot see. A second host is
+        // started on it only while it has the input, and stopped when it does not.
+        builder.Services.AddSingleton<SecureDesktopSupervisor>();
+        builder.Services.AddSingleton<SecureDesktopWatcher>();
         builder.Services.AddSingleton<TelemetryCollector>();
         // The monitor asks the session host which desktop has the input, rather than
         // inferring it from whether LogonUI happens to be running.

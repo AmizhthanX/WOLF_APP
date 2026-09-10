@@ -107,9 +107,59 @@ whose session id has been set to the console session, and `lpDesktop` naming
 desktops afterwards.
 
 That is the same mechanism Windows' own accessibility and remote-assistance components use,
-and it weakens nothing: the child has exactly the access SYSTEM already had. What it does not
-have yet is an implementation. `secureDesktopCaptureAvailable` stays `false` until it does,
-and the cloud refuses to promise otherwise.
+and it weakens nothing: the child has exactly the access SYSTEM already had, and nothing
+running as the signed-in user gains anything.
+
+### The secure-desktop host
+
+A second session host, on its own channel, started only while the secure desktop has the
+input and stopped when it does not. The policy is two lines: the user host reports which
+desktop has the input, and that turns into a host on the secure one existing or not.
+
+It is a separate supervisor rather than a mode of the existing one. The two hosts have
+different lifetimes — the user host lives as long as the session, this one as long as the
+lock screen — different tokens, different desktops, and different pipes. Folding them
+together would produce one class with two of everything and a flag deciding which half is
+real.
+
+Three details that are decisions rather than incidentals:
+
+- **It captures through Desktop Duplication, never Graphics Capture.** Graphics Capture works
+  from a `GraphicsCaptureItem` for a monitor, and creating one needs a window station and
+  desktop it can reach; the Winlogon desktop is neither. Duplication asks DXGI for the output
+  the *calling process's desktop* is showing, which is the lock screen when the caller is
+  sitting on it. This is reasoning, not an observation — see the caveat below.
+- **Its pipe admits SYSTEM only.** The user host's pipe also admits the interactive user,
+  which is right for a channel carrying that user's own screen. This one carries the lock
+  screen, and the signed-in user has no business reaching it.
+- **It is not kept running.** It holds a duplication of the display and runs as SYSTEM.
+  Starting it costs a couple of seconds when the screen locks; the alternative is a SYSTEM
+  process watching a desktop nobody is looking at for however long the PC sits unlocked.
+
+`secureDesktopCaptureAvailable` now answers whether a host *could* be started here — the
+agent is SYSTEM, there is a console session, the host is installed — asked at call time
+rather than cached, because a PC that claims it can capture the lock screen and then cannot
+is one the cloud will offer that and then fail.
+
+### What has not run
+
+**None of the secure-desktop path has ever executed.** It needs the agent installed as a
+Windows service, so that it is SYSTEM and can duplicate a SYSTEM token into the console
+session, and a machine whose screen is locked while somebody watches what happens. The
+machine this was written on is neither, and the tests say which of the two they are waiting
+for rather than passing on nothing.
+
+What that means in practice, for whoever runs it first:
+
+- Every failure carries a distinct code — `not-system`, `no-console-session`, `not-installed`,
+  `duplicate-token`, `set-session`, `create-process`, `no-connection` — because those messages
+  are the diagnostic. They name which of the three preconditions the implementation got wrong.
+- The likeliest thing to be wrong is the capture API on that desktop. If Graphics Capture
+  turns out to work there, this is a missed opportunity rather than a fault: the duplication
+  path is the one whose fallback is already tested against real hardware.
+- Frames from the secure host do not yet reach a running stream. The host captures; carrying
+  those frames onto the peer connection the user host already holds is the next piece, and it
+  reuses the resolution-change machinery that already exists for switching display.
 
 This is the PRD's §14 requirement read literally: the system "must not falsely claim that
 every Windows security boundary can be controlled identically to an ordinary desktop."

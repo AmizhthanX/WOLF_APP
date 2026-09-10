@@ -321,9 +321,12 @@ Stated plainly rather than left to be discovered:
   SYSTEM could not do. What it stops is a bug in the network-facing process becoming
   arbitrary privileged action: the only things reachable through it are the operations on its
   allow-list. See [the privileged helper](../architecture/privileged-helper.md).
-- **Most of what needs elevation is still not built.** Device management, secure-desktop
-  capture and remote unlock are refused with a stated limitation; disk health is the one
-  operation the helper performs today.
+- **Remote unlock is still not built**, and is refused with a stated limitation.
+- **The secure-desktop path has never been executed.** The host that captures the lock screen
+  is written and supervised, but running it needs the agent installed as a Windows service
+  and a machine whose screen is locked. Neither was available where it was written, and the
+  tests state which of the two they are waiting for rather than passing on nothing. Its
+  frames do not yet reach a running stream.
 - **Lock-state detection is now a real answer wherever there is a session host.** The host
   runs inside the session and asks Windows whether it may open the desktop that currently has
   the input; being refused means the secure desktop has it. The old inference — the presence

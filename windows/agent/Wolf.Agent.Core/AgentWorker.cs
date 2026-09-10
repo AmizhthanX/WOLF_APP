@@ -38,6 +38,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly MachineInfoProvider _machine;
     private readonly CommandRouter _router;
     private readonly SessionHostSupervisor _sessionHost;
+    private readonly SecureDesktopWatcher _secureDesktop;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<AgentWorker> _logger;
 
@@ -54,6 +55,7 @@ public sealed class AgentWorker : BackgroundService
         MachineInfoProvider machine,
         CommandRouter router,
         SessionHostSupervisor sessionHost,
+        SecureDesktopWatcher secureDesktop,
         ILoggerFactory loggerFactory,
         ILogger<AgentWorker> logger)
     {
@@ -66,6 +68,7 @@ public sealed class AgentWorker : BackgroundService
         _machine = machine;
         _router = router;
         _sessionHost = sessionHost;
+        _secureDesktop = secureDesktop;
         _loggerFactory = loggerFactory;
         _logger = logger;
     }
@@ -79,6 +82,10 @@ public sealed class AgentWorker : BackgroundService
         // in should be reflected in the PC capabilities whether or not the cloud is
         // reachable at that moment.
         _sessionHost.Start();
+
+        // Watches the desktop the session host reports and starts a host on the secure one
+        // when it takes the input. Does nothing at all on a PC where that is not possible.
+        _secureDesktop.Start();
 
         // Sampling starts before enrollment: a PC that is waiting to be enrolled still has
         // a local history worth keeping, and the operator can see the agent is alive.

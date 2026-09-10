@@ -72,6 +72,9 @@ public sealed class SystemCommandHandler : ICommandHandler
 [SupportedOSPlatform("windows")]
 public sealed class MachineInfoProvider
 {
+    /// <summary>Whether a secure-desktop host could be started here. Asked, not cached.</summary>
+    private readonly Func<bool> _secureDesktop;
+
     private readonly ILogger<MachineInfoProvider> _logger;
     private readonly SessionHostSupervisor _sessionHost;
     private readonly Func<bool> _killSwitchEngaged;
@@ -80,10 +83,12 @@ public sealed class MachineInfoProvider
     public MachineInfoProvider(
         ILogger<MachineInfoProvider> logger,
         SessionHostSupervisor sessionHost,
+        SecureDesktopSupervisor secureDesktop,
         AgentStore store)
     {
         _logger = logger;
         _sessionHost = sessionHost;
+        _secureDesktop = secureDesktop.CanCapture;
         // Read at call time rather than captured: the switch can be thrown while the agent
         // is running, and a capability report that predates it would be wrong.
         _killSwitchEngaged = () => store.KillSwitchEngaged;
@@ -149,10 +154,11 @@ public sealed class MachineInfoProvider
             // can be stopped, and a PC that says it can do privileged work when it cannot is
             // one the cloud will offer operations that then fail.
             PrivilegedHelperAvailable: HelperClient.IsListening(),
-            // Capturing the lock and sign-in screens requires the privileged helper running
-            // in the Winlogon desktop. Until it exists, WOLF reports the limitation so the
-            // UI shows a LOCKED state instead of a blank frame pretending to be the desktop.
-            SecureDesktopCaptureAvailable: false,
+            // Whether a host could be started on the Winlogon desktop: the agent running as
+            // SYSTEM, a console session to put it in, and the session host installed. Asked
+            // at call time, because a PC that claims it can capture the lock screen when it
+            // cannot is one the cloud will offer that and then fail.
+            SecureDesktopCaptureAvailable: _secureDesktop(),
             RemoteUnlockProvisioned: false,
             GpuVendors: ReadGpuVendors(),
             WindowsBuild: ReadWindowsBuild(),

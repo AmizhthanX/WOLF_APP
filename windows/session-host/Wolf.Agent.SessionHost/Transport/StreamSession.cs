@@ -110,6 +110,9 @@ public sealed class StreamSession : IDisposable
 
     /// <summary>The display a switch is waiting on, until the pipeline reports it done.</summary>
     private IpcDisplay? _pendingDisplay;
+
+    /// <summary>True when this session must capture through Desktop Duplication.</summary>
+    private readonly bool _preferDuplication;
     private long _keyFramesFromRequests;
     private long _framesDroppedForTransport;
     private string _state = "STARTING";
@@ -122,8 +125,12 @@ public sealed class StreamSession : IDisposable
         bool audioAllowed,
         bool clipboardAllowed,
         SignalSender send,
-        ILoggerFactory loggers)
+        ILoggerFactory loggers,
+        bool preferDuplication)
     {
+        // Set for the host on the secure desktop, where Graphics Capture has no item to
+        // create. Held for the life of the session so a display switch keeps the same API.
+        _preferDuplication = preferDuplication;
         _audioAllowed = audioAllowed;
         _clipboardAllowed = clipboardAllowed;
         _streamId = streamId;
@@ -162,7 +169,8 @@ public sealed class StreamSession : IDisposable
         bool clipboardAllowed,
         DisplayEnumerator displays,
         SignalSender send,
-        ILoggerFactory loggers)
+        ILoggerFactory loggers,
+        bool preferDuplication = false)
     {
         var session = new StreamSession(
             streamId,
@@ -171,7 +179,8 @@ public sealed class StreamSession : IDisposable
             audioAllowed,
             clipboardAllowed,
             send,
-            loggers);
+            loggers,
+            preferDuplication);
 
         try
         {
@@ -289,7 +298,8 @@ public sealed class StreamSession : IDisposable
             OnEncodedFrame,
             _loggers,
             _request.Profile.MaxWidthPixels ?? 0,
-            _request.Profile.MaxHeightPixels ?? 0);
+            _request.Profile.MaxHeightPixels ?? 0,
+            _preferDuplication);
 
         if (_pipeline is null)
         {
