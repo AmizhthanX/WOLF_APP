@@ -86,11 +86,30 @@ user-session process cannot capture it or inject into it. Honest consequences:
 | Restarting | `RESTARTING` | Refused |
 | Signed out | `LOGIN` | Refused |
 
+**How the state is known.** Not by inference any more. The session host runs inside the
+session and asks Windows whether it may open the desktop that currently has the input. Being
+refused is the answer: the secure desktop has it. That is a question put to Windows rather
+than a symptom observed from outside, and it catches the two cases the old guess got wrong —
+`LogonUI.exe` lingering for a moment after an unlock, and a UAC prompt raising the secure
+desktop without starting it at all.
+
+The one thing it cannot do is name the desktop it was refused. Windows does not tell an
+unprivileged caller which desktop it just declined to open, so "something this process is not
+allowed to see" is the honest limit, and telling a lock screen from a UAC prompt is left to a
+component that can attach to it.
+
 WOLF reports these states rather than sending a black frame that looks like a broken
-stream. Capturing the secure desktop needs a component running in the Winlogon desktop
-under `LocalSystem`, which is milestone 3's privileged helper, and is the point at which
-remote unlock also becomes possible. `secureDesktopCaptureAvailable` stays `false` until
-that exists, and the cloud refuses to promise otherwise.
+stream. Capturing the secure desktop needs a process running *on* the Winlogon desktop as
+`LocalSystem` — not the privileged helper, which is a separate service on a pipe and has no
+desktop of its own. It is a second session host, launched by the service with a SYSTEM token
+whose session id has been set to the console session, and `lpDesktop` naming
+`winsta0\Winlogon` at creation, because there is no supported way to move a process between
+desktops afterwards.
+
+That is the same mechanism Windows' own accessibility and remote-assistance components use,
+and it weakens nothing: the child has exactly the access SYSTEM already had. What it does not
+have yet is an implementation. `secureDesktopCaptureAvailable` stays `false` until it does,
+and the cloud refuses to promise otherwise.
 
 This is the PRD's §14 requirement read literally: the system "must not falsely claim that
 every Windows security boundary can be controlled identically to an ordinary desktop."

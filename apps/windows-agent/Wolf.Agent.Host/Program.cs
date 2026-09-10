@@ -58,7 +58,11 @@ public static class Program
 
         builder.Services.AddSingleton<SessionHostSupervisor>();
         builder.Services.AddSingleton<TelemetryCollector>();
-        builder.Services.AddSingleton<WindowsSessionMonitor>();
+        // The monitor asks the session host which desktop has the input, rather than
+        // inferring it from whether LogonUI happens to be running.
+        builder.Services.AddSingleton(provider => new WindowsSessionMonitor(
+            provider.GetRequiredService<ILogger<WindowsSessionMonitor>>(),
+            () => provider.GetRequiredService<SessionHostSupervisor>().State.InputDesktop));
         builder.Services.AddSingleton<MachineInfoProvider>();
 
         builder.Services.AddSingleton<ProcessCommandHandler>();

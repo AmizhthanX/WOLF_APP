@@ -324,9 +324,12 @@ Stated plainly rather than left to be discovered:
 - **Most of what needs elevation is still not built.** Device management, secure-desktop
   capture and remote unlock are refused with a stated limitation; disk health is the one
   operation the helper performs today.
-- **Lock-state detection is an inference** (the presence of `LogonUI.exe` in the console
-  session), because Windows exposes no supported query for it from a service. When the
-  console session cannot be resolved, the state is reported `unknown`, never optimistically
-  as `desktop`.
+- **Lock-state detection is now a real answer wherever there is a session host.** The host
+  runs inside the session and asks Windows whether it may open the desktop that currently has
+  the input; being refused means the secure desktop has it. The old inference — the presence
+  of `LogonUI.exe` — is kept only as the fallback for a PC with nobody signed in, and is
+  documented as a guess that is wrong in the usual ways: LogonUI lingers after an unlock, and
+  a UAC prompt raises the secure desktop without starting it. When the console session cannot
+  be resolved at all, the state is `unknown`, never optimistically `desktop`.
 - **No penetration test has been run.** The security tests here are the author's, not an
   independent assessment.

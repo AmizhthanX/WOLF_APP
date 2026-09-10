@@ -25,6 +25,15 @@ public sealed record SessionHostState
     public bool TransportAvailable { get; init; }
     public bool DesktopAccessible { get; init; }
 
+    /// <summary>
+    /// Which desktop has the input, as the host inside the session reports it.
+    ///
+    /// The service has no supported way to ask this, so before there was a host it was
+    /// inferred from whether `LogonUI.exe` was running. This is the real answer, and it is
+    /// `unknown` whenever no host is connected rather than falling back to the guess.
+    /// </summary>
+    public string InputDesktop { get; init; } = IpcInputDesktop.Unknown;
+
     /// <summary>Streams running in the interactive session right now.</summary>
     public IReadOnlyList<IpcStreamStatus> Streams { get; init; } = Array.Empty<IpcStreamStatus>();
 
@@ -481,6 +490,10 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
                 Connected = false,
                 UnavailableReason = "The session host disconnected.",
 
+                // Without a host inside the session there is no real answer to this, and the
+                // last one is about a session that may be gone.
+                InputDesktop = IpcInputDesktop.Unknown,
+
                 // The host died and took its streams with it. Reporting them as still
                 // running would have the dashboard offer to stop something that is gone.
                 Streams = Array.Empty<IpcStreamStatus>(),
@@ -575,6 +588,7 @@ public sealed class SessionHostSupervisor : IAsyncDisposable
 
                 UpdateState(state => state with
                 {
+                    InputDesktop = status.InputDesktop,
                     Displays = status.Displays,
                     Streams = status.Streams,
                     DesktopAccessible = status.DesktopAccessible,

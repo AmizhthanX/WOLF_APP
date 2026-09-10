@@ -359,7 +359,15 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   That would have been a confident, permanent refusal of something entirely safe
 
 **Still open in this milestone**
-- Secure-desktop capture for the lock and sign-in screens
+- **Secure-desktop capture for the lock and sign-in screens.** The groundwork is done — the
+  agent now knows for certain when the secure desktop has the input, instead of inferring it
+  — but the capture itself is not, and was deliberately not written blind in the same breath.
+  It needs a second host launched as SYSTEM onto `winsta0\\Winlogon` with its own channel,
+  and a handover of the running stream as the desktop switches. None of that can be executed
+  on a development machine: it needs the agent installed as a service, and the screen locked.
+  Writing several hundred lines of privileged interop that has never run, behind a capability
+  flag claiming the lock screen can be captured, is the one thing this project has been
+  careful not to do
 - Remote unlock using a dedicated WOLF credential, never the Windows password
 - **The elevated half of the helper's tests has never run here.** Reading SMART and opening
   the helper's own pipe both need administrator, and this development session is not

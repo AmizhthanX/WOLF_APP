@@ -204,6 +204,19 @@ public static class Program
         return capture is not null;
     }
 
+    /// <summary>
+    /// Which desktop has the input, in the words the IPC uses.
+    ///
+    /// Asked every time it is reported rather than cached: the whole point of the answer is
+    /// that it changes the moment somebody locks the screen or Windows raises a UAC prompt.
+    /// </summary>
+    private static string DescribeInputDesktop() => InputDesktop.Query() switch
+    {
+        InputDesktopState.UserDesktop => IpcInputDesktop.User,
+        InputDesktopState.Secure => IpcInputDesktop.Secure,
+        _ => IpcInputDesktop.Unknown,
+    };
+
     private static async Task HandleAsync(
         JsonDocument document,
         IpcChannel channel,
@@ -227,7 +240,8 @@ public static class Program
                             At: DateTimeOffset.UtcNow.ToString("o"),
                             Displays: displays.Enumerate(),
                             Streams: streams.Describe(),
-                            DesktopAccessible: true),
+                            DesktopAccessible: true,
+                            InputDesktop: DescribeInputDesktop()),
                         cancellationToken)
                     .ConfigureAwait(false);
                 _ = encoders; // Encoder discovery is re-run on reconnect, not per refresh.
@@ -297,7 +311,8 @@ public static class Program
                             At: DateTimeOffset.UtcNow.ToString("o"),
                             Displays: displays.Enumerate(),
                             Streams: streams.Describe(),
-                            DesktopAccessible: true),
+                            DesktopAccessible: true,
+                            InputDesktop: DescribeInputDesktop()),
                         cancellationToken)
                     .ConfigureAwait(false);
             }

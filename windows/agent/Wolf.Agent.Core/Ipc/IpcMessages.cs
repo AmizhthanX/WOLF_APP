@@ -104,13 +104,33 @@ public sealed record IpcStreamStatus(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("startedAt")] string StartedAt);
 
+/// <summary>
+/// Which desktop within the session currently has the input.
+///
+/// The service cannot answer this. A process inside the session can, by asking Windows
+/// whether it may open the input desktop, and being refused is the answer rather than an
+/// error — it means the secure desktop has it.
+/// </summary>
+public static class IpcInputDesktop
+{
+    public const string Unknown = "unknown";
+
+    /// <summary>The ordinary user desktop.</summary>
+    public const string User = "user";
+
+    /// <summary>The lock screen, the sign-in screen, or a UAC prompt.</summary>
+    public const string Secure = "secure";
+}
+
 /// <summary>Periodic liveness and layout report. Displays change when monitors are plugged in.</summary>
 public sealed record HostStatusMessage(
     [property: JsonPropertyName("at")] string At,
     [property: JsonPropertyName("displays")] IReadOnlyList<IpcDisplay> Displays,
     [property: JsonPropertyName("streams")] IReadOnlyList<IpcStreamStatus> Streams,
     /// <summary>True when the host can see a desktop right now, false on the secure desktop.</summary>
-    [property: JsonPropertyName("desktopAccessible")] bool DesktopAccessible)
+    [property: JsonPropertyName("desktopAccessible")] bool DesktopAccessible,
+    /// <summary>One of <see cref="IpcInputDesktop"/>. Absent from older hosts, which read as unknown.</summary>
+    [property: JsonPropertyName("inputDesktop")] string InputDesktop = IpcInputDesktop.Unknown)
 {
     [JsonPropertyName("kind")]
     public string Kind { get; init; } = "host.status";
