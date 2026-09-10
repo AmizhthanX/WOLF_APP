@@ -375,12 +375,17 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   at for hours
 - `secureDesktopCaptureAvailable` answers whether a host could be started here, asked at call
   time rather than cached
+- Its frames reach the client on the connection the user host already holds: the secure host
+  encodes, the service relays, the user host puts them on its existing track. A second peer
+  connection would have to be negotiated by a process that disappears when the screen unlocks
+- That is the one place media crosses the agent service, and the exception is argued rather
+  than assumed: the frames are the lock screen, produced by a SYSTEM process and relayed by
+  another, and a pipe directly between the two hosts would put that channel where a user-mode
+  process could squat on the name
+- Captured modestly on purpose — 1080p, 10 fps, 2 Mbps — and not at all until somebody is
+  actually watching
 
 **Still open in this milestone**
-- **Frames from the secure-desktop host do not yet reach a running stream.** The host
-  captures the lock screen; carrying those frames onto the peer connection the user host
-  already holds is the remaining piece, and it reuses the resolution-change machinery that
-  exists for switching display
 - **None of the secure-desktop path has ever run.** It needs the agent installed as a Windows
   service and a machine whose screen is locked while somebody watches. Every failure carries
   a distinct code, because those messages are what the first person to run it will be reading

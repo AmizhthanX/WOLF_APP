@@ -80,9 +80,18 @@ public sealed class SecureDesktopSupervisor : IAsyncDisposable
     private CancellationTokenSource? _running;
     private Task? _loop;
     private Process? _hostProcess;
+    private IpcChannel? _channel;
 
     /// <summary>Raised when the secure host reports a captured frame's worth of state.</summary>
     public event Action<SecureDesktopState>? StateChanged;
+
+    /// <summary>
+    /// Raised for each encoded frame of the secure desktop.
+    ///
+    /// Synchronous on the read loop. The consumer forwards it to the user host over a pipe,
+    /// and queueing here would add a buffer whose only job is to hide that the pipe is slow.
+    /// </summary>
+    public event Action<HostFrameMessage>? FrameReceived;
 
     public SecureDesktopSupervisor(ILogger<SecureDesktopSupervisor> logger, string? hostPath = null)
     {
@@ -109,6 +118,33 @@ public sealed class SecureDesktopSupervisor : IAsyncDisposable
 
     /// <summary>Why it could not, for the operator. Null when it could.</summary>
     public string? WhyNot() => SecureDesktopLaunch.CheckPreconditions(_hostPath)?.Message;
+
+    /// <summary>
+    /// Ask the secure host to start or stop producing frames.
+    ///
+    /// Separate from starting the host itself: it connects as soon as the screen locks so the
+    /// agent knows what it can see, and captures only once somebody is actually watching.
+    /// Encoding a lock screen nobody is looking at would be a SYSTEM process burning a GPU
+    /// for nothing.
+    /// </summary>
+    public async Task<bool> RequestCaptureAsync(
+        ServiceSecureCaptureMessage request,
+        CancellationToken cancellationToken)
+    {
+        IpcChannel? channel = _channel;
+        if (channel is null) return false;
+
+        try
+        {
+            await channel.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            _logger.LogWarning("Could not reach the secure-desktop host; it will be restarted.");
+            return false;
+        }
+    }
 
     /// <summary>
     /// Start capturing the secure desktop, if it is not already.
@@ -239,7 +275,9 @@ public sealed class SecureDesktopSupervisor : IAsyncDisposable
             return;
         }
 
-        var channel = new IpcChannel(pipe);
+        // This channel carries encoded frames as well as control messages.
+        var channel = new IpcChannel(pipe, IpcChannel.MaxFrameMessageBytes);
+        _channel = channel;
 
         try
         {
@@ -253,6 +291,7 @@ public sealed class SecureDesktopSupervisor : IAsyncDisposable
         }
         finally
         {
+            _channel = null;
             channel.Dispose();
             KillHost();
 
@@ -296,6 +335,15 @@ public sealed class SecureDesktopSupervisor : IAsyncDisposable
                 if (status is null) return;
 
                 UpdateState(state => state with { Displays = status.Displays });
+                return;
+            }
+
+            case "host.frame":
+            {
+                HostFrameMessage? frame = document.Deserialize<HostFrameMessage>(WolfIpc.Json);
+                if (frame is null) return;
+
+                FrameReceived?.Invoke(frame);
                 return;
             }
 

@@ -298,3 +298,88 @@ public sealed record ServiceRefreshMessage
     [JsonPropertyName("ipcVersion")]
     public int IpcVersion { get; init; } = WolfIpc.Version;
 }
+
+// ---------------------------------------------------------------------------
+// The secure desktop's frames
+// ---------------------------------------------------------------------------
+
+/// <summary>Tell the secure-desktop host to start or stop producing frames.</summary>
+public sealed record ServiceSecureCaptureMessage(
+    [property: JsonPropertyName("capture")] bool Capture,
+    /// <summary>Cap on the encoded width. A lock screen does not need full resolution.</summary>
+    [property: JsonPropertyName("maxWidthPixels")] int MaxWidthPixels,
+    [property: JsonPropertyName("maxHeightPixels")] int MaxHeightPixels,
+    [property: JsonPropertyName("targetFps")] int TargetFps,
+    [property: JsonPropertyName("bitrateBps")] int BitrateBps)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "service.secure-capture";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}
+
+/// <summary>
+/// One encoded frame of the secure desktop.
+///
+/// Base64 over the same newline-delimited channel as everything else. A length-prefixed
+/// binary framing would save a third of the bytes and cost a second protocol to get wrong,
+/// on a path that carries a static lock screen at a few frames a second.
+/// </summary>
+public sealed record HostFrameMessage(
+    [property: JsonPropertyName("data")] string Data,
+    [property: JsonPropertyName("keyFrame")] bool KeyFrame,
+    [property: JsonPropertyName("widthPixels")] int WidthPixels,
+    [property: JsonPropertyName("heightPixels")] int HeightPixels,
+    /// <summary>Milliseconds since this host started capturing. Its own clock, not the session's.</summary>
+    [property: JsonPropertyName("timestampMs")] double TimestampMs)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "host.frame";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}
+
+/// <summary>
+/// A secure-desktop frame on its way to the client, relayed by the service.
+///
+/// The one place media crosses the agent service, and a deliberate exception to the rule
+/// that it does not. The two reasons behind that rule do not hold here: the frames are the
+/// lock screen, produced by a SYSTEM process and relayed by another, so nothing is exposed
+/// that was not already; and a static lock screen at a few frames a second is not the
+/// throughput the rule was written about.
+///
+/// The alternative — a pipe directly between the two hosts — puts a channel carrying the
+/// lock screen where a user-mode process could squat on the name. That is a worse trade.
+/// </summary>
+public sealed record ServiceSecureFrameMessage(
+    [property: JsonPropertyName("data")] string Data,
+    [property: JsonPropertyName("keyFrame")] bool KeyFrame,
+    [property: JsonPropertyName("widthPixels")] int WidthPixels,
+    [property: JsonPropertyName("heightPixels")] int HeightPixels)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "service.secure-frame";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}
+
+/// <summary>
+/// Tell the user host whether the secure desktop is what the client is now seeing.
+///
+/// Sent on the change rather than with every frame. The host uses it to stop sending its own
+/// pipeline's output — which on a locked screen is nothing, but "nothing" and "somebody
+/// else's frames" must not interleave — and to tell the client the picture changed size.
+/// </summary>
+public sealed record ServiceSecureStateMessage(
+    [property: JsonPropertyName("active")] bool Active,
+    [property: JsonPropertyName("reason")] string? Reason)
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "service.secure-state";
+
+    [JsonPropertyName("ipcVersion")]
+    public int IpcVersion { get; init; } = WolfIpc.Version;
+}

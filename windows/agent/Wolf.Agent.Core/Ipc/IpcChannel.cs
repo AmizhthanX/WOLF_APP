@@ -17,13 +17,26 @@ public sealed class IpcChannel : IDisposable
     /// <summary>Largest single message accepted. Control messages are well under a kilobyte. </summary>
     public const int MaxMessageBytes = 256 * 1024;
 
+    /// <summary>
+    /// Cap for a channel that carries encoded video as well as control messages.
+    ///
+    /// The secure-desktop host sends frames up its pipe, and a key frame of a 1440p lock
+    /// screen is a few hundred kilobytes before base64 adds a third. Two megabytes is
+    /// comfortably above that and still a bound: the point of a cap is that a peer which has
+    /// gone wrong cannot make the reader allocate without limit, and that holds at any size.
+    /// </summary>
+    public const int MaxFrameMessageBytes = 2 * 1024 * 1024;
+
+    private readonly int _maxMessageBytes;
+
     private readonly Stream _stream;
     private readonly StreamWriter _writer;
     private readonly StreamReader _reader;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
-    public IpcChannel(Stream stream)
+    public IpcChannel(Stream stream, int maxMessageBytes = MaxMessageBytes)
     {
+        _maxMessageBytes = maxMessageBytes;
         _stream = stream;
         var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         _writer = new StreamWriter(stream, encoding) { AutoFlush = false };
@@ -34,7 +47,7 @@ public sealed class IpcChannel : IDisposable
     public async Task SendAsync<T>(T message, CancellationToken cancellationToken)
     {
         string line = JsonSerializer.Serialize(message, WolfIpc.Json);
-        if (line.Length > MaxMessageBytes)
+        if (line.Length > _maxMessageBytes)
         {
             throw new InvalidOperationException("IPC message exceeds the maximum size.");
         }
@@ -83,7 +96,7 @@ public sealed class IpcChannel : IDisposable
                 continue;
             }
 
-            if (line.Length > MaxMessageBytes)
+            if (line.Length > _maxMessageBytes)
             {
                 throw new InvalidOperationException("IPC message exceeds the maximum size.");
             }

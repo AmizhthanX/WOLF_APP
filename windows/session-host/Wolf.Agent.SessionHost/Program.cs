@@ -121,7 +121,12 @@ public static class Program
             PipeOptions.Asynchronous);
 
         await pipe.ConnectAsync(cancellationToken).ConfigureAwait(false);
-        using var channel = new IpcChannel(pipe);
+
+        // The secure host sends encoded frames up this pipe; the user host sends only control
+        // messages. Same framing, different bound on what one message may be.
+        using var channel = new IpcChannel(
+            pipe,
+            secureDesktop ? IpcChannel.MaxFrameMessageBytes : IpcChannel.MaxMessageBytes);
 
         IReadOnlyList<IpcDisplay> currentDisplays = displays.Enumerate();
         IReadOnlyList<IpcEncoder> currentEncoders = encoders.Probe();
@@ -134,6 +139,17 @@ public static class Program
             (message, token) => channel.SendAsync(message, token),
             loggerFactory,
             preferDuplication: secureDesktop);
+
+        // The secure host has no peer connection of its own: it produces frames and the
+        // service hands them to the host that already holds one. Only ever non-null on the
+        // secure desktop, and the message that drives it is only ever sent there.
+        using SecureFrameProducer? secureFrames = secureDesktop
+            ? new SecureFrameProducer(
+                displays,
+                (message, token) => channel.SendAsync(message, token),
+                (message, token) => channel.SendAsync(message, token),
+                loggerFactory)
+            : null;
 
         logger.LogInformation(
             "Connected to the WOLF agent: {Displays} display(s), {Encoders} encoder(s).",
@@ -172,7 +188,7 @@ public static class Program
                         return;
                     }
 
-                    await HandleAsync(document, channel, displays, encoders, streams, logger, sessionCts.Token)
+                    await HandleAsync(document, channel, displays, encoders, streams, secureFrames, logger, sessionCts.Token)
                         .ConfigureAwait(false);
                 }
             }
@@ -250,6 +266,7 @@ public static class Program
         DisplayEnumerator displays,
         EncoderProbe encoders,
         StreamCoordinator streams,
+        SecureFrameProducer? secureFrames,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -284,6 +301,59 @@ public static class Program
                 }
 
                 await streams.HandleAsync(signal, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            case "service.secure-frame":
+            {
+                ServiceSecureFrameMessage? frame =
+                    document.Deserialize<ServiceSecureFrameMessage>(WolfIpc.Json);
+
+                if (frame is null) return;
+
+                streams.SendSecureFrame(
+                    Convert.FromBase64String(frame.Data),
+                    frame.KeyFrame,
+                    frame.WidthPixels,
+                    frame.HeightPixels);
+                return;
+            }
+
+            case "service.secure-state":
+            {
+                ServiceSecureStateMessage? state =
+                    document.Deserialize<ServiceSecureStateMessage>(WolfIpc.Json);
+
+                if (state is null) return;
+
+                streams.SetSecureDesktopActive(state.Active, state.Reason);
+                return;
+            }
+
+            case "service.secure-capture":
+            {
+                if (secureFrames is null)
+                {
+                    // Only the secure host produces frames this way. A user host receiving
+                    // this has been sent somebody else's message, which is worth saying.
+                    logger.LogWarning("Ignored a secure-capture request on the user desktop.");
+                    return;
+                }
+
+                ServiceSecureCaptureMessage? request =
+                    document.Deserialize<ServiceSecureCaptureMessage>(WolfIpc.Json);
+
+                if (request is null) return;
+
+                if (request.Capture)
+                {
+                    await secureFrames.StartAsync(request, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    secureFrames.Stop();
+                }
+
                 return;
             }
 

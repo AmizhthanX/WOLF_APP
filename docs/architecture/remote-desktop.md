@@ -141,6 +141,42 @@ agent is SYSTEM, there is a console session, the host is installed — asked at 
 rather than cached, because a PC that claims it can capture the lock screen and then cannot
 is one the cloud will offer that and then fail.
 
+### Carrying the lock screen to the client
+
+The secure host does not speak WebRTC. It has no peer connection, no ICE and no data channel
+— it captures, encodes, and hands the frames to the service, which passes them to the user
+host, which puts them on the track it already holds. The connection never moves.
+
+That is the only shape that works. A second peer connection would have to be negotiated by a
+process that will be gone the moment the screen unlocks, and the client would see a
+renegotiation every time somebody stepped away from their desk.
+
+**Media crosses the agent service here, and nowhere else.** That is a deliberate exception to
+the rule at the top of this document, and the rule's two reasons do not hold on this path:
+the frames *are* the lock screen, produced by a SYSTEM process and relayed by another, so
+nothing is exposed that was not already; and a still picture at ten frames a second is not
+the throughput the rule was written about. The alternative — a pipe directly between the two
+hosts — would put a channel carrying the lock screen where a user-mode process could squat on
+the name, which is a worse trade.
+
+Frames are base64 inside the existing newline-delimited JSON framing, on a channel whose cap
+is raised to 2 MB for this reason alone. That costs a third more bytes than a length-prefixed
+binary framing and saves a second protocol to get wrong; measured, a 768 KB key frame becomes
+a 1.1 MB message, and the average frame at the rate the secure host is asked for is 24 KB.
+
+The secure desktop is captured **modestly on purpose**: 1080p, ten frames a second, 2 Mbps. A
+lock screen is a still picture that changes when somebody touches the keyboard, and full
+resolution at sixty would spend a SYSTEM process' worth of GPU re-encoding the same pixels.
+It is also not captured at all until a stream is actually running — the host starts when the
+screen locks so the agent knows what it can see, and is asked for frames only when somebody
+is watching.
+
+A different encoder produces these frames, so their parameter sets differ from the user
+host's. That is handled the way any resolution change is: the frame carrying them is a key
+frame and the decoder re-initialises from it. While the secure desktop is on the track, the
+user host's own pipeline output is dropped — on a locked screen it produces nothing anyway,
+and this is what stops the two encoders interleaving in the moment either side of a lock.
+
 ### What has not run
 
 **None of the secure-desktop path has ever executed.** It needs the agent installed as a
@@ -157,9 +193,15 @@ What that means in practice, for whoever runs it first:
 - The likeliest thing to be wrong is the capture API on that desktop. If Graphics Capture
   turns out to work there, this is a missed opportunity rather than a fault: the duplication
   path is the one whose fallback is already tested against real hardware.
-- Frames from the secure host do not yet reach a running stream. The host captures; carrying
-  those frames onto the peer connection the user host already holds is the next piece, and it
-  reuses the resolution-change machinery that already exists for switching display.
+- The second likeliest is the decoder's reaction to parameter sets changing mid-track. The
+  reasoning is that a key frame carrying new SPS/PPS re-initialises it, which is what happens
+  on a resolution change today — but a resolution change today comes from the same encoder,
+  and this one does not.
+- What *is* tested is the part that would corrupt the stream quietly: a frame's bytes across
+  both hops, and whether a key frame fits inside the channel's bound at all. A mistake in
+  either looks like a decoder bug rather than a plumbing one.
+- The hand-off is written but, like the rest of this path, has never been observed. The two
+  things most likely to be wrong are stated below.
 
 This is the PRD's §14 requirement read literally: the system "must not falsely claim that
 every Windows security boundary can be controlled identically to an ordinary desktop."

@@ -325,8 +325,11 @@ Stated plainly rather than left to be discovered:
 - **The secure-desktop path has never been executed.** The host that captures the lock screen
   is written and supervised, but running it needs the agent installed as a Windows service
   and a machine whose screen is locked. Neither was available where it was written, and the
-  tests state which of the two they are waiting for rather than passing on nothing. Its
-  frames do not yet reach a running stream.
+  tests state which of the two they are waiting for rather than passing on nothing.
+- **Frames of the lock screen cross the agent service.** The only media path that does, and a
+  deliberate exception: they are produced by a SYSTEM process and relayed by another, so
+  nothing is exposed that was not already, and a pipe directly between the two hosts would put
+  a channel carrying the lock screen where a user-mode process could squat on the name.
 - **Lock-state detection is now a real answer wherever there is a session host.** The host
   runs inside the session and asks Windows whether it may open the desktop that currently has
   the input; being refused means the secure desktop has it. The old inference — the presence

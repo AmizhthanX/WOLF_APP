@@ -4,16 +4,22 @@ using Microsoft.Extensions.Logging;
 namespace Wolf.Agent.Core.Ipc;
 
 /// <summary>
-/// Starts the secure-desktop host while the lock screen has the input, and stops it after.
+/// Shows the operator the lock screen while the secure desktop has the input.
 ///
-/// The whole policy is two lines long, which is the point: the session host says which
-/// desktop has the input, and this turns that into a host that exists or does not. Everything
-/// hard is on either side of it — knowing the desktop, and running a process on it.
+/// The whole policy is short, which is the point: the session host says which desktop has the
+/// input, and that turns into a host on the secure one existing or not, and into frames going
+/// onto the connection the user host already holds. Everything hard is on either side —
+/// knowing the desktop, running a process on it, and putting H.264 on a track.
 ///
-/// Why not simply leave the secure host running? Because it holds a duplication of the
-/// display and runs as SYSTEM, and neither is a thing to keep alive for the hours a PC sits
-/// unlocked. It costs a couple of seconds to start when the screen locks, and the alternative
-/// is a SYSTEM process watching a desktop nobody is looking at.
+/// Two things it will not do:
+///
+/// **Capture when nobody is watching.** The secure host starts as soon as the screen locks,
+/// so the agent knows what it can see, but it is not asked for frames until a stream is
+/// actually running. Encoding a lock screen for nobody would be a SYSTEM process burning a
+/// GPU on a still picture.
+///
+/// **Keep the host alive after the unlock.** It holds a duplication of the display and runs
+/// as SYSTEM. Two seconds to start beats hours of that.
 ///
 /// **Never run.** Starting the host needs the agent installed as a Windows service, and the
 /// screen locked. See <see cref="SecureDesktopSupervisor"/>.
@@ -21,9 +27,33 @@ namespace Wolf.Agent.Core.Ipc;
 [SupportedOSPlatform("windows")]
 public sealed class SecureDesktopWatcher : IAsyncDisposable
 {
+    /// <summary>
+    /// What the secure host is asked to produce.
+    ///
+    /// Modest on every axis, and deliberately. A lock screen is a still picture: it changes
+    /// when somebody touches the keyboard and not otherwise. Full resolution at sixty frames
+    /// a second would spend real GPU on re-encoding the same pixels, and the frames cross two
+    /// pipes to get where they are going.
+    /// </summary>
+    private static readonly ServiceSecureCaptureMessage CaptureRequest = new(
+        Capture: true,
+        MaxWidthPixels: 1920,
+        MaxHeightPixels: 1080,
+        TargetFps: 10,
+        BitrateBps: 2_000_000);
+
+    private static readonly ServiceSecureCaptureMessage StopRequest = new(
+        Capture: false,
+        MaxWidthPixels: 0,
+        MaxHeightPixels: 0,
+        TargetFps: 0,
+        BitrateBps: 0);
+
     private readonly SessionHostSupervisor _sessionHost;
     private readonly SecureDesktopSupervisor _secureHost;
     private readonly ILogger<SecureDesktopWatcher> _logger;
+
+    private bool _secureShowing;
 
     public SecureDesktopWatcher(
         SessionHostSupervisor sessionHost,
@@ -35,7 +65,12 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
         _logger = logger;
     }
 
-    public void Start() => _sessionHost.InputDesktopChanged += OnInputDesktopChanged;
+    public void Start()
+    {
+        _sessionHost.InputDesktopChanged += OnInputDesktopChanged;
+        _secureHost.FrameReceived += OnFrame;
+        _secureHost.StateChanged += OnSecureStateChanged;
+    }
 
     private void OnInputDesktopChanged(string inputDesktop)
     {
@@ -60,21 +95,93 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
         // Anything else — the user desktop, or an answer nobody could give. Unknown stops it
         // too: a host on a desktop the agent has lost track of is worse than none, because
         // nothing would be watching whether it was still the right one.
-        Fire(_secureHost.StopAsync());
+        Fire(StopShowingAsync());
     }
 
     /// <summary>
-    /// Run a teardown that nobody is waiting on, without losing its failures.
+    /// The secure host connected, or went away.
     ///
-    /// This is called from a status handler on the pipe thread, which must not block on a
-    /// process being killed.
+    /// Asking it for frames waits for this rather than happening at launch: until it has said
+    /// hello there is no channel to ask on.
+    /// </summary>
+    private void OnSecureStateChanged(SecureDesktopState state)
+    {
+        if (state.Connected && _sessionHost.State.ActiveStreams > 0)
+        {
+            Fire(StartShowingAsync());
+            return;
+        }
+
+        if (!state.Connected && _secureShowing) Fire(StopShowingAsync());
+    }
+
+    private async Task StartShowingAsync()
+    {
+        if (_secureShowing) return;
+
+        if (!await _secureHost.RequestCaptureAsync(CaptureRequest, CancellationToken.None).ConfigureAwait(false))
+        {
+            _logger.LogWarning("The secure-desktop host could not be asked for frames.");
+            return;
+        }
+
+        _secureShowing = true;
+
+        // The user host is told before the frames arrive, so the first one is not dropped for
+        // belonging to a desktop it does not yet know it is showing.
+        await _sessionHost
+            .SendAsync(new ServiceSecureStateMessage(true, "the screen is locked"), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        _logger.LogInformation("The client is now being shown the secure desktop.");
+    }
+
+    private async Task StopShowingAsync()
+    {
+        if (_secureShowing)
+        {
+            _secureShowing = false;
+
+            await _sessionHost
+                .SendAsync(new ServiceSecureStateMessage(false, null), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Best effort: the host is about to be killed anyway, and if the pipe has already
+            // gone there is nothing to stop.
+            await _secureHost.RequestCaptureAsync(StopRequest, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await _secureHost.StopAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Hand one frame of the secure desktop to the host that has the connection.
+    ///
+    /// Fire-and-forget, on the pipe's read loop. Waiting here would pace the secure host's
+    /// encoder to whatever the user host is doing, and a slow reader would show up as a
+    /// stuttering lock screen rather than as the dropped frame it is.
+    /// </summary>
+    private void OnFrame(HostFrameMessage frame)
+    {
+        if (!_secureShowing) return;
+
+        Fire(_sessionHost.SendAsync(
+            new ServiceSecureFrameMessage(frame.Data, frame.KeyFrame, frame.WidthPixels, frame.HeightPixels),
+            CancellationToken.None));
+    }
+
+    /// <summary>
+    /// Run something nobody is waiting on, without losing its failures.
+    ///
+    /// Called from pipe read loops, which must not block on a process being killed or a
+    /// frame crossing another pipe.
     /// </summary>
     private void Fire(Task work) => _ = work.ContinueWith(
         task =>
         {
             if (task.Exception is { } error)
             {
-                _logger.LogError(error, "Stopping the secure-desktop host failed.");
+                _logger.LogError(error, "A secure-desktop hand-off failed.");
             }
         },
         TaskScheduler.Default);
@@ -82,6 +189,9 @@ public sealed class SecureDesktopWatcher : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _sessionHost.InputDesktopChanged -= OnInputDesktopChanged;
+        _secureHost.FrameReceived -= OnFrame;
+        _secureHost.StateChanged -= OnSecureStateChanged;
+
         await _secureHost.StopAsync().ConfigureAwait(false);
     }
 }

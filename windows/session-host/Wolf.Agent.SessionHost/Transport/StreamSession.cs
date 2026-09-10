@@ -113,6 +113,15 @@ public sealed class StreamSession : IDisposable
 
     /// <summary>True when this session must capture through Desktop Duplication.</summary>
     private readonly bool _preferDuplication;
+
+    /// <summary>
+    /// True while the client is being shown the secure desktop instead of this one.
+    ///
+    /// The peer connection does not move. What changes is which encoder's output goes onto
+    /// the track: this session's pipeline, or the frames the secure host is producing on a
+    /// desktop this process cannot see.
+    /// </summary>
+    private volatile bool _secureActive;
     private long _keyFramesFromRequests;
     private long _framesDroppedForTransport;
     private string _state = "STARTING";
@@ -650,8 +659,86 @@ public sealed class StreamSession : IDisposable
             (int)Math.Round(_baseHeight * rate.ResolutionScale));
     }
 
+    /// <summary>
+    /// Show the client the secure desktop's frames instead of this session's, or stop.
+    ///
+    /// The size almost always changes with it — the secure host encodes at its own cap — so
+    /// the client gets a fresh `stream.ready`, exactly as it does for a display switch.
+    /// </summary>
+    public void SetSecureDesktopActive(bool active, string? reason)
+    {
+        if (_secureActive == active) return;
+        _secureActive = active;
+
+        _logger.LogInformation(
+            "Stream {Stream} is now showing {What}{Reason}.",
+            _streamId,
+            active ? "the secure desktop" : "this session's desktop",
+            reason is null ? string.Empty : $" ({reason})");
+
+        _degradedReason = null;
+        SetState("STREAMING", detail: null);
+    }
+
+    /// <summary>
+    /// Send one frame of the secure desktop on this session's track.
+    ///
+    /// A different encoder produced it, so its parameter sets differ from this session's.
+    /// That is handled the way any resolution change is: the frame carrying them is a key
+    /// frame, and the decoder re-initialises from it. Nothing about the peer connection
+    /// changes, which is the whole point of routing frames here rather than negotiating a
+    /// second one from a process that will be gone the moment the screen unlocks.
+    /// </summary>
+    public void SendSecureFrame(byte[] data, bool keyFrame, int width, int height)
+    {
+        WebRtcTransport? transport = _transport;
+        if (transport is null || _disposed) return;
+
+        if (!_secureActive)
+        {
+            // Arrived after the desktop unlocked, or before this session was told. Dropped
+            // rather than sent: a frame of the lock screen appearing after the operator can
+            // see the desktop again is worse than a gap.
+            return;
+        }
+
+        // Paced at the rate the secure host was asked to produce, which is deliberately low:
+        // a lock screen is a still picture, and the RTP timestamps have to advance evenly
+        // whatever the encoder upstream decided to send.
+        uint duration = WebRtcTransport.VideoClockRate / SecureDesktopFps;
+
+        if (!transport.SendFrame(data, duration))
+        {
+            _logger.LogDebug("A secure-desktop frame could not be sent on stream {Stream}.", _streamId);
+            return;
+        }
+
+        if (keyFrame) Interlocked.Increment(ref _keyFramesSent);
+
+        _secureWidth = width;
+        _secureHeight = height;
+    }
+
+    private int _secureWidth;
+    private int _secureHeight;
+
+    /// <summary>
+    /// Frame rate the secure desktop is captured at.
+    ///
+    /// Ten, because a lock screen is a still picture that changes when somebody touches the
+    /// keyboard. Streaming it at sixty would spend a SYSTEM process''' worth of GPU on
+    /// re-encoding the same pixels.
+    /// </summary>
+    public const uint SecureDesktopFps = 10;
+
     private void OnEncodedFrame(EncodedVideoFrame frame)
     {
+        // While the secure desktop is what the client is watching, this session's own
+        // pipeline is not what it should see. On a locked screen it produces nothing anyway;
+        // dropping here is what stops the two encoders' output interleaving in the moment
+        // either side of a lock.
+        if (_secureActive) return;
+
         WebRtcTransport? transport = _transport;
         if (transport is null) return;
 

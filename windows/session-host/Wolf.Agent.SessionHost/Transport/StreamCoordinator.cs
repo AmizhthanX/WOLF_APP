@@ -57,6 +57,30 @@ public sealed class StreamCoordinator : IDisposable
     public int ActiveStreams => _streams.Count;
 
     /// <summary>
+    /// Put a frame of the secure desktop on every running stream.
+    ///
+    /// Every stream, because they are all watching the same PC and the lock screen is what
+    /// the PC is showing. There is no per-stream choice to make: a client that asked for this
+    /// display is being shown what is on it.
+    /// </summary>
+    public void SendSecureFrame(byte[] data, bool keyFrame, int width, int height)
+    {
+        foreach (StreamSession session in _streams.Values)
+        {
+            session.SendSecureFrame(data, keyFrame, width, height);
+        }
+    }
+
+    /// <summary>Tell every running stream whether the secure desktop is what it is showing.</summary>
+    public void SetSecureDesktopActive(bool active, string? reason)
+    {
+        foreach (StreamSession session in _streams.Values)
+        {
+            session.SetSecureDesktopActive(active, reason);
+        }
+    }
+
+    /// <summary>
     /// What is running, for the periodic status report.
     ///
     /// Built from the live sessions rather than from a counter kept alongside them, so a
