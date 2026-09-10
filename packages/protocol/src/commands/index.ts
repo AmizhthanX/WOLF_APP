@@ -2,12 +2,14 @@ import { z } from 'zod';
 import type { RiskLevel, SessionCapability } from '@wolf/shared-types';
 import { maxRisk } from '@wolf/shared-types';
 import { CRITICAL_SYSTEM_PROCESSES, WOLF_OWN_PROCESSES, processCommand } from './process.js';
+import { deviceCommand } from './device.js';
 import { diskCommand } from './disk.js';
 import { powerCommand } from './power.js';
 import { remoteDesktopCommand } from './remote-desktop.js';
 import { systemCommand } from './system.js';
 
 export * from './process.js';
+export * from './device.js';
 export * from './disk.js';
 export * from './power.js';
 export * from './remote-desktop.js';
@@ -23,6 +25,7 @@ export * from './system.js';
  */
 export const agentCommandBody = z.union([
   processCommand,
+  deviceCommand,
   diskCommand,
   powerCommand,
   remoteDesktopCommand,
@@ -57,6 +60,25 @@ export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefiniti
      * a grant exists to gate destruction, not to tax every call that happens to need
      * administrator to read.
      */
+    'device.list': {
+      risk: 'low',
+      capability: 'configuration',
+      mutating: false,
+      description: 'List hardware devices',
+      auditCategory: 'pc',
+    },
+    /**
+     * Baseline only. Enabling a device restores function and stays here; disabling one is
+     * escalated to critical by `classifyRisk`, because it is the direction that cannot be
+     * undone from the other end of a network.
+     */
+    'device.set-enabled': {
+      risk: 'medium',
+      capability: 'configuration',
+      mutating: true,
+      description: 'Enable or disable a hardware device',
+      auditCategory: 'pc',
+    },
     'disk.smart-health': {
       risk: 'low',
       capability: 'configuration',
@@ -216,6 +238,13 @@ export function classifyRisk(command: AgentCommandBody): RiskLevel {
       if (WOLF_OWN_PROCESSES.has(name)) return 'high';
       if (command.payload.force || command.payload.includeChildren) return maxRisk(base, 'high');
       return base;
+    }
+    case 'device.set-enabled': {
+      // Asymmetric on purpose. Enabling a device gives function back and is recoverable by
+      // disabling it again. Disabling one on a machine nobody is sitting at can remove the
+      // means of undoing it, so it takes a confirmation, a re-authentication and a
+      // single-use privileged grant.
+      return command.payload.enabled ? base : 'critical';
     }
     case 'process.set-priority':
       // Realtime priority can starve the input and capture threads, which is how an

@@ -338,9 +338,27 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   do to somebody who typed `npm test`. Everything around it — the allow-list, the host's
   refusal of an unknown action, the answer when no host is connected — runs normally
 
-**Still open in this milestone**
+**Done — device management**
 
-- Device management: enabling and disabling hardware
+- `device.list` reads what is attached, what is disabled, and what has a driver problem.
+  `error` is its own state rather than folded into `disabled`: a driver fault and a
+  switched-off device look identical in a two-state list and call for different responses
+- `device.set-enabled` turns one off or on, through SetupAPI in the helper
+- Risk is asymmetric and the schema says so. Enabling is `medium`; disabling is `critical` —
+  confirmation, re-authentication, and a single-use privileged grant
+- Some devices are refused outright rather than confirmed: a connected network adapter, any
+  storage, display adapters, and Windows' own system devices. A confirmation dialog asks
+  somebody to accept a risk, and it is the wrong tool when accepting it removes their ability
+  to do anything about it
+- A *disconnected* network adapter is deliberately allowed, or the class would be useless for
+  what it is most often wanted for
+- The device's name is checked before acting, the same way terminating a process checks the
+  name against the pid
+- Running the rules against real hardware caught one immediately: a virtual camera came back
+  classified `system-critical`, because `SoftwareDevice` had been put in the system list.
+  That would have been a confident, permanent refusal of something entirely safe
+
+**Still open in this milestone**
 - Secure-desktop capture for the lock and sign-in screens
 - Remote unlock using a dedicated WOLF credential, never the Windows password
 - **The elevated half of the helper's tests has never run here.** Reading SMART and opening

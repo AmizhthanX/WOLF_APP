@@ -30,13 +30,27 @@ public static class HelperProtocol
         /// <summary>Read SMART health for one drive, or for all of them.</summary>
         public const string DiskSmartHealth = "disk.smart-health";
 
+        /// <summary>List the hardware devices Windows knows about. Read-only.</summary>
+        public const string DeviceList = "device.list";
+
+        /// <summary>
+        /// Turn one device off or on.
+        ///
+        /// The only operation on this list that changes anything, and the reason the helper
+        /// keeps refusals of its own rather than trusting the caller's risk classification.
+        /// </summary>
+        public const string DeviceSetEnabled = "device.set-enabled";
+
         /// <summary>What this helper is and what it can do. Costs nothing and touches nothing.</summary>
         public const string Describe = "helper.describe";
     }
 
     /// <summary>True when the helper knows how to perform this operation.</summary>
     public static bool IsAllowed(string operation) =>
-        operation is Operations.DiskSmartHealth or Operations.Describe;
+        operation is Operations.DiskSmartHealth
+            or Operations.DeviceList
+            or Operations.DeviceSetEnabled
+            or Operations.Describe;
 }
 
 /// <summary>
@@ -125,3 +139,31 @@ public sealed record HelperSmartAttribute(
 /// <summary>The helper's answer to a disk health request.</summary>
 public sealed record HelperDiskHealthResult(
     [property: JsonPropertyName("disks")] IReadOnlyList<HelperDiskHealth> Disks);
+
+/// <summary>One hardware device, as Windows describes it.</summary>
+public sealed record HelperDevice(
+    [property: JsonPropertyName("instanceId")] string InstanceId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("deviceClass")] string? DeviceClass,
+    [property: JsonPropertyName("manufacturer")] string? Manufacturer,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("problemCode")] int? ProblemCode,
+    [property: JsonPropertyName("problem")] string? Problem,
+    [property: JsonPropertyName("present")] bool Present,
+    /// <summary>Which protection stops this device being disabled, or null when none does.</summary>
+    [property: JsonPropertyName("protectedBy")] string? ProtectedBy);
+
+/// <summary>The helper's answer to a device list request.</summary>
+public sealed record HelperDeviceListResult(
+    [property: JsonPropertyName("devices")] IReadOnlyList<HelperDevice> Devices);
+
+/// <summary>What happened when a device was turned off or on.</summary>
+public sealed record HelperDeviceResult(
+    [property: JsonPropertyName("instanceId")] string InstanceId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("ok")] bool Ok,
+    /// <summary>What Windows reports after the change, not what was asked for.</summary>
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("restartRequired")] bool RestartRequired,
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("message")] string? Message);

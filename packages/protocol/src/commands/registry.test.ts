@@ -156,3 +156,33 @@ test('reading disk health is low risk and needs no privileged grant', () => {
   assert.equal(definition.mutating, false);
   assert.equal(policyFor(definition.risk).requiresPrivilegedGrant, false);
 });
+
+test('disabling a device is critical, enabling one is not', () => {
+  // Asymmetric on purpose. Enabling gives function back and can be undone by disabling
+  // again; disabling on a machine nobody is sitting at can remove the means of undoing it.
+  const disable = agentCommandBody.parse({
+    type: 'device.set-enabled',
+    payload: { instanceId: 'PCI\VEN_1', enabled: false, expectedName: 'Some device' },
+  });
+  const enable = agentCommandBody.parse({
+    type: 'device.set-enabled',
+    payload: { instanceId: 'PCI\VEN_1', enabled: true, expectedName: 'Some device' },
+  });
+
+  assert.equal(classifyRisk(disable), 'critical');
+  assert.equal(policyFor('critical').requiresPrivilegedGrant, true);
+
+  assert.equal(classifyRisk(enable), 'medium');
+  assert.equal(policyFor(classifyRisk(enable)).requiresPrivilegedGrant, false);
+});
+
+test('a device change must name the device it expects', () => {
+  // The same idea as terminating a process by pid and expected name: an instance id is
+  // stable, but a dashboard can be minutes out of date.
+  const withoutName = agentCommandBody.safeParse({
+    type: 'device.set-enabled',
+    payload: { instanceId: 'PCI\VEN_1', enabled: false },
+  });
+
+  assert.equal(withoutName.success, false);
+});

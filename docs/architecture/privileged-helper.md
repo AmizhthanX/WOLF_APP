@@ -25,7 +25,9 @@ Wolf.Agent (LocalSystem)                  Wolf.Agent.Helper (LocalSystem)
 │ cloud link (TLS)           │  named     │ allow-list:                  │
 │ telemetry, processes       │◄──pipe────►│   helper.describe            │
 │ command router             │  ACL'd     │   disk.smart-health          │
-│ session host supervision   │            │                              │
+│ session host supervision   │            │   device.list                │
+│                            │            │   device.set-enabled         │
+│                            │            │                              │
 │                            │            │ no network, no configuration │
 └────────────────────────────┘            └──────────────────────────────┘
 ```
@@ -51,7 +53,49 @@ that the door closed.
 
 ## What it does today
 
-One operation with substance, and one that describes the helper itself.
+Disk health, device management, and one operation that describes the helper itself.
+
+### Devices, and the things WOLF will not do to them
+
+Listing hardware is read-only and needs nothing special. Turning a device off or on needs
+SetupAPI and administrative rights, and is the most dangerous thing WOLF does short of
+destroying data — disable the wrong device on a machine nobody is sitting at and there may be
+no way to put it back.
+
+Three layers, doing three different jobs:
+
+1. **The cloud classifies risk.** Enabling a device is `medium`. Disabling one is `critical`
+   — confirmation, re-authentication, and a single-use privileged grant. The asymmetry is the
+   point: enabling gives function back and can be undone by disabling again.
+2. **The helper refuses outright** the devices whose loss it could not undo remotely.
+   A confirmation dialog asks the operator to accept a risk; it is the wrong tool when
+   accepting it removes their ability to do anything about it.
+3. **The name is checked before acting**, the same way terminating a process checks the name
+   against the pid. Instance ids are stable, but a dashboard can be minutes out of date.
+
+| Refused | Because |
+| --- | --- |
+| A connected network adapter | It could be the link WOLF is managing this PC over, and nothing could turn it back on remotely |
+| Any storage device or controller | It can stop the PC booting. WOLF does not try to work out which controller carries the system volume — treating all of it as boot-critical costs the ability to disable a spare disk, which is a much smaller loss than a machine that does not come back |
+| Display adapters | Disabling one ends the session WOLF captures, so the screen could not be used to put it back |
+| Windows' own system devices | Processors, buses, firmware. Disabling one does not remove a feature, it removes the machine. `SecurityDevices` is here for the TPM: without it BitLocker may not unlock the volume at boot |
+
+A *disconnected* network adapter is deliberately allowed. Refusing every network device would
+make the class useless for what it is most often wanted for — switching off an adapter that
+is misbehaving — and an idle one can be re-enabled over whatever link is actually carrying
+WOLF.
+
+Every refusal carries its reason. "WOLF will not do that" without one is the kind of answer
+that gets worked around with a script rather than understood.
+
+The rules live in `DeviceProtection`, apart from the code that talks to Windows and free of
+I/O, so they can be checked against the device list of any machine rather than by disabling
+hardware to see what happens. Running them against a real one immediately earned its keep: a
+virtual camera came back classified `system-critical`, because `SoftwareDevice` had been put
+in the system list. That would have been a confident, permanent refusal of something entirely
+safe, and no synthetic fixture would have contained one.
+
+### Disk health
 
 `disk.smart-health` reads what the drives say about their own health. It is a good first
 thing to put through the helper because it is entirely read-only: a mistake in the plumbing

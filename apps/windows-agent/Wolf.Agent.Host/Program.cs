@@ -70,6 +70,7 @@ public static class Program
         // the life of the agent.
         builder.Services.AddSingleton<HelperClient>();
         builder.Services.AddSingleton<DiskCommandHandler>();
+        builder.Services.AddSingleton<DeviceCommandHandler>();
 
         // The router is built from the handlers, and the system handler needs to advertise
         // what the router ends up supporting — resolved lazily to break the cycle.
@@ -81,6 +82,7 @@ public static class Program
                 provider.GetRequiredService<PowerCommandHandler>(),
                 provider.GetRequiredService<RemoteDesktopCommandHandler>(),
                 provider.GetRequiredService<DiskCommandHandler>(),
+                provider.GetRequiredService<DeviceCommandHandler>(),
             };
 
             CommandRouter? router = null;

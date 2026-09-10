@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { isoDateTime, wolfId } from '@wolf/validation';
 import { WINDOWS_SESSION_STATES } from '@wolf/shared-types';
 import { telemetrySample } from '@wolf/telemetry-schema';
-import { diskHealth, powerAction, processPriority } from './commands/index.js';
+import { deviceInfo, deviceState, diskHealth, powerAction, processPriority } from './commands/index.js';
 import { displayInfo, streamState, streamUnavailableReason } from './remote-desktop.js';
 import type { AgentCommandType } from './commands/index.js';
 
@@ -257,7 +257,40 @@ export const diskSmartHealthResult = z.object({
   at: isoDateTime,
 });
 
+/** Devices this PC has, and what WOLF will and will not do to them. */
+export const deviceListResult = z.object({
+  devices: z.array(deviceInfo).max(512),
+  /** False when the privileged helper is not running, which is why the list may be empty. */
+  helperAvailable: z.boolean(),
+  unavailableReason: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
+/**
+ * What happened to a device.
+ *
+ * `state` is what Windows reports *after* the change, not what was asked for. A device that
+ * refused to disable and a device that disabled are both successful calls, and the operator
+ * needs to know which one they got.
+ */
+export const deviceSetEnabledResult = z.object({
+  instanceId: z.string().max(512),
+  name: z.string().max(256),
+  requestedEnabled: z.boolean(),
+  state: deviceState,
+  /**
+   * True when Windows needs the machine restarted for the change to take effect.
+   *
+   * Reported rather than hidden: a device that will not release until a reboot looks
+   * identical to one that ignored the request.
+   */
+  restartRequired: z.boolean(),
+  at: isoDateTime,
+});
+
 export const RESULT_SCHEMAS = {
+  'device.list': deviceListResult,
+  'device.set-enabled': deviceSetEnabledResult,
   'disk.smart-health': diskSmartHealthResult,
   'system.info': systemInfoResult,
   'system.capabilities': systemCapabilitiesResult,

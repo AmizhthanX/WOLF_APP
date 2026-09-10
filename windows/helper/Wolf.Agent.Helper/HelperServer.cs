@@ -194,7 +194,13 @@ public sealed class HelperServer : IAsyncDisposable
             {
                 var description = new HelperDescription(
                     _helperVersion,
-                    new[] { HelperProtocol.Operations.Describe, HelperProtocol.Operations.DiskSmartHealth },
+                    new[]
+                    {
+                        HelperProtocol.Operations.Describe,
+                        HelperProtocol.Operations.DiskSmartHealth,
+                        HelperProtocol.Operations.DeviceList,
+                        HelperProtocol.Operations.DeviceSetEnabled,
+                    },
                     WindowsIdentity.GetCurrent().Name);
 
                 return Ok(sequence, description);
@@ -213,6 +219,48 @@ public sealed class HelperServer : IAsyncDisposable
 
                 _logger.LogInformation("Read health for {Count} drive(s).", disks.Count);
                 return Ok(sequence, new HelperDiskHealthResult(disks));
+            }
+
+            case HelperProtocol.Operations.DeviceList:
+            {
+                string? deviceClass = ReadPayloadString(payload, "deviceClass");
+                bool includeAbsent = payload.ValueKind == JsonValueKind.Object &&
+                                     payload.TryGetProperty("includeAbsent", out JsonElement absent) &&
+                                     absent.ValueKind == JsonValueKind.True;
+
+                var manager = new DeviceManager(_loggers.CreateLogger<DeviceManager>());
+                IReadOnlyList<HelperDevice> devices = manager.List(deviceClass, includeAbsent);
+
+                _logger.LogInformation("Listed {Count} device(s).", devices.Count);
+                return Ok(sequence, new HelperDeviceListResult(devices));
+            }
+
+            case HelperProtocol.Operations.DeviceSetEnabled:
+            {
+                string? instanceId = ReadPayloadString(payload, "instanceId");
+                string? expectedName = ReadPayloadString(payload, "expectedName");
+
+                if (instanceId is null || expectedName is null)
+                {
+                    // The expected name is not optional. Changing a device without checking
+                    // it is the one thing this operation is careful about, and a caller that
+                    // omits it does not get the unchecked version.
+                    return Refused(
+                        sequence,
+                        "malformed",
+                        "A device change needs both an instance id and the name it was last seen under.");
+                }
+
+                bool enabled = payload.TryGetProperty("enabled", out JsonElement enabledElement) &&
+                               enabledElement.ValueKind == JsonValueKind.True;
+
+                var manager = new DeviceManager(_loggers.CreateLogger<DeviceManager>());
+                HelperDeviceResult result = manager.SetEnabled(instanceId, enabled, expectedName);
+
+                // Returned as a successful call whatever the outcome. "Windows refused" and
+                // "the helper refused" are answers the operator needs in full, not errors
+                // that lose the detail on the way back.
+                return Ok(sequence, result);
             }
 
             default:
@@ -317,6 +365,13 @@ public sealed class HelperServer : IAsyncDisposable
             outBufferSize: 0,
             security);
     }
+
+    private static string? ReadPayloadString(JsonElement payload, string name) =>
+        payload.ValueKind == JsonValueKind.Object &&
+        payload.TryGetProperty(name, out JsonElement value) &&
+        value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static string? ReadString(JsonElement element, string name) =>
         element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
