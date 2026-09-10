@@ -555,10 +555,43 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - `boot` and `system` start types are readable but not settable: they belong to drivers that
   load before the service control manager exists
 
+**Done — scheduled tasks and startup items**
+
+- The other two ways something runs without anybody asking. With services they are the three
+  places anybody investigating a machine looks first, which is why the read commands exist and
+  why they are audited despite changing nothing
+- **WOLF creates neither, and that is the security argument.** A scheduled task and a `Run` key
+  are the two mechanisms every piece of Windows malware reaches for. `RegisterTaskDefinition`
+  and `DeleteTask` are never called; no operation adds or removes a startup entry. A protection
+  list can be incomplete — "there is no code path that registers a task" cannot be, and there is
+  a test that walks the helper's operations to prove it
+- Disabling a startup entry writes the same `StartupApproved` flag Task Manager writes, so the
+  entry survives. An operator can put back what they turned off, and somebody who has taken over
+  a session cannot use WOLF to remove the evidence of what was there
+- Per-user entries are read from hives already mounted under `HKEY_USERS`, which needs no token
+  and covers every user signed in at once. Users who are *not* signed in have no mounted hive
+  and are not listed — stated rather than worked around, because loading somebody's hive to read
+  it is a much larger thing to do to a machine
+- The task scheduler is reached late-bound through `Schedule.Service`: the alternative was
+  several hundred lines of `ComImport` interop for six members, each a vtable offset that fails
+  silently when wrong. One consequence, caught by the first test that asked for a task that did
+  not exist: the binder turns HRESULTs into the nearest .NET exception, so a missing task
+  arrives as `FileNotFoundException` rather than `COMException`
+- Hidden tasks are listed. A task hidden from the Task Scheduler UI is *more* interesting to
+  somebody investigating a machine, not less
+- What a task actually runs is in the listing rather than behind a click, because it is the
+  first thing anybody reads
+- Refusals cover WOLF's own work, and the servicing, recovery and security folders. Enabling and
+  running stay allowed everywhere — the same asymmetry the service and device rules make
+- Running a task is `high` where enabling one is `medium`: it is not creating anything, but what
+  it executes was decided by whoever registered the task rather than by the operator
+
 **Still open in this milestone**
-- **Scheduled tasks and startup items are not built.** They belong beside services — the same
-  helper, the same command path, the same "manage what exists, never create" rule — and are the
-  next slice rather than a different design
+- **Task and startup changes have not been run against a real machine.** They need an elevated
+  test host, and a suite that switched off scheduled tasks on whatever machine it happened to
+  run on would be worse than an untested path. `WOLF_TEST_AUTORUN_CONTROL=1` cycles one
+  third-party task and puts it back. Both enumerations, every refusal, and the missing-task and
+  missing-entry paths *are* exercised against the real machine
 - **Service start and stop have not been run against a real machine.** They need an elevated
   test host, and a suite that stopped services on whatever machine it happened to run on would
   be a worse idea than an untested path. `WOLF_TEST_SERVICE_CONTROL=1` runs it elevated against
@@ -577,7 +610,6 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 - **No terminal grid.** Editors, pagers and in-place progress displays are not rendered
   correctly. Stated in the UI above the output rather than approximated, so an operator
   reading a partial screen knows it is partial
-- Scheduled tasks and startup items
 - Network diagnostics, Windows event logs, hardware inventory
 - Clipboard sync is done (milestone 2) and is never persisted in cloud history
 

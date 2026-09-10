@@ -407,6 +407,16 @@ Stated plainly rather than left to be discovered:
   disable its own services, the RPC and COM core, and anything the connection back into the
   machine depends on — those are refusals no confirmation can unlock, distinct from the risk
   levels that gate everything else. See [the privileged helper](../architecture/privileged-helper.md).
+- **WOLF cannot create a scheduled task or add a startup entry, and cannot delete either.**
+  Those two are how Windows persistence is installed, and the helper's operation list is the
+  enumerable proof that no code path reaches them. Disabling a startup entry writes the approval
+  flag Task Manager writes, so the entry survives — an operator can undo it, and somebody who
+  has taken over a session cannot use WOLF to erase what was there. WOLF also refuses to disable
+  its own scheduled work, the servicing, recovery and security task folders, and any startup
+  entry that runs the Windows shell.
+- **Per-user startup entries are read from hives that are already mounted**, never by loading
+  somebody's hive or impersonating them. Users who are not signed in are not listed, and that
+  limit is reported rather than worked around.
 - **WOLF cannot install or remove a service.** `CreateService` and `DeleteService` are never
   called and no command reaches them. Installing a service is a persistence mechanism, and a
   remote-management tool that can do it is a remote-persistence tool.

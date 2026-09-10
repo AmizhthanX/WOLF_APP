@@ -62,6 +62,29 @@ public static class HelperProtocol
         /// </summary>
         public const string ServiceSetStartType = "service.set-start-type";
 
+        /// <summary>List the scheduled tasks on this machine, hidden ones included. Read-only.</summary>
+        public const string TaskList = "task.list";
+
+        /// <summary>
+        /// Enable, disable or run one scheduled task.
+        ///
+        /// Never register one and never delete one: a scheduled task is the first thing every
+        /// piece of Windows malware creates, and there is no operation here that would.
+        /// </summary>
+        public const string TaskControl = "task.control";
+
+        /// <summary>List what runs at sign-in, from every place Windows looks. Read-only.</summary>
+        public const string StartupList = "startup.list";
+
+        /// <summary>
+        /// Turn one startup entry on or off.
+        ///
+        /// Written the way Task Manager writes it — the `StartupApproved` flag — so the entry
+        /// itself survives and an operator can put back what they turned off. WOLF has no
+        /// operation that adds a startup entry and none that removes one.
+        /// </summary>
+        public const string StartupSetEnabled = "startup.set-enabled";
+
         /// <summary>What this helper is and what it can do. Costs nothing and touches nothing.</summary>
         public const string Describe = "helper.describe";
     }
@@ -74,6 +97,10 @@ public static class HelperProtocol
             or Operations.ServiceList
             or Operations.ServiceControl
             or Operations.ServiceSetStartType
+            or Operations.TaskList
+            or Operations.TaskControl
+            or Operations.StartupList
+            or Operations.StartupSetEnabled
             or Operations.Describe;
 }
 
@@ -225,5 +252,69 @@ public sealed record HelperServiceResult(
     [property: JsonPropertyName("ok")] bool Ok,
     /// <summary>What Windows reports afterwards, never what was asked for.</summary>
     [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("message")] string? Message);
+
+/// <summary>One scheduled task, as the Windows task scheduler describes it.</summary>
+public sealed record HelperTask(
+    /// <summary>The full path, folder included: `\Microsoft\Windows\Defrag\ScheduledDefrag`.</summary>
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    /// <summary>unknown, disabled, queued, ready, running.</summary>
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("lastRunAt")] string? LastRunAt,
+    [property: JsonPropertyName("nextRunAt")] string? NextRunAt,
+    /// <summary>The exit code of the last run. Zero is success; everything else is not.</summary>
+    [property: JsonPropertyName("lastResult")] int LastResult,
+    [property: JsonPropertyName("author")] string? Author,
+    /// <summary>The account it runs as, which is the fact that decides what it can reach.</summary>
+    [property: JsonPropertyName("account")] string? Account,
+    /// <summary>What it actually runs. The first thing anybody investigating a machine reads.</summary>
+    [property: JsonPropertyName("actions")] IReadOnlyList<string> Actions,
+    /// <summary>Which of WOLF's protections covers this task, or null when none does.</summary>
+    [property: JsonPropertyName("protectedBy")] string? ProtectedBy);
+
+/// <summary>The helper's answer to a scheduled task list request.</summary>
+public sealed record HelperTaskListResult(
+    [property: JsonPropertyName("tasks")] IReadOnlyList<HelperTask> Tasks,
+    [property: JsonPropertyName("truncated")] bool Truncated);
+
+/// <summary>What happened when a scheduled task was enabled, disabled or run.</summary>
+public sealed record HelperTaskResult(
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("ok")] bool Ok,
+    /// <summary>What the scheduler says afterwards, never what was asked for.</summary>
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("message")] string? Message);
+
+/// <summary>One thing that runs when somebody signs in.</summary>
+public sealed record HelperStartupEntry(
+    [property: JsonPropertyName("name")] string Name,
+    /// <summary>The command line, or the shortcut's path for a Startup folder entry.</summary>
+    [property: JsonPropertyName("command")] string? Command,
+    /// <summary>machine or user. Which of the two decides who it starts for.</summary>
+    [property: JsonPropertyName("scope")] string Scope,
+    /// <summary>run, run-once, or startup-folder — which of Windows' four places it came from.</summary>
+    [property: JsonPropertyName("source")] string Source,
+    /// <summary>Whose it is, for a user entry read from a mounted hive.</summary>
+    [property: JsonPropertyName("user")] string? User,
+    /// <summary>Whether Windows will actually run it, per the StartupApproved flag.</summary>
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("protectedBy")] string? ProtectedBy);
+
+/// <summary>The helper's answer to a startup list request.</summary>
+public sealed record HelperStartupListResult(
+    [property: JsonPropertyName("entries")] IReadOnlyList<HelperStartupEntry> Entries,
+    [property: JsonPropertyName("truncated")] bool Truncated);
+
+/// <summary>What happened when a startup entry was turned on or off.</summary>
+public sealed record HelperStartupResult(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("scope")] string Scope,
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("code")] string? Code,
     [property: JsonPropertyName("message")] string? Message);

@@ -82,6 +82,7 @@ const CAPABILITIES = [
   'terminal',
   'file-transfer',
   'services',
+  'configuration',
 ];
 
 export function usePcSession(pcId: string): PcSession {

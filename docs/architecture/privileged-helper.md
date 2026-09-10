@@ -36,6 +36,10 @@ Wolf.Agent (LocalSystem)                  Wolf.Agent.Helper (LocalSystem)
 │                            │            │   service.list               │
 │                            │            │   service.control            │
 │                            │            │   service.set-start-type     │
+│                            │            │   task.list                  │
+│                            │            │   task.control               │
+│                            │            │   startup.list               │
+│                            │            │   startup.set-enabled        │
 │                            │            │                              │
 │                            │            │ no network, no configuration │
 └────────────────────────────┘            └──────────────────────────────┘
@@ -235,3 +239,73 @@ matters about it is the opposite: that it is classified for risk, confirmed, re-
 where the risk warrants, and written to an audit record somebody can read afterwards. All of
 that lives in the cloud, and routing service control around it to save a hop would trade the
 only property that makes it accountable for one it does not need.
+
+## Scheduled tasks and startup items
+
+The other two ways something runs on a Windows machine without anybody asking. With services
+they are the three places anybody investigating a machine looks first — which is why the read
+commands exist, and why they are audited despite changing nothing. "What runs here when nobody
+is watching" is a useful question and also exactly what somebody planning to abuse the machine
+wants to know.
+
+### WOLF creates neither, and that is the security argument
+
+A scheduled task and a `Run` key are the two mechanisms every piece of Windows malware reaches
+for, in that order. So:
+
+- **Scheduled tasks** are listed, run, enabled and disabled. `RegisterTaskDefinition` and
+  `DeleteTask` are never called and no operation reaches them.
+- **Startup items** are listed, enabled and disabled — and disabling writes the same
+  `StartupApproved` flag Task Manager writes, leaving the entry in place. WOLF never adds one
+  and never deletes one.
+
+That boundary is worth more than any protection list, and for a reason worth stating plainly: a
+list can be incomplete, and "there is no code path that registers a task" cannot be. The
+operations the helper will perform are the enumerable proof, and there is a test that walks
+them.
+
+Leaving the entry in place matters twice over. An operator can put back what they turned off,
+and somebody who has taken over a session cannot use WOLF to remove the evidence of what was
+there.
+
+### Reading per-user startup entries without impersonating anybody
+
+The helper runs as LocalSystem and has no user hive of its own — but it does not need one. A
+signed-in user's hive is already mounted under `HKEY_USERS\<their SID>`, so their `Run` key is
+readable directly. That is simpler than impersonation, needs no token, and covers every user
+signed in at once rather than only the one at the console.
+
+A user who is *not* signed in has no mounted hive, and their entries are not listed. Said
+rather than worked around: loading somebody's hive in order to read it is a much larger thing
+to do to a machine than reading one that is already open.
+
+### The task scheduler is reached late-bound
+
+`Schedule.Service` through COM, with `dynamic`. Declaring `ITaskService`, `ITaskFolder`,
+`IRegisteredTask` and their collections as `ComImport` interfaces would be several hundred
+lines of interop for the six members actually used, and every one of them is a vtable offset
+that fails silently when it is wrong. There is no first-party managed wrapper in the framework,
+and driving `schtasks.exe` would mean parsing localised console output to decide whether
+something ran.
+
+One consequence caught by the first test that looked for a task that did not exist: the
+late-bound binder translates HRESULTs into the nearest .NET exception, so a missing task
+arrives as `FileNotFoundException` rather than `COMException`. Both are caught.
+
+### What is refused
+
+| | Why |
+| --- | --- |
+| `\WOLF\…` | WOLF's own scheduled work. Disabling it from a WOLF session loses the session and the means of undoing it |
+| `\Microsoft\Windows\{TaskScheduler, Servicing, WindowsUpdate, UpdateOrchestrator, SystemRestore, Windows Defender, …}` | Servicing, recovery and security |
+| A startup entry running `explorer.exe`, or WOLF's own | No desktop for whoever signs in next; or no WOLF |
+
+Folders rather than task names, because the set inside them differs by Windows build and a list
+of names would be quietly wrong on half the machines it ran on. The cost is that a harmless task
+in one of those folders cannot be disabled remotely — much smaller than a machine that stops
+updating and does not say so.
+
+**Enabling and running are allowed everywhere**, including in the protected folders. The same
+asymmetry the service and device rules make: those directions restore function or repeat
+something the machine was going to do anyway, and both can be undone. Disabling servicing
+cannot — its damage is slow, and nobody attributes it to the right cause months later.

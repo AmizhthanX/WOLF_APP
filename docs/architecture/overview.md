@@ -129,7 +129,7 @@ them instead of queueing work that would never run:
 - **Remote unlock**, which is refused rather than unbuilt: Windows has no API that unlocks a
   session, and the analysis is in [remote unlock](remote-unlock.md). What WOLF does instead is
   show the lock screen and let the operator sign in to it themselves
-- Services, scheduled tasks, startup items
+- Network diagnostics, Windows event logs, hardware inventory
 - Wake-on-LAN
 - GPU telemetry, CPU package power, thermal sensors
 

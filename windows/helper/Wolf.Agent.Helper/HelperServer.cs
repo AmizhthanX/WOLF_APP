@@ -203,6 +203,10 @@ public sealed class HelperServer : IAsyncDisposable
                         HelperProtocol.Operations.ServiceList,
                         HelperProtocol.Operations.ServiceControl,
                         HelperProtocol.Operations.ServiceSetStartType,
+                        HelperProtocol.Operations.TaskList,
+                        HelperProtocol.Operations.TaskControl,
+                        HelperProtocol.Operations.StartupList,
+                        HelperProtocol.Operations.StartupSetEnabled,
                     },
                     WindowsIdentity.GetCurrent().Name);
 
@@ -222,6 +226,63 @@ public sealed class HelperServer : IAsyncDisposable
 
                 _logger.LogInformation("Read health for {Count} drive(s).", disks.Count);
                 return Ok(sequence, new HelperDiskHealthResult(disks));
+            }
+
+            case HelperProtocol.Operations.TaskList:
+            {
+                var manager = new TaskManager(_loggers.CreateLogger<TaskManager>());
+                HelperTaskListResult result = manager.List(ReadPayloadString(payload, "search"));
+
+                _logger.LogInformation("Listed {Count} scheduled task(s).", result.Tasks.Count);
+                return Ok(sequence, result);
+            }
+
+            case HelperProtocol.Operations.TaskControl:
+            {
+                string? path = ReadPayloadString(payload, "path");
+                string? action = ReadPayloadString(payload, "action");
+                string? expected = ReadPayloadString(payload, "expectedName");
+
+                if (path is null || action is null || expected is null)
+                {
+                    return Refused(
+                        sequence,
+                        "malformed",
+                        "A task change needs a path, an action, and the name it was last seen under.");
+                }
+
+                var manager = new TaskManager(_loggers.CreateLogger<TaskManager>());
+                return Ok(sequence, manager.Control(path, action, expected));
+            }
+
+            case HelperProtocol.Operations.StartupList:
+            {
+                var manager = new StartupManager(_loggers.CreateLogger<StartupManager>());
+                HelperStartupListResult result = manager.List();
+
+                _logger.LogInformation("Listed {Count} startup entr(ies).", result.Entries.Count);
+                return Ok(sequence, result);
+            }
+
+            case HelperProtocol.Operations.StartupSetEnabled:
+            {
+                string? name = ReadPayloadString(payload, "name");
+                string? scope = ReadPayloadString(payload, "scope");
+                string? source = ReadPayloadString(payload, "source");
+
+                if (name is null || scope is null || source is null)
+                {
+                    return Refused(
+                        sequence,
+                        "malformed",
+                        "A startup change needs a name, a scope, and which of Windows' places it came from.");
+                }
+
+                bool enabled = payload.TryGetProperty("enabled", out JsonElement enabledElement) &&
+                               enabledElement.ValueKind == JsonValueKind.True;
+
+                var manager = new StartupManager(_loggers.CreateLogger<StartupManager>());
+                return Ok(sequence, manager.SetEnabled(name, scope, source, enabled));
             }
 
             case HelperProtocol.Operations.ServiceList:

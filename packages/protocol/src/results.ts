@@ -332,7 +332,81 @@ export const serviceChangeResult = z.object({
   at: isoDateTime,
 });
 
+/** One scheduled task, as the Windows task scheduler describes it. */
+export const taskInfo = z.object({
+  /** Folder and name together: `\\Microsoft\\Windows\\Defrag\\ScheduledDefrag`. */
+  path: z.string().min(1).max(1024),
+  name: z.string().max(512),
+  enabled: z.boolean().default(false),
+  /** unknown, disabled, queued, ready, running. */
+  state: z.string().max(32),
+  lastRunAt: z.string().max(64).nullable().default(null),
+  nextRunAt: z.string().max(64).nullable().default(null),
+  /** The exit code of the last run. Zero is success; everything else is not. */
+  lastResult: z.number().int().default(0),
+  author: z.string().max(512).nullable().default(null),
+  /** The account it runs as, which is the fact that decides what it can reach. */
+  account: z.string().max(512).nullable().default(null),
+  /** What it actually runs — the first thing anybody investigating a machine reads. */
+  actions: z.array(z.string().max(2048)).max(8).default([]),
+  protectedBy: z.string().max(64).nullable().default(null),
+});
+export type TaskInfo = z.infer<typeof taskInfo>;
+
+export const taskListResult = z.object({
+  tasks: z.array(taskInfo).max(2000),
+  truncated: z.boolean().default(false),
+  helperAvailable: z.boolean(),
+  unavailableReason: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
+export const taskControlResult = z.object({
+  path: z.string().min(1).max(1024),
+  name: z.string().max(512),
+  /** What the scheduler says afterwards, never what was asked for. */
+  enabled: z.boolean(),
+  at: isoDateTime,
+});
+
+/** One thing that runs when somebody signs in. */
+export const startupEntry = z.object({
+  name: z.string().min(1).max(512),
+  /** The command line, or the shortcut's path for a Startup folder entry. */
+  command: z.string().max(4096).nullable().default(null),
+  /** machine or user — which of the two decides who it starts for. */
+  scope: z.string().max(16),
+  /** run, run-once, or startup-folder: which of Windows' four places it came from. */
+  source: z.string().max(32),
+  /** Whose it is, for a user entry read from a mounted hive. */
+  user: z.string().max(512).nullable().default(null),
+  /** Whether Windows will actually run it, per the approval flag Task Manager writes. */
+  enabled: z.boolean().default(true),
+  protectedBy: z.string().max(64).nullable().default(null),
+});
+export type StartupEntry = z.infer<typeof startupEntry>;
+
+export const startupListResult = z.object({
+  entries: z.array(startupEntry).max(500),
+  truncated: z.boolean().default(false),
+  helperAvailable: z.boolean(),
+  unavailableReason: z.string().max(300).nullable().default(null),
+  at: isoDateTime,
+});
+
+export const startupSetEnabledResult = z.object({
+  name: z.string().min(1).max(512),
+  scope: z.string().max(16),
+  source: z.string().max(32),
+  enabled: z.boolean(),
+  at: isoDateTime,
+});
+
 export const RESULT_SCHEMAS = {
+  'task.list': taskListResult,
+  'task.control': taskControlResult,
+  'startup.list': startupListResult,
+  'startup.set-enabled': startupSetEnabledResult,
   'service.list': serviceListResult,
   'service.control': serviceChangeResult,
   'service.set-start-type': serviceChangeResult,

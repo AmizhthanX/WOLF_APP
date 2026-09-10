@@ -6,6 +6,7 @@ import { deviceCommand } from './device.js';
 import { diskCommand } from './disk.js';
 import { powerCommand } from './power.js';
 import { remoteDesktopCommand } from './remote-desktop.js';
+import { autorunCommand, isProtectedTask } from './autorun.js';
 import { isUnstoppableService, serviceCommand } from './service.js';
 import { systemCommand } from './system.js';
 
@@ -14,6 +15,7 @@ export * from './device.js';
 export * from './disk.js';
 export * from './power.js';
 export * from './remote-desktop.js';
+export * from './autorun.js';
 export * from './service.js';
 export * from './system.js';
 
@@ -32,6 +34,7 @@ export const agentCommandBody = z.union([
   powerCommand,
   remoteDesktopCommand,
   serviceCommand,
+  autorunCommand,
   systemCommand,
 ]);
 export type AgentCommandBody = z.infer<typeof agentCommandBody>;
@@ -53,7 +56,9 @@ export interface CommandDefinition {
     | 'pc'
     | 'session'
     | 'unlock'
-    | 'service';
+    | 'service'
+    | 'scheduled-task'
+    | 'startup';
 }
 
 export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefinition>> =
@@ -251,6 +256,49 @@ export const COMMAND_REGISTRY: Readonly<Record<AgentCommandType, CommandDefiniti
       description: 'Change when a service starts',
       auditCategory: 'service',
     },
+    /**
+     * Reading what a machine runs on its own changes nothing and is not nothing. Scheduled
+     * tasks and startup entries are where persistence lives, so the list is the first thing
+     * an investigation reads — and the first thing somebody planning to abuse the machine
+     * wants. Low risk, audited like everything else.
+     */
+    'task.list': {
+      risk: 'low',
+      capability: 'services',
+      mutating: false,
+      description: 'List scheduled tasks',
+      auditCategory: 'scheduled-task',
+    },
+    /**
+     * Baseline only. Enabling is recoverable; `classifyRisk` escalates disabling a protected
+     * task to critical, and running one to high — running a configured task is not creating
+     * one, but it is still asking the machine to execute something.
+     */
+    'task.control': {
+      risk: 'medium',
+      capability: 'services',
+      mutating: true,
+      description: 'Enable, disable or run a scheduled task',
+      auditCategory: 'scheduled-task',
+    },
+    'startup.list': {
+      risk: 'low',
+      capability: 'configuration',
+      mutating: false,
+      description: 'List what runs at sign-in',
+      auditCategory: 'startup',
+    },
+    /**
+     * Turning a startup entry off is reversible by design — the entry survives and only
+     * Windows' approval flag changes — which is why this is medium rather than high.
+     */
+    'startup.set-enabled': {
+      risk: 'medium',
+      capability: 'configuration',
+      mutating: true,
+      description: 'Turn a startup entry on or off',
+      auditCategory: 'startup',
+    },
     'power.unlock': {
       risk: 'critical',
       capability: 'privileged',
@@ -303,6 +351,20 @@ export function classifyRisk(command: AgentCommandBody): RiskLevel {
       if (command.payload.startType === 'disabled') return 'critical';
       if (isUnstoppableService(command.payload.name)) return 'critical';
       return base;
+    }
+    case 'task.control': {
+      // Enabling restores something the machine was already configured to do, and can be
+      // undone by disabling it again. The other two cannot be dismissed as lightly.
+      if (command.payload.action === 'enable') return base;
+
+      // Running a configured task is not creating one, but it is still asking the machine to
+      // execute something — and what it executes was decided by whoever registered the task,
+      // not by the operator pressing the button.
+      if (command.payload.action === 'run') return maxRisk(base, 'high');
+
+      // Disabling servicing, recovery or security tasks is the kind of slow damage nobody
+      // attributes to the right cause months later.
+      return isProtectedTask(command.payload.path) ? 'critical' : maxRisk(base, 'high');
     }
     case 'process.set-priority':
       // Realtime priority can starve the input and capture threads, which is how an

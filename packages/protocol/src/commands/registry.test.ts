@@ -294,3 +294,98 @@ test('reading the service list is low risk but still its own capability', () => 
   assert.equal(requiredCapability('service.control'), 'services');
   assert.equal(requiredCapability('service.set-start-type'), 'services');
 });
+
+/* ------------------------------------------------------------------------- */
+/* Scheduled tasks and startup items                                          */
+/* ------------------------------------------------------------------------- */
+
+test('WOLF has no command that creates or removes a task or a startup entry', () => {
+  // The whole security argument for this area, stated as a test. A list of protected folders
+  // can be incomplete; "there is no command that registers a task" cannot be. A scheduled task
+  // and a Run key are the two mechanisms every piece of Windows malware reaches for.
+  for (const type of ALL_COMMAND_TYPES) {
+    assert.ok(
+      !/^(task|startup)\.(create|register|add|delete|remove|uninstall|write)/.test(type),
+      `${type} would let WOLF install or remove persistence`,
+    );
+  }
+
+  assert.ok(!isKnownCommandType('task.register'));
+  assert.ok(!isKnownCommandType('startup.add'));
+});
+
+test('a startup change can only turn something on or off', () => {
+  // There is deliberately no `command` field. A payload that could set what an entry runs
+  // would be one that could install persistence under an existing name, which is the thing
+  // this whole area is built not to allow.
+  const parsed = agentCommandBody.safeParse({
+    type: 'startup.set-enabled',
+    payload: { name: 'Spotify', scope: 'user', source: 'run', enabled: false, command: 'evil.exe' },
+  });
+
+  assert.ok(parsed.success);
+  if (parsed.success && parsed.data.type === 'startup.set-enabled') {
+    assert.equal('command' in parsed.data.payload, false, 'a command reached the agent');
+  }
+});
+
+test('disabling a task Windows needs is critical; disabling an updater is not', () => {
+  const disable = (path: string) =>
+    classifyRisk({ type: 'task.control', payload: { path, action: 'disable', expectedName: 'x' } });
+
+  // Servicing, recovery and security. The damage is slow: a machine that stops updating does
+  // not fail, it degrades, and nobody attributes it to the right cause months later.
+  assert.equal(disable('\\Microsoft\\Windows\\WindowsUpdate\\Scheduled Start'), 'critical');
+  assert.equal(disable('\\Microsoft\\Windows\\Windows Defender\\Scan'), 'critical');
+  assert.equal(disable('\\WOLF\\Watchdog'), 'critical');
+
+  // The single most common thing an operator wants to switch off on somebody's machine. A
+  // rule that caught it would make the feature useless for its main purpose.
+  assert.equal(disable('\\Adobe Acrobat Update Task'), 'high');
+});
+
+test('running a task is riskier than enabling one', () => {
+  const control = (action: 'enable' | 'disable' | 'run') =>
+    classifyRisk({
+      type: 'task.control',
+      payload: { path: '\\Adobe Acrobat Update Task', action, expectedName: 'x' },
+    });
+
+  // Enabling restores something the machine was already configured to do. Running asks it to
+  // execute something now — and what it executes was decided by whoever registered the task,
+  // not by the operator pressing the button.
+  assert.equal(control('enable'), 'medium');
+  assert.equal(control('run'), 'high');
+  assert.equal(control('disable'), 'high');
+});
+
+test('a task path is rooted and cannot climb out of itself', () => {
+  const parse = (path: string) =>
+    agentCommandBody.safeParse({
+      type: 'task.control',
+      payload: { path, action: 'enable', expectedName: 'x' },
+    }).success;
+
+  assert.ok(parse('\\Microsoft\\Windows\\Defrag\\ScheduledDefrag'));
+  assert.ok(parse('\\Adobe Acrobat Update Task'));
+
+  // The path that gets checked and the path that gets opened must be the same string — the
+  // same rule the file manager's paths follow, for the same reason.
+  assert.equal(parse('\\Microsoft\\..\\WOLF\\Watchdog'), false);
+  assert.equal(parse('Microsoft\\Windows'), false, 'a task path is rooted');
+  assert.equal(parse(''), false);
+});
+
+test('reading what a machine runs on its own is low risk and audited anyway', () => {
+  // "What runs on this machine when nobody is watching" is a useful question and also exactly
+  // what somebody planning to abuse it wants to know, so it is audited despite changing
+  // nothing.
+  assert.equal(COMMAND_REGISTRY['task.list'].risk, 'low');
+  assert.equal(COMMAND_REGISTRY['task.list'].mutating, false);
+  assert.equal(COMMAND_REGISTRY['task.list'].auditCategory, 'scheduled-task');
+  assert.equal(COMMAND_REGISTRY['startup.list'].auditCategory, 'startup');
+
+  // Startup items are machine configuration; scheduled tasks sit with services.
+  assert.equal(requiredCapability('task.list'), 'services');
+  assert.equal(requiredCapability('startup.list'), 'configuration');
+});
