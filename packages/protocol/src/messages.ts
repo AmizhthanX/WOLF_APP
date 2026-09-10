@@ -219,6 +219,15 @@ export const cloudSignalMessage = z.object({
    * of a screen has not thereby been given the contents of their clipboard.
    */
   clipboardAllowed: z.boolean().default(false),
+  /**
+   * Whether this session may run commands on the PC.
+   *
+   * Separate again, and the one where the separation matters most: a terminal is arbitrary
+   * command execution, and nothing else WOLF grants implies it. Defaulted false, so a
+   * message that lost the field produces a stream with no terminal rather than a shell
+   * nobody authorised.
+   */
+  terminalAllowed: z.boolean().default(false),
 });
 
 export const cloudPingMessage = z.object({

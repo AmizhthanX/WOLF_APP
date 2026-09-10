@@ -453,12 +453,55 @@ Everything blocked on elevation, built without weakening any Windows boundary.
 
 ## Milestone 4 — Administration
 
-- Terminal: CMD, PowerShell, tabs, streaming output, script execution
-- Administrative terminal behind an elevated grant
+**Done — the terminal**
+
+- The one feature in WOLF that is arbitrary command execution, built as its own thing for
+  exactly that reason. Its own capability, its own exclusive lease, and a separate capability
+  again for elevation — none of them implied by any other. A session with `screen` and
+  `input` can already type into whatever is on screen and still cannot open a shell, and
+  there is an end-to-end test that says so
+- A real pseudo console — the ConPTY API — running as the signed-in user in the session host.
+  Not SYSTEM, not elevated, not through the privileged helper. Redirecting a shell's stdout
+  through a pipe instead would produce a shell that knows it is not on a terminal, which is
+  not the shell the operator is there to see
+- Shells are **named**, never pathed: `cmd`, `powershell`, `pwsh`, resolved to fixed
+  executables by the agent. A caller that could supply a path would turn "give me a shell"
+  into "run this program as the signed-in user", before any shell exists to be audited as one
+- Terminal traffic rides the data channel and **never reaches the cloud**. The same routing
+  as the clipboard with a stronger reason: terminal output routinely carries a connection
+  string a script echoed, a token in an environment dump, or a password typed into a prompt
+  that was not hiding it. The cloud decides who may open a shell and records that one was
+  opened; it never sees a byte of what was typed or printed
+- Losing the lease closes every shell the stream had open — the difference between a lease
+  and a suggestion. So does the stream ending
+- Elevation is refused as a stated limitation rather than served with an unelevated shell
+  that claims to be elevated
+- What is logged is which shell, which stream, its pid, how many bytes, and how it ended.
+  Never content, including in refusals — a refusal that quoted what it refused would put a
+  half-typed password in the log of every PC that ever refused one. Asserted by test
+- **Two real bugs came out of testing against a real shell rather than a mock.** Without
+  `STARTF_USESTDHANDLES` and null standard handles the shell attaches to the pseudo console,
+  reports the right size, and writes every byte of its output to the parent's handles where
+  nobody will ever see it — invisible from a terminal, because there the parent's handles
+  *are* a console. And a shell that exits on its own never produces an end-of-file, because
+  conhost outlives its client and keeps the pipe open, so the exit has to be watched for
+  separately and the console closed to flush the last line
+- The browser side is a **scrollback renderer**, not a terminal emulator, and says so: colour,
+  carriage returns, backspace and clear-screen are applied, and anything that paints a
+  full-screen interface is reported as unrendered rather than approximated
+
+**Still open in this milestone**
+- **`terminal-admin` is not built.** An elevated shell needs a token the session host does
+  not have, which makes it privileged-helper work and a slice of its own
+- **A terminal needs a running stream**, because the data channel belongs to one. Opening a
+  shell on a PC nobody is watching would need a second channel
+- **No terminal grid.** Editors, pagers and in-place progress displays are not rendered
+  correctly. Stated in the UI above the output rather than approximated, so an operator
+  reading a partial screen knows it is partial
 - File manager and chunked, resumable transfers with checksums
-- Clipboard sync, never persisted in cloud history
 - Services, scheduled tasks, startup items
 - Network diagnostics, Windows event logs, hardware inventory
+- Clipboard sync is done (milestone 2) and is never persisted in cloud history
 
 ## Milestone 5 — Intelligence
 

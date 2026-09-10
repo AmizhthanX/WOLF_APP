@@ -129,9 +129,13 @@ them instead of queueing work that would never run:
 - **Remote unlock**, which is refused rather than unbuilt: Windows has no API that unlocks a
   session, and the analysis is in [remote unlock](remote-unlock.md). What WOLF does instead is
   show the lock screen and let the operator sign in to it themselves
-- Terminal, file manager, services, scheduled tasks, startup items
+- File manager, services, scheduled tasks, startup items
 - Wake-on-LAN
 - GPU telemetry, CPU package power, thermal sensors
+
+The terminal is built and is described in [the terminal](terminal.md). What is *not* built
+there is `terminal-admin`, the elevated shell: it needs a token the session host does not
+have, so it is privileged-helper work and a slice of its own.
 
 Two things that used to be on this list are not, and the correction is worth keeping: the
 privileged helper exists and reads disk health, with device management running through it,

@@ -19,6 +19,12 @@ That distinction is the PRD's rule 9 read literally: a narrow, allow-listed, typ
 surface, never arbitrary execution. There is no "run this" operation and there is not going
 to be one.
 
+The same rule says what to do with the thing that genuinely *is* arbitrary execution: make it
+a separate feature with its own capability grant. That is [the terminal](terminal.md), and it
+does not go through this helper at all — its shell runs as the signed-in user, with no more
+rights than the person sitting at the machine. An elevated terminal would need this helper,
+which is why it is not built yet rather than quietly approximated.
+
 ```
 Wolf.Agent (LocalSystem)                  Wolf.Agent.Helper (LocalSystem)
 ┌────────────────────────────┐            ┌──────────────────────────────┐

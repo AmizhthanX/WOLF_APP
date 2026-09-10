@@ -84,6 +84,7 @@ public sealed class StreamSession : IDisposable
 
     private readonly bool _audioAllowed;
     private readonly bool _clipboardAllowed;
+    private readonly bool _terminalAllowed;
     private readonly object _signalGate = new();
     private readonly List<SignalCandidate> _candidatesBeforeOffer = new();
     private bool _offerSent;
@@ -91,6 +92,7 @@ public sealed class StreamSession : IDisposable
 
     private InputChannel? _input;
     private ClipboardChannel? _clipboard;
+    private Terminal.TerminalChannel? _terminal;
     private ControlChannel? _control;
     private AudioPipeline? _audio;
     private RateController? _rate;
@@ -133,6 +135,7 @@ public sealed class StreamSession : IDisposable
         SignalStreamRequest request,
         bool audioAllowed,
         bool clipboardAllowed,
+        bool terminalAllowed,
         SignalSender send,
         ILoggerFactory loggers,
         bool preferDuplication)
@@ -142,6 +145,7 @@ public sealed class StreamSession : IDisposable
         _preferDuplication = preferDuplication;
         _audioAllowed = audioAllowed;
         _clipboardAllowed = clipboardAllowed;
+        _terminalAllowed = terminalAllowed;
         _streamId = streamId;
         SessionId = sessionId;
         _request = request;
@@ -176,6 +180,7 @@ public sealed class StreamSession : IDisposable
         IReadOnlyList<IceServerSetting> iceServers,
         bool audioAllowed,
         bool clipboardAllowed,
+        bool terminalAllowed,
         DisplayEnumerator displays,
         SignalSender send,
         ILoggerFactory loggers,
@@ -187,6 +192,7 @@ public sealed class StreamSession : IDisposable
             request,
             audioAllowed,
             clipboardAllowed,
+            terminalAllowed,
             send,
             loggers,
             preferDuplication);
@@ -372,10 +378,21 @@ public sealed class StreamSession : IDisposable
             OnClipboardUnsupported,
             _loggers.CreateLogger<ClipboardChannel>());
 
+        // Refuses everything until the cloud grants the terminal lease, and refuses
+        // everything forever when this session was not granted the capability at all.
+        // Built either way, so a message that arrives early is answered with the reason it
+        // was refused rather than silently dropped.
+        _terminal = new Terminal.TerminalChannel(
+            _streamId,
+            _terminalAllowed,
+            SendControl,
+            _loggers);
+
         _control = new ControlChannel(
             _streamId,
             _input,
             _clipboard,
+            _terminal,
             _loggers.CreateLogger<ControlChannel>());
 
         _clipboard.Start(_clipboardAllowed);
@@ -1293,6 +1310,30 @@ public sealed class StreamSession : IDisposable
     /// <summary>Whether this stream is accepting input right now.</summary>
     public bool HasInputControl => _input?.HasControl ?? false;
 
+    /// <summary>
+    /// Apply the cloud's decision about who may run commands on this PC.
+    ///
+    /// Enforced here as well as decided there, including the expiry — and losing the lease
+    /// closes every shell this stream had open, which is the difference between a lease and
+    /// a suggestion.
+    /// </summary>
+    public void ApplyTerminalControl(bool granted, string? holderSessionId, DateTimeOffset? expiresAt)
+    {
+        _terminal?.ApplyControl(granted, holderSessionId, expiresAt);
+    }
+
+    /// <summary>Whether this stream may open a shell right now.</summary>
+    public bool HasTerminalControl => _terminal?.HasControl ?? false;
+
+    /// <summary>
+    /// Put one message on the data channel.
+    ///
+    /// The terminal is the caller that needs this: its output arrives on a pump thread that
+    /// has nothing to do with a request, so there is no reply to return it as.
+    /// </summary>
+    private void SendControl(System.Text.Json.Nodes.JsonNode message) =>
+        _transport?.SendControl(JsonSerializer.SerializeToUtf8Bytes(message, WolfIpc.Json));
+
     private Task SendErrorAsync(string code, string message, bool limitation, string? recommendedAction) =>
         _send(SignalTypes.StreamError, new
         {
@@ -1338,6 +1379,10 @@ public sealed class StreamSession : IDisposable
 
         // Stops watching, and forgets even the hash of what was last copied.
         _clipboard?.Dispose();
+
+        // Every shell this stream opened goes with it. A command prompt left running on
+        // somebody's PC after the viewer disconnected is exactly what a lease is for.
+        _terminal?.Dispose();
 
         // Order matters: stop producing pictures before tearing down the thing that sends
         // them, so no frame is handed to a disposed transport.

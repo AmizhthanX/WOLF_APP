@@ -699,3 +699,42 @@ tbody tr:hover {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+   Terminal
+
+   Monospaced, dark, and scrolling on its own rather than growing the page: a
+   `dir /s` produces thousands of lines, and a panel that grew with them would
+   push everything else off the screen and never come back.
+   --------------------------------------------------------------------------- */
+
+.terminal-scroll {
+  max-height: 460px;
+  overflow: auto;
+  background: #0c0c0c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.terminal-surface {
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #cccccc;
+  /* Wrapping rather than a horizontal scrollbar: the shell already wrapped its
+     own output to the width it was told, so anything wider is a line it did not
+     expect to break and a reader would rather see than scroll for. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+}
+
+.terminal-surface:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: 4px;
+}
+
+.terminal-line {
+  min-height: 1.35em;
+}

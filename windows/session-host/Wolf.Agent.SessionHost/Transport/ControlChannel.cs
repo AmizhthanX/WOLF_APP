@@ -5,16 +5,21 @@ using Microsoft.Extensions.Logging;
 using Wolf.Agent.Core.Ipc;
 using Wolf.Agent.SessionHost.Clipboard;
 using Wolf.Agent.SessionHost.Input;
+using Wolf.Agent.SessionHost.Terminal;
 
 namespace Wolf.Agent.SessionHost.Transport;
 
 /// <summary>
 /// The data channel, and what arrives on it.
 ///
-/// Input and clipboard both travel here rather than through the cloud, for different
-/// reasons — input because a round trip would add latency to every keystroke, clipboard
-/// because WOLF must never store what somebody copied. The consequence is the same for
-/// both: **nothing upstream has validated these bytes**, so everything is checked here.
+/// Input, clipboard and terminal traffic all travel here rather than through the cloud, for
+/// different reasons — input because a round trip would add latency to every keystroke, the
+/// other two because WOLF must never store what they carry. The consequence is the same for
+/// all three: **nothing upstream has validated these bytes**, so everything is checked here.
+///
+/// The terminal is the one where that matters most. It is arbitrary command execution, and
+/// the only thing standing between a stranger and a shell on somebody's PC is the checking
+/// <see cref="TerminalChannel"/> does when this hands a message to it.
 ///
 /// Messages are discriminated on `kind` rather than by which fields happen to be present.
 /// Guessing would mean a malformed clipboard message could be read as a batch of
@@ -26,17 +31,20 @@ public sealed class ControlChannel
     private readonly string _streamId;
     private readonly InputChannel _input;
     private readonly ClipboardChannel _clipboard;
+    private readonly TerminalChannel _terminal;
     private readonly ILogger<ControlChannel> _logger;
 
     public ControlChannel(
         string streamId,
         InputChannel input,
         ClipboardChannel clipboard,
+        TerminalChannel terminal,
         ILogger<ControlChannel> logger)
     {
         _streamId = streamId;
         _input = input;
         _clipboard = clipboard;
+        _terminal = terminal;
         _logger = logger;
     }
 
@@ -69,10 +77,18 @@ public sealed class ControlChannel
             return null;
         }
 
-        return kindElement.GetString() switch
+        string? kind = kindElement.GetString();
+
+        return kind switch
         {
             "input" => HandleInput(message),
             "clipboard.content" => HandleClipboard(message),
+
+            // Everything the terminal answers for goes to one place, which checks the
+            // capability and the lease before it looks at anything else in the message.
+            "terminal.open" or "terminal.input" or "terminal.resize" or "terminal.close" =>
+                _terminal.Handle(kind, message),
+
             _ => null,
         };
     }

@@ -168,6 +168,45 @@ export const signalInputControl = z.object({
     .default(null),
 });
 
+export const signalTerminalRequest = z.object({
+  type: z.literal('terminal.request'),
+});
+
+export const signalTerminalRelease = z.object({
+  type: z.literal('terminal.release'),
+});
+
+/**
+ * Who holds the terminal, decided by the cloud and told to both ends.
+ *
+ * The same shape and the same rules as `input.control`, and in neither direction list for
+ * the same reasons — but the stakes are higher, so it is worth saying plainly what this
+ * gates. A session holding this lease can run commands on somebody's PC. Two sessions
+ * holding it at once would produce a command line neither operator typed.
+ *
+ * `expiresAt` is enforced on the PC as well as here. When it lapses the session host closes
+ * every shell that stream had open, because a command prompt left running on a machine
+ * nobody is watching is exactly what a lease exists to prevent.
+ */
+export const signalTerminalControl = z.object({
+  type: z.literal('terminal.control'),
+  granted: z.boolean(),
+  holderSessionId: wolfId.nullable().default(null),
+  expiresAt: isoDateTime.nullable().default(null),
+  reason: z
+    .enum([
+      'granted',
+      'capability-missing',
+      'held-by-another-session',
+      'released',
+      'session-ended',
+      'kill-switch',
+      'unsupported',
+    ])
+    .nullable()
+    .default(null),
+});
+
 export const signalError = z.object({
   type: z.literal('stream.error'),
   code: z.string().max(64),
@@ -192,6 +231,9 @@ export const signalPayload = z.discriminatedUnion('type', [
   signalInputRequest,
   signalInputRelease,
   signalInputControl,
+  signalTerminalRequest,
+  signalTerminalRelease,
+  signalTerminalControl,
   signalError,
 ]);
 export type SignalPayload = z.infer<typeof signalPayload>;
@@ -232,6 +274,8 @@ export const CLIENT_TO_AGENT_PAYLOADS: readonly SignalPayloadType[] = [
   'stream.set-display',
   'input.request',
   'input.release',
+  'terminal.request',
+  'terminal.release',
 ];
 
 export const AGENT_TO_CLIENT_PAYLOADS: readonly SignalPayloadType[] = [

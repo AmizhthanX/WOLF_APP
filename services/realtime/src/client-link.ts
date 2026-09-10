@@ -28,6 +28,16 @@ const MAX_STREAMS_PER_SESSION = 4;
  */
 const INPUT_LEASE_SECONDS = 120;
 
+/**
+ * How long a grant of the terminal lasts before it has to be renewed.
+ *
+ * Longer than input, because a shell is not a continuous activity: an operator reads output,
+ * thinks, and types again, and a lease that lapsed while they were reading would close their
+ * shell mid-task. Still bounded, and for the same reason — a cloud that becomes unreachable
+ * must not leave a command prompt open on somebody's PC indefinitely.
+ */
+const TERMINAL_LEASE_SECONDS = 600;
+
 type LinkState = 'connecting' | 'authenticated' | 'closed';
 
 export interface ClientLinkOptions {
@@ -64,6 +74,8 @@ export class ClientLink implements ClientLinkHandle {
   private readonly openStreams = new Set<string>();
   /** Streams for which this session currently holds the input lease. */
   private readonly heldInputStreams = new Set<string>();
+  /** Streams for which this session currently holds the terminal lease. */
+  private readonly heldTerminalStreams = new Set<string>();
 
   constructor(options: ClientLinkOptions) {
     this.socket = options.socket;
@@ -329,6 +341,7 @@ export class ClientLink implements ClientLinkHandle {
     const pc = await this.context.repos.pcs.findById(this.pcId, this.userId);
     if (!pc || !pc.remoteAccessEnabled) {
       await this.releaseAllInput('kill-switch');
+      await this.releaseAllTerminals('kill-switch');
       this.notifyPeerGone('kill-switch', 'Remote access is disabled for this PC.');
       this.close('kill-switch');
       return;
@@ -349,6 +362,7 @@ export class ClientLink implements ClientLinkHandle {
       await this.context.repos.remoteDesktop.endStream(envelope.streamId, envelope.payload.reason);
       this.openStreams.delete(envelope.streamId);
       await this.releaseInput(envelope.streamId, 'released');
+      await this.releaseTerminal(envelope.streamId, 'released');
     }
 
     // Control of the keyboard and mouse is arbitrated here rather than forwarded. The PC
@@ -361,6 +375,19 @@ export class ClientLink implements ClientLinkHandle {
 
     if (envelope.payload.type === 'input.release') {
       await this.releaseInput(envelope.streamId, 'released');
+      return;
+    }
+
+    // The terminal is arbitrated here for the same reason and with more at stake: a session
+    // holding this lease can run commands on somebody's PC, and two sessions holding it at
+    // once would produce a command line neither operator typed.
+    if (envelope.payload.type === 'terminal.request') {
+      await this.acquireTerminal(envelope.streamId);
+      return;
+    }
+
+    if (envelope.payload.type === 'terminal.release') {
+      await this.releaseTerminal(envelope.streamId, 'released');
       return;
     }
 
@@ -486,6 +513,126 @@ export class ClientLink implements ClientLinkHandle {
         reason: control.reason,
       },
       'Input control decided',
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Terminal arbitration
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Take the terminal lease for this session, or report who has it.
+   *
+   * Renewing is the same operation as taking, exactly as it is for input. What differs is
+   * what a refusal means: an operator refused the keyboard watches a screen that ignores
+   * their mouse, and an operator refused the terminal has no shell at all.
+   */
+  private async acquireTerminal(streamId: string): Promise<void> {
+    if (!this.capabilities.includes('terminal')) {
+      // Its own capability, and not implied by any other. Watching a screen and running
+      // commands on the machine behind it are different intrusions.
+      this.publishTerminalControl(streamId, {
+        granted: false,
+        holderSessionId: null,
+        expiresAt: null,
+        reason: 'capability-missing',
+      });
+      return;
+    }
+
+    const expiresAt = new Date(this.context.now().getTime() + TERMINAL_LEASE_SECONDS * 1000);
+    const outcome = await this.context.repos.sessions.acquireResource({
+      pcId: this.pcId,
+      resource: 'terminal',
+      sessionId: this.sessionId,
+      expiresAt,
+    });
+
+    if (!outcome.acquired) {
+      this.publishTerminalControl(streamId, {
+        granted: false,
+        holderSessionId: outcome.heldBy,
+        expiresAt: null,
+        reason: 'held-by-another-session',
+      });
+      return;
+    }
+
+    this.heldTerminalStreams.add(streamId);
+    this.publishTerminalControl(streamId, {
+      granted: true,
+      holderSessionId: this.sessionId,
+      expiresAt: expiresAt.toISOString(),
+      reason: 'granted',
+    });
+  }
+
+  private async releaseTerminal(
+    streamId: string,
+    reason: 'released' | 'session-ended' | 'kill-switch',
+  ): Promise<void> {
+    if (!this.heldTerminalStreams.delete(streamId)) return;
+
+    await this.context.repos.sessions.releaseResource(this.pcId, 'terminal', this.sessionId);
+    this.publishTerminalControl(streamId, {
+      granted: false,
+      holderSessionId: null,
+      expiresAt: null,
+      reason,
+    });
+  }
+
+  /** Release every held terminal, for a client that is going away. */
+  private async releaseAllTerminals(reason: 'session-ended' | 'kill-switch'): Promise<void> {
+    for (const streamId of [...this.heldTerminalStreams]) {
+      await this.releaseTerminal(streamId, reason);
+    }
+  }
+
+  /**
+   * Tell both ends who holds the terminal.
+   *
+   * Both, always, and from here only — the PC because it is what gates opening a shell, the
+   * client because it decides whether to show one. What is logged is the decision and never
+   * anything a shell carried: this service does not see terminal traffic at all, and that is
+   * deliberate rather than incidental.
+   */
+  private publishTerminalControl(
+    streamId: string,
+    control: {
+      granted: boolean;
+      holderSessionId: string | null;
+      expiresAt: string | null;
+      reason:
+        | 'granted'
+        | 'capability-missing'
+        | 'held-by-another-session'
+        | 'released'
+        | 'session-ended'
+        | 'kill-switch'
+        | 'unsupported';
+    },
+  ): void {
+    const envelope: SignalEnvelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      sessionId: this.sessionId,
+      streamId,
+      sentAt: this.context.now().toISOString(),
+      payload: { type: 'terminal.control', ...control },
+    };
+
+    this.deliverSignal(envelope);
+    this.context.agents.get(this.pcId)?.sendSignal(envelope, this.deviceId, this.capabilities);
+
+    this.logger.info(
+      {
+        pcId: this.pcId,
+        sessionId: this.sessionId,
+        streamId,
+        granted: control.granted,
+        reason: control.reason,
+      },
+      'Terminal control decided',
     );
   }
 
@@ -624,6 +771,7 @@ export class ClientLink implements ClientLinkHandle {
     // its own within two minutes, but two minutes of a PC nobody can control is two minutes
     // too many when the answer is already known.
     await this.releaseAllInput('session-ended');
+    await this.releaseAllTerminals('session-ended');
 
     // A client that vanishes also leaves an encoder running on someone's PC. Tell the agent
     // to stop, and close the records, rather than waiting for a timeout to notice.

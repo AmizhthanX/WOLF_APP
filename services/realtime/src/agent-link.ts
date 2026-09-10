@@ -584,6 +584,7 @@ export class AgentLink implements AgentLinkHandle {
       iceServers,
       audioAllowed: this.capabilitiesForSignals.includes('audio'),
       clipboardAllowed: this.capabilitiesForSignals.includes('clipboard'),
+      terminalAllowed: this.capabilitiesForSignals.includes('terminal'),
     });
   }
 

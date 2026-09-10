@@ -938,3 +938,128 @@ test('a saved profile round-trips and is validated on the way in', async () => {
   assert.equal(body.profiles[0]?.name, 'Office');
   assert.equal(body.profiles[0]?.isDefault, true);
 });
+
+/* ------------------------------------------------------------------------- */
+/* Terminal arbitration                                                       */
+/*                                                                            */
+/* The same machinery as input, gating something larger. A session holding     */
+/* this lease can run commands on somebody's PC — so the tests that matter are */
+/* the refusals, not the grant.                                               */
+/* ------------------------------------------------------------------------- */
+
+test('a session granted a terminal receives the lease, and so does the PC', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'terminal']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+
+  client.sendSignal(sessionId, streamId, { type: 'terminal.request' });
+
+  const answer = await client.waitForSignal('terminal.control');
+  if (answer.payload.type !== 'terminal.control') throw new Error('wrong payload');
+
+  assert.equal(answer.payload.granted, true);
+  assert.equal(answer.payload.holderSessionId, sessionId);
+  assert.ok(answer.payload.expiresAt, 'a shell granted without an expiry would never lapse');
+
+  // The PC is told the same thing, because the PC is what actually opens the shell. A grant
+  // that reached only the browser would show a terminal the machine then refuses to fill.
+  const toAgent = await agentA.waitForSignal('terminal.control');
+  if (toAgent.payload.type !== 'terminal.control') throw new Error('wrong payload');
+  assert.equal(toAgent.payload.granted, true);
+  assert.equal(toAgent.payload.holderSessionId, sessionId);
+
+  client.sendSignal(sessionId, streamId, { type: 'terminal.release' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+});
+
+test('screen and input do not add up to a terminal', async () => {
+  // The capability that matters most, and the one nothing else implies. An operator who can
+  // see a screen and drive the mouse can already type into whatever is on it — but a shell
+  // they open themselves is arbitrary command execution, and it is granted separately.
+  const sessionToken = await openSession(pcA, ['screen', 'input']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+
+  client.sendSignal(sessionId, streamId, { type: 'terminal.request' });
+
+  const answer = await client.waitForSignal('terminal.control');
+  if (answer.payload.type !== 'terminal.control') throw new Error('wrong payload');
+
+  assert.equal(answer.payload.granted, false);
+  assert.equal(answer.payload.reason, 'capability-missing');
+});
+
+test('two operators cannot share one shell', async () => {
+  const firstToken = await openSession(pcA, ['screen', 'terminal']);
+  const first = await openControlledStream(firstToken);
+
+  first.client.sendSignal(first.sessionId, first.streamId, { type: 'terminal.request' });
+  const granted = await first.client.waitForSignal('terminal.control');
+  if (granted.payload.type !== 'terminal.control') throw new Error('wrong payload');
+  assert.equal(granted.payload.granted, true);
+
+  const secondToken = await openSession(pcA, ['screen', 'terminal']);
+  const second = await openControlledStream(secondToken);
+
+  second.client.sendSignal(second.sessionId, second.streamId, { type: 'terminal.request' });
+  const refused = await second.client.waitForSignal('terminal.control');
+  if (refused.payload.type !== 'terminal.control') throw new Error('wrong payload');
+
+  // Two people typing into one shell produce a command line neither of them wrote, and it
+  // runs. The second operator is told who has it rather than being quietly interleaved.
+  assert.equal(refused.payload.granted, false);
+  assert.equal(refused.payload.reason, 'held-by-another-session');
+  assert.equal(refused.payload.holderSessionId, first.sessionId);
+
+  first.client.sendSignal(first.sessionId, first.streamId, { type: 'terminal.release' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+});
+
+test('the terminal lease is released when the stream ends, and the PC is told', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'terminal']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+
+  client.sendSignal(sessionId, streamId, { type: 'terminal.request' });
+  await client.waitForSignal('terminal.control');
+
+  client.sendSignal(sessionId, streamId, { type: 'stream.stop', reason: 'client-closed', detail: null });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const decisions = agentA.signalsReceived.filter(
+    (envelope) => envelope.payload.type === 'terminal.control',
+  );
+  const last = decisions.at(-1);
+  assert.ok(last);
+  if (last.payload.type !== 'terminal.control') throw new Error('wrong payload');
+
+  // Closing the viewer has to close the shell. A command prompt left open on somebody's PC
+  // after the operator navigated away is exactly what the lease exists to prevent, and the
+  // session host acts on this message to do it.
+  assert.equal(last.payload.granted, false);
+  assert.equal(last.payload.reason, 'released');
+});
+
+test('a client cannot grant itself a terminal', async () => {
+  const sessionToken = await openSession(pcA, ['screen']);
+  const client = await connectClient(sessionToken);
+  const outcome = await client.connect();
+  assert.ok(outcome.accepted && outcome.sessionId);
+
+  const before = agentA.signalsReceived.length;
+  client.sendSignal(outcome.sessionId, newId(), {
+    type: 'terminal.control',
+    granted: true,
+    holderSessionId: outcome.sessionId,
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    reason: 'granted',
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // `terminal.control` is authored by the relay and nobody else. A client that could send it
+  // would be granting itself a shell on somebody's machine; an agent that could send it
+  // would be telling a dashboard somebody else holds one.
+  assert.equal(
+    agentA.signalsReceived.slice(before).some((e) => e.payload.type === 'terminal.control'),
+    false,
+    'a client forged a terminal grant',
+  );
+});

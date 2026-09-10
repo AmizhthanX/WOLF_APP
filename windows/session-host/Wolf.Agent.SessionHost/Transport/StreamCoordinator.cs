@@ -154,6 +154,17 @@ public sealed class StreamCoordinator : IDisposable
 
                 return;
 
+            case SignalTypes.TerminalControl:
+                if (TryFind(signal, out StreamSession? shelled))
+                {
+                    shelled.ApplyTerminalControl(
+                        ReadBool(signal.Payload, "granted"),
+                        ReadString(signal.Payload, "holderSessionId"),
+                        ReadTimestamp(signal.Payload, "expiresAt"));
+                }
+
+                return;
+
             case SignalTypes.SetDisplay:
                 if (TryFind(signal, out StreamSession? switching))
                 {
@@ -235,6 +246,7 @@ public sealed class StreamCoordinator : IDisposable
                 iceServers,
                 signal.AudioAllowed,
                 signal.ClipboardAllowed,
+                signal.TerminalAllowed,
                 _displays,
                 send,
                 _loggers,

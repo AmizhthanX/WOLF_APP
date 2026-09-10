@@ -362,5 +362,23 @@ Stated plainly rather than left to be discovered:
   documented as a guess that is wrong in the usual ways: LogonUI lingers after an unlock, and
   a UAC prompt raises the secure desktop without starting it. When the console session cannot
   be resolved at all, the state is `unknown`, never optimistically `desktop`.
+- **The terminal is arbitrary command execution, and is treated as such.** It has its own
+  capability, its own exclusive lease and a separate capability again for elevation; no other
+  grant implies any of them, and a session holding `screen` and `input` cannot open a shell.
+  The lease is enforced on the PC as well as decided in the cloud, expiry included, and losing
+  it closes every shell the stream had open. `terminal-admin` is refused as a stated
+  limitation rather than served with an unelevated shell. See
+  [the terminal](../architecture/terminal.md).
+- **Nothing typed into a terminal, or printed by one, reaches the cloud.** It travels on the
+  data channel between the browser and the PC. That is the only way the promise means
+  anything: terminal output routinely carries a connection string a script echoed, a token in
+  an environment dump, or a password typed into a prompt that was not hiding it, and content
+  that never reaches a server cannot be retained, logged or subpoenaed from one. What the
+  agent logs is which shell, which stream, its pid, how many bytes and how it ended — never
+  content, including in refusals, and asserted by test.
+- **The shell runs as the signed-in user.** Not SYSTEM, not elevated, and not through the
+  privileged helper. A remote shell with more rights than the person sitting at the machine
+  would be a different product. Shells are named rather than pathed, so the capability cannot
+  be widened into "run this executable" by a caller choosing what to start.
 - **No penetration test has been run.** The security tests here are the author's, not an
   independent assessment.

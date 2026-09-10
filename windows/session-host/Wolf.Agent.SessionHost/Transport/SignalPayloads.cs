@@ -31,6 +31,14 @@ public static class SignalTypes
     /// </summary>
     public const string InputControl = "input.control";
 
+    /// <summary>
+    /// Who holds the terminal, decided by the cloud.
+    ///
+    /// Authored only by the relay, like <see cref="InputControl"/>, and gating something
+    /// larger: a session holding this lease can run commands on this PC.
+    /// </summary>
+    public const string TerminalControl = "terminal.control";
+
     // Agent -> client.
     public const string StreamReady = "stream.ready";
     public const string SdpOffer = "sdp.offer";

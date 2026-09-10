@@ -17,6 +17,8 @@
     "lib/remote-desktop.ts",
     "lib/remote-desktop.test.ts",
     "lib/input-capture.ts",
-    "lib/input-capture.test.ts"
+    "lib/input-capture.test.ts",
+    "lib/terminal-render.ts",
+    "lib/terminal-render.test.ts"
   ]
 }

@@ -1,15 +1,27 @@
 import { z } from 'zod';
 import { isoDateTime, wolfId } from '@wolf/validation';
 import { inputBatch, inputResponse } from './input.js';
+import {
+  terminalClose,
+  terminalExited,
+  terminalInput,
+  terminalOpen,
+  terminalOpened,
+  terminalOutput,
+  terminalRefused,
+  terminalResize,
+} from './terminal.js';
 
 /**
  * What travels on the WebRTC data channel.
  *
- * This is the one path in WOLF that does not pass through the cloud. Input and clipboard go
- * straight between the browser and the session host, for two different reasons: input
- * because a round trip through a server would add latency to every keystroke, and clipboard
- * because **WOLF must never store clipboard contents**. Content that never reaches the cloud
- * cannot be retained by it, accidentally logged by it, or subpoenaed from it.
+ * This is the one path in WOLF that does not pass through the cloud. Input, clipboard and
+ * terminal traffic go straight between the browser and the session host, for two different
+ * reasons: input because a round trip through a server would add latency to every keystroke,
+ * and the other two because **WOLF must never store what they carry**. Content that never
+ * reaches the cloud cannot be retained by it, accidentally logged by it, or subpoenaed from
+ * it — and terminal output is the strongest case of the three, because it routinely contains
+ * secrets nobody meant to disclose.
  *
  * Everything here is discriminated on `kind`. The channel carries more than one sort of
  * message, and telling them apart by which fields happen to be present is the kind of
@@ -88,6 +100,14 @@ export const controlMessage = z.discriminatedUnion('kind', [
   clipboardContent,
   clipboardRefused,
   clipboardUnsupported,
+  terminalOpen,
+  terminalInput,
+  terminalResize,
+  terminalClose,
+  terminalOpened,
+  terminalOutput,
+  terminalExited,
+  terminalRefused,
 ]);
 export type ControlMessage = z.infer<typeof controlMessage>;
 export type ClipboardContent = z.infer<typeof clipboardContent>;

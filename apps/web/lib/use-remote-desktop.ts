@@ -16,6 +16,8 @@ import {
   type StreamPhase,
   type StreamProfile,
   type StreamSurface,
+  type TerminalEvent,
+  type TerminalShell,
 } from './remote-desktop';
 
 /**
@@ -44,6 +46,31 @@ export interface RemoteDesktopView {
   readonly showing: StreamSurface;
   /** Why the secure desktop is showing, when it is. */
   readonly showingReason: string | null;
+  /**
+   * Who holds the terminal, as the cloud last decided.
+   *
+   * Its own lease, separate from `control`: holding the keyboard is not the same as being
+   * allowed to run commands, and the UI must not offer one because the operator has the
+   * other.
+   */
+  readonly terminalControl: InputControl | null;
+  /** Ask for a shell, or give it back. */
+  requestTerminal(): void;
+  releaseTerminal(): void;
+  /** Open a shell and get its id, or null when there is nowhere to send the request. */
+  openTerminal(shell: TerminalShell, columns: number, rows: number): string | null;
+  sendTerminalInput(terminalId: string, data: string): boolean;
+  resizeTerminal(terminalId: string, columns: number, rows: number): void;
+  closeTerminal(terminalId: string): void;
+  /**
+   * Subscribe to what the shells are saying.
+   *
+   * A subscription rather than state on purpose. Terminal output arrives continuously and in
+   * volume; putting it through React state would re-render the whole panel per chunk, and —
+   * more to the point — would keep the contents of somebody's terminal in a place that
+   * outlives the component. The renderer holds it and nothing else does.
+   */
+  onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
   /**
    * The last thing the PC put on its clipboard, waiting for the operator to take it.
    *
@@ -80,6 +107,11 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
   const [showing, setShowing] = useState<StreamSurface>('desktop');
   const [showingReason, setShowingReason] = useState<string | null>(null);
+  const [terminalControl, setTerminalControl] = useState<InputControl | null>(null);
+
+  // Held in a ref rather than state: these fire continuously while a shell is producing
+  // output, and re-rendering the page for each chunk would make a busy command unusable.
+  const terminalListeners = useRef(new Set<(event: TerminalEvent) => void>());
   const [clipboardFromPc, setClipboardFromPc] = useState<string | null>(null);
   const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
 
@@ -160,6 +192,10 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
             onError: setError,
             onInputControl: setControl,
             onDegraded: setDegradedReason,
+            onTerminalControl: setTerminalControl,
+            onTerminal: (event: TerminalEvent) => {
+              for (const listener of terminalListeners.current) listener(event);
+            },
             onSurface: (surface, why) => {
               setShowing(surface);
               setShowingReason(why);
@@ -202,6 +238,39 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     stream.current?.setProfile(profile);
   }, []);
 
+  const requestTerminal = useCallback(() => stream.current?.requestTerminal(), []);
+  const releaseTerminal = useCallback(() => stream.current?.releaseTerminal(), []);
+
+  const openTerminal = useCallback(
+    (shell: TerminalShell, columns: number, rows: number) =>
+      stream.current?.openTerminal(shell, columns, rows) ?? null,
+    [],
+  );
+
+  const sendTerminalInput = useCallback(
+    (terminalId: string, data: string) =>
+      stream.current?.sendTerminalInput(terminalId, data) ?? false,
+    [],
+  );
+
+  const resizeTerminal = useCallback(
+    (terminalId: string, columns: number, rows: number) =>
+      stream.current?.resizeTerminal(terminalId, columns, rows),
+    [],
+  );
+
+  const closeTerminal = useCallback(
+    (terminalId: string) => stream.current?.closeTerminal(terminalId),
+    [],
+  );
+
+  const onTerminalEvent = useCallback((listener: (event: TerminalEvent) => void) => {
+    terminalListeners.current.add(listener);
+    return () => {
+      terminalListeners.current.delete(listener);
+    };
+  }, []);
+
   const requestControl = useCallback(() => stream.current?.requestControl(), []);
   const releaseControl = useCallback(() => stream.current?.releaseControl(), []);
   const sendInput = useCallback((events: InputEvent[]) => stream.current?.sendInput(events), []);
@@ -220,6 +289,14 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     degradedReason,
     showing,
     showingReason,
+    terminalControl,
+    requestTerminal,
+    releaseTerminal,
+    openTerminal,
+    sendTerminalInput,
+    resizeTerminal,
+    closeTerminal,
+    onTerminalEvent,
     clipboardFromPc,
     clipboardNotice,
     sendClipboard,

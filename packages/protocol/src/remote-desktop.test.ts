@@ -19,6 +19,16 @@ import {
   signalStreamState,
 } from './signaling.js';
 import { inputBatch, inputEvent, isExtendedKey, VirtualKeys } from './input.js';
+import { controlMessage } from './control-channel.js';
+import {
+  MAX_TERMINAL_CHUNK,
+  MAX_TERMINALS_PER_STREAM,
+  terminalInput,
+  terminalOpen,
+  terminalOutput,
+  terminalRefused,
+  terminalShell,
+} from './terminal.js';
 
 const ID = '01J9ZQK7T0000000000000000A';
 
@@ -253,12 +263,13 @@ test('direction is part of the contract, not a convention', () => {
  * Payloads only the relay may author.
  *
  * A payload in neither direction list cannot be sent by a client or by an agent, which is
- * the point: `input.control` decides who is allowed to drive somebody's PC, so neither end
- * gets to assert it. Listing them here rather than allowing any undeclared type keeps the
+ * the point: `input.control` decides who is allowed to drive somebody's PC and
+ * `terminal.control` decides who is allowed to run commands on it, so neither end gets to
+ * assert either. Listing them here rather than allowing any undeclared type keeps the
  * exemption deliberate — a payload added without a direction fails this test until somebody
- * decides which of the two it is.
+ * decides which of the two it is, which is how `terminal.control` arrived here.
  */
-const RELAY_AUTHORED: readonly string[] = ['input.control'];
+const RELAY_AUTHORED: readonly string[] = ['input.control', 'terminal.control'];
 
 test('every payload type has a declared direction, or is one only the relay may author', () => {
   const declared = new Set([...CLIENT_TO_AGENT_PAYLOADS, ...AGENT_TO_CLIENT_PAYLOADS]);
@@ -427,4 +438,137 @@ test('a surface WOLF does not have is refused rather than passed through', () =>
     }).success,
     false,
   );
+});
+
+/* ------------------------------------------------------------------------- */
+/* Terminal                                                                   */
+/* ------------------------------------------------------------------------- */
+
+const TERMINAL_ID = '01J9ZQK7T0000000000000000T';
+
+test('a shell is named, never a path', () => {
+  assert.ok(terminalShell.safeParse('cmd').success);
+  assert.ok(terminalShell.safeParse('powershell').success);
+  assert.ok(terminalShell.safeParse('pwsh').success);
+
+  // The whole point of the allow-list. A caller that could supply an executable would turn
+  // "give me a shell" into "run this program as the signed-in user", which is a materially
+  // larger grant than the capability says it is.
+  assert.equal(terminalShell.safeParse('C:\Windows\System32\cmd.exe').success, false);
+  assert.equal(terminalShell.safeParse('bash').success, false);
+  assert.equal(terminalShell.safeParse('cmd.exe').success, false);
+});
+
+test('terminal geometry is bounded because it reaches a console', () => {
+  const open = (columns: number, rows: number) =>
+    terminalOpen.safeParse({
+      kind: 'terminal.open',
+      streamId: ID,
+      terminalId: TERMINAL_ID,
+      shell: 'cmd',
+      columns,
+      rows,
+    }).success;
+
+  assert.ok(open(120, 30));
+
+  // These become a COORD passed to CreatePseudoConsole. A shell told it has four billion
+  // columns wraps its output in ways nobody can read.
+  assert.equal(open(0, 30), false);
+  assert.equal(open(5000, 30), false);
+  assert.equal(open(120, 0), false);
+  assert.equal(open(120, 9000), false);
+});
+
+test('a shell starts in a directory, never with a command', () => {
+  const parsed = terminalOpen.parse({
+    kind: 'terminal.open',
+    streamId: ID,
+    terminalId: TERMINAL_ID,
+    shell: 'cmd',
+    columns: 120,
+    rows: 30,
+  });
+
+  // Absent means the user's profile directory, which is where a shell opened by hand starts.
+  // There is deliberately no field here for "and then run this": what a shell runs is typed
+  // into it, where it is one authorised keystroke batch like any other.
+  assert.equal(parsed.workingDirectory, null);
+  assert.equal('command' in parsed, false);
+});
+
+test('terminal traffic is bounded in both directions', () => {
+  const typed = (length: number) =>
+    terminalInput.safeParse({
+      kind: 'terminal.input',
+      terminalId: TERMINAL_ID,
+      data: 'x'.repeat(length),
+    }).success;
+
+  assert.ok(typed(MAX_TERMINAL_CHUNK));
+  assert.equal(typed(MAX_TERMINAL_CHUNK + 1), false);
+
+  // Output carries a sequence so a client can notice a gap rather than render a corrupted
+  // screen as if nothing had happened.
+  const out = terminalOutput.parse({
+    kind: 'terminal.output',
+    terminalId: TERMINAL_ID,
+    sequence: 7,
+    data: 'hello',
+  });
+  assert.equal(out.sequence, 7);
+});
+
+test('a refusal separates what WOLF will not do from what Windows cannot', () => {
+  const refused = terminalRefused.parse({
+    kind: 'terminal.refused',
+    terminalId: TERMINAL_ID,
+    reason: 'unsupported',
+    detail: 'An elevated terminal needs the terminal-admin capability.',
+    limitation: true,
+  });
+
+  assert.equal(refused.limitation, true);
+
+  // Defaulted false, so a refusal that forgot to say reads as WOLF refusing rather than as
+  // the machine being incapable — the safer of the two to be wrong about.
+  const plain = terminalRefused.parse({
+    kind: 'terminal.refused',
+    terminalId: TERMINAL_ID,
+    reason: 'not-permitted',
+    detail: 'This session was not granted a terminal on this PC.',
+  });
+  assert.equal(plain.limitation, false);
+});
+
+test('terminal traffic rides the data channel, not the cloud', () => {
+  // The same reason as the clipboard and a stronger one: terminal output routinely contains
+  // secrets nobody meant to disclose. Content that never reaches a server cannot be retained
+  // by one, logged by one, or subpoenaed from one.
+  for (const kind of [
+    'terminal.open',
+    'terminal.input',
+    'terminal.resize',
+    'terminal.close',
+    'terminal.opened',
+    'terminal.output',
+    'terminal.exited',
+    'terminal.refused',
+  ]) {
+    assert.ok(
+      controlMessage.options.some((option) => option.shape.kind.value === kind),
+      `${kind} is not carried on the control channel`,
+    );
+  }
+
+  // And none of them is a signaling payload, which is what would put them through the relay.
+  const signals = new Set(signalPayload.options.map((option) => option.shape.type.value));
+  assert.equal(signals.has('terminal.output' as never), false);
+  assert.equal(signals.has('terminal.input' as never), false);
+});
+
+test('a stream may hold only a few shells at once', () => {
+  // Each is a process on somebody's machine. Opening them without bound is a denial of
+  // service against the PC the operator is trying to fix.
+  assert.ok(MAX_TERMINALS_PER_STREAM > 0 && MAX_TERMINALS_PER_STREAM <= 8);
 });

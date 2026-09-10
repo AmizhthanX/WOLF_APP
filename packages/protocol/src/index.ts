@@ -4,5 +4,6 @@ export * from './results.js';
 export * from './remote-desktop.js';
 export * from './control-channel.js';
 export * from './input.js';
+export * from './terminal.js';
 export * from './signaling.js';
 export * from './messages.js';

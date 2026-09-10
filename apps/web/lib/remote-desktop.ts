@@ -96,6 +96,25 @@ export interface StreamAdjustment {
  */
 export type StreamSurface = 'desktop' | 'secure-desktop';
 
+/** Shells WOLF will start, mirroring `packages/protocol`. Names, never paths. */
+export type TerminalShell = 'cmd' | 'powershell' | 'pwsh';
+
+/** Matches the protocol's per-message cap on terminal traffic. */
+export const MAX_TERMINAL_CHUNK = 64 * 1024;
+
+/** Something the PC said about a shell. */
+export interface TerminalEvent {
+  readonly kind: 'opened' | 'output' | 'exited' | 'refused';
+  readonly terminalId: string;
+  readonly shell: string | null;
+  readonly processId: number | null;
+  /** Only for `output`, and only ever handed straight to the renderer. */
+  readonly data: string | null;
+  readonly detail: string | null;
+  /** True when the PC is saying Windows cannot, rather than WOLF will not. */
+  readonly limitation: boolean;
+}
+
 export interface StreamNegotiation {
   streamId: string;
   display: {
@@ -221,6 +240,15 @@ export interface StreamEvents {
   onInputControl(control: InputControl): void;
   /** The reason the stream is running below its profile, or null when it is not. */
   onDegraded(reason: string | null): void;
+  /** Who holds the terminal, as the cloud last decided. */
+  onTerminalControl(control: InputControl): void;
+  /**
+   * Something a shell said, or something the PC refused to do with one.
+   *
+   * Output arrives here and goes straight to the renderer. It is never stored, never sent
+   * anywhere, and never logged — one line of it is somebody's connection string.
+   */
+  onTerminal(event: TerminalEvent): void;
   /**
    * Which desktop the frames are coming from, whenever it changes.
    *
@@ -285,6 +313,8 @@ export class RemoteDesktopStream {
   private control: RTCDataChannel | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
+  private terminalRenewTimer: ReturnType<typeof setInterval> | null = null;
+  private hasTerminal = false;
 
   private readonly options: StreamOptions;
   private readonly streamId = newId();
@@ -359,6 +389,90 @@ export class RemoteDesktopStream {
   }
 
   /**
+   * Ask to be allowed a shell on the PC.
+   *
+   * Its own lease, arbitrated by the cloud like keyboard control and renewed the same way.
+   * It is a separate ask from `requestControl` on purpose: holding the keyboard is not the
+   * same as being allowed to run commands, and an operator who wanted one should not
+   * silently acquire the other.
+   */
+  requestTerminal(): void {
+    this.signal({ type: 'terminal.request' });
+
+    if (this.terminalRenewTimer) return;
+    this.terminalRenewTimer = setInterval(() => {
+      if (this.hasTerminal) this.signal({ type: 'terminal.request' });
+    }, RENEW_INTERVAL_MS);
+  }
+
+  releaseTerminal(): void {
+    this.stopRenewingTerminal();
+    this.hasTerminal = false;
+    this.signal({ type: 'terminal.release' });
+  }
+
+  /** Whether this session currently holds the terminal lease. */
+  get holdsTerminal(): boolean {
+    return this.hasTerminal;
+  }
+
+  /**
+   * Open a shell on the PC, and get an id back to address it with.
+   *
+   * Returns null when there is nowhere to send the request — no lease, or a data channel
+   * that is not open. Null rather than a thrown error because "not yet" is the ordinary
+   * state of this for the first second of a stream.
+   */
+  openTerminal(shell: TerminalShell, columns: number, rows: number): string | null {
+    if (!this.hasTerminal) return null;
+    if (this.control?.readyState !== 'open') return null;
+
+    const terminalId = newId();
+
+    this.control.send(
+      JSON.stringify({
+        kind: 'terminal.open',
+        streamId: this.streamId,
+        terminalId,
+        shell,
+        columns,
+        rows,
+        workingDirectory: null,
+      }),
+    );
+
+    return terminalId;
+  }
+
+  /**
+   * Type into a shell.
+   *
+   * On the data channel, never through the cloud — the same reason as the clipboard and a
+   * stronger one. What is typed into a terminal, and what it prints back, routinely contains
+   * secrets nobody meant to disclose. Content that never reaches a server cannot be stored
+   * by one.
+   */
+  sendTerminalInput(terminalId: string, data: string): boolean {
+    if (!this.hasTerminal) return false;
+    if (this.control?.readyState !== 'open') return false;
+    if (data.length > MAX_TERMINAL_CHUNK) return false;
+
+    this.control.send(JSON.stringify({ kind: 'terminal.input', terminalId, data }));
+    return true;
+  }
+
+  /** Tell the shell the viewer is a different size, so its own wrapping matches. */
+  resizeTerminal(terminalId: string, columns: number, rows: number): void {
+    if (this.control?.readyState !== 'open') return;
+    this.control.send(JSON.stringify({ kind: 'terminal.resize', terminalId, columns, rows }));
+  }
+
+  closeTerminal(terminalId: string): void {
+    if (this.control?.readyState !== 'open') return;
+    this.control.send(JSON.stringify({ kind: 'terminal.close', terminalId }));
+  }
+
+  /**
    * Send input events to the PC.
    *
    * Straight down the data channel, never through the cloud: a keystroke that took a
@@ -409,11 +523,32 @@ export class RemoteDesktopStream {
     return true;
   }
 
+  /** Stop renewing the input lease. Losing the keyboard says nothing about the terminal. */
   private stopRenewing(): void {
     if (this.renewTimer) {
       clearInterval(this.renewTimer);
       this.renewTimer = null;
     }
+  }
+
+  private stopRenewingTerminal(): void {
+    if (this.terminalRenewTimer) {
+      clearInterval(this.terminalRenewTimer);
+      this.terminalRenewTimer = null;
+    }
+  }
+
+  /**
+   * Stop asking for anything, for a stream that is going away.
+   *
+   * Both leases, which is the point: they renew on separate timers because they are separate
+   * grants, and a stream that stopped while still renewing one would keep asking the cloud
+   * for a shell on a PC nobody is looking at, for as long as the tab stayed open. Found by
+   * the test suite hanging, which is the harmless version of the same bug.
+   */
+  private stopAllRenewing(): void {
+    this.stopRenewing();
+    this.stopRenewingTerminal();
   }
 
   /**
@@ -446,7 +581,7 @@ export class RemoteDesktopStream {
       this.signal({ type: 'stream.stop', reason, detail: null });
     }
 
-    this.stopRenewing();
+    this.stopAllRenewing();
     this.teardownPeer();
     this.socket?.close();
     this.socket = null;
@@ -583,6 +718,20 @@ export class RemoteDesktopStream {
 
         this.options.events.onInputControl({
           granted: this.hasControl,
+          holderSessionId: (payload['holderSessionId'] as string | null) ?? null,
+          expiresAt: (payload['expiresAt'] as string | null) ?? null,
+          reason: (payload['reason'] as string | null) ?? null,
+        });
+        return;
+      }
+
+      case 'terminal.control': {
+        this.hasTerminal = payload['granted'] === true;
+
+        if (!this.hasTerminal) this.stopRenewingTerminal();
+
+        this.options.events.onTerminalControl({
+          granted: this.hasTerminal,
           holderSessionId: (payload['holderSessionId'] as string | null) ?? null,
           expiresAt: (payload['expiresAt'] as string | null) ?? null,
           reason: (payload['reason'] as string | null) ?? null,
@@ -764,6 +913,59 @@ export class RemoteDesktopStream {
           kind: 'unsupported',
           text: null,
           detail: `The PC's clipboard holds ${String(message['describes'] ?? 'something')}, which WOLF does not carry.`,
+        });
+        return;
+
+      case 'terminal.opened':
+        this.options.events.onTerminal({
+          kind: 'opened',
+          terminalId: String(message['terminalId'] ?? ''),
+          shell: String(message['shell'] ?? ''),
+          processId: Number(message['processId'] ?? 0),
+          data: null,
+          detail: null,
+          limitation: false,
+        });
+        return;
+
+      case 'terminal.output':
+        // Handed to the renderer and nowhere else. Not stored, not sent anywhere, not
+        // logged: this is the contents of somebody's terminal.
+        this.options.events.onTerminal({
+          kind: 'output',
+          terminalId: String(message['terminalId'] ?? ''),
+          shell: null,
+          processId: null,
+          data: String(message['data'] ?? ''),
+          detail: null,
+          limitation: false,
+        });
+        return;
+
+      case 'terminal.exited':
+        this.options.events.onTerminal({
+          kind: 'exited',
+          terminalId: String(message['terminalId'] ?? ''),
+          shell: null,
+          processId: null,
+          data: null,
+          detail:
+            message['exitCode'] === null || message['exitCode'] === undefined
+              ? `The shell ended (${String(message['reason'] ?? 'exited')}).`
+              : `The shell exited with code ${String(message['exitCode'])}.`,
+          limitation: false,
+        });
+        return;
+
+      case 'terminal.refused':
+        this.options.events.onTerminal({
+          kind: 'refused',
+          terminalId: String(message['terminalId'] ?? ''),
+          shell: null,
+          processId: null,
+          data: null,
+          detail: String(message['detail'] ?? 'The PC would not open that terminal.'),
+          limitation: message['limitation'] === true,
         });
         return;
 

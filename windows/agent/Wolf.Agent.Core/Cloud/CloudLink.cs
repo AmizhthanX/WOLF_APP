@@ -466,7 +466,9 @@ public sealed class CloudLink
                     message.TryGetProperty("audioAllowed", out JsonElement audioAllowed) &&
                         audioAllowed.ValueKind == JsonValueKind.True,
                     message.TryGetProperty("clipboardAllowed", out JsonElement clipboardAllowed) &&
-                        clipboardAllowed.ValueKind == JsonValueKind.True),
+                        clipboardAllowed.ValueKind == JsonValueKind.True,
+                    message.TryGetProperty("terminalAllowed", out JsonElement terminalAllowed) &&
+                        terminalAllowed.ValueKind == JsonValueKind.True),
                 cancellationToken)
             .ConfigureAwait(false);
 

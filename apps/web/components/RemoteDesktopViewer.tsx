@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRemoteDesktop } from '@/lib/use-remote-desktop';
+import { TerminalPanel } from '@/components/TerminalPanel';
 import { NO_OVERRIDES } from '@/lib/remote-desktop';
 import type {
   InputEvent,
@@ -845,6 +846,14 @@ export function RemoteDesktopViewer({
           </div>
         </Panel>
       ) : null}
+
+      {/*
+        Below the screen rather than beside it, and sharing the stream's view: the terminal
+        travels on the same data channel, so it exists only while the stream does. It is
+        still its own capability and its own lease — being able to see a screen has never
+        meant being allowed to run commands on the machine behind it.
+      */}
+      <TerminalPanel view={view} />
     </div>
   );
 }

@@ -124,7 +124,9 @@ globals['WebSocket'] = FakeWebSocket;
 globals['RTCPeerConnection'] = FakePeerConnection;
 globals['performance'] ??= { now: () => Date.now() };
 
-const { RemoteDesktopStream, decodableCodecs } = await import('./remote-desktop.js');
+const { RemoteDesktopStream, decodableCodecs, MAX_TERMINAL_CHUNK } = await import(
+  './remote-desktop.js'
+);
 
 const OFFER_SDP = 'v=0\r\nOFFER\r\n';
 
@@ -150,6 +152,8 @@ interface Recorded {
   control: { granted: boolean; reason: string | null }[];
   degraded: (string | null)[];
   surfaces: { surface: string; detail: string | null }[];
+  terminalControl: { granted: boolean; reason: string | null }[];
+  terminal: { kind: string; terminalId: string; data: string | null; detail: string | null }[];
   clipboard: { kind: string; text: string | null; detail: string | null }[];
 }
 
@@ -162,6 +166,8 @@ function makeStream(requestAudio = false) {
     control: [],
     degraded: [],
     surfaces: [],
+    terminalControl: [],
+    terminal: [],
     clipboard: [],
   };
 
@@ -183,6 +189,15 @@ function makeStream(requestAudio = false) {
         recorded.control.push({ granted: control.granted, reason: control.reason }),
       onDegraded: (reason) => recorded.degraded.push(reason),
       onSurface: (surface, detail) => recorded.surfaces.push({ surface, detail }),
+      onTerminalControl: (control) =>
+        recorded.terminalControl.push({ granted: control.granted, reason: control.reason }),
+      onTerminal: (event) =>
+        recorded.terminal.push({
+          kind: event.kind,
+          terminalId: event.terminalId,
+          data: event.data,
+          detail: event.detail,
+        }),
       onClipboard: (event) =>
         recorded.clipboard.push({ kind: event.kind, text: event.text, detail: event.detail }),
     },
@@ -1040,6 +1055,198 @@ test('an agent that says nothing about the desktop is read as showing the ordina
   });
 
   assert.deepEqual(recorded.surfaces.at(-1), { surface: 'desktop', detail: null });
+
+  stream.stop();
+});
+
+/* ------------------------------------------------------------------------- */
+/* Terminal                                                                   */
+/* ------------------------------------------------------------------------- */
+
+test('a shell cannot be opened without the lease', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  // The default is no, and it is enforced here as well as on the PC. A client that sent an
+  // open without a lease would be answered with a refusal — but not sending it at all means
+  // the PC never sees a request it has to reason about.
+  assert.equal(stream.openTerminal('cmd', 120, 30), null);
+  assert.equal(stream.sendTerminalInput('anything', 'whoami\r'), false);
+  assert.equal(recorded.terminal.length, 0);
+
+  stream.stop();
+});
+
+test('the terminal lease is asked for separately from the keyboard', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+
+  stream.requestControl();
+  const inputAsks = signalsOfType('input.request');
+  assert.equal(signalsOfType('terminal.request').length, 0, 'asking for input asked for a shell');
+
+  stream.requestTerminal();
+
+  // Two grants, two asks. Holding the keyboard is not the same as being allowed to run
+  // commands, and an operator who wanted one must not silently acquire the other.
+  assert.equal(signalsOfType('terminal.request').length, 1);
+  assert.equal(signalsOfType('input.request').length, inputAsks.length);
+
+  stream.stop();
+});
+
+test('a granted lease lets a shell be opened, and it goes on the data channel', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  socketMessage({
+    kind: 'cloud.signal',
+    envelope: {
+      streamId: stream.id,
+      payload: {
+        type: 'terminal.control',
+        granted: true,
+        holderSessionId: 'a-session',
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        reason: 'granted',
+      },
+    },
+  });
+
+  assert.deepEqual(recorded.terminalControl.at(-1), { granted: true, reason: 'granted' });
+
+  const terminalId = stream.openTerminal('cmd', 120, 30);
+  assert.ok(terminalId);
+
+  const opened = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+  assert.equal(opened['kind'], 'terminal.open');
+  assert.equal(opened['shell'], 'cmd');
+  assert.equal(opened['terminalId'], terminalId);
+
+  // Typing goes the same way. Nothing about a terminal passes through the cloud: what is
+  // typed into one, and what it prints back, routinely contains secrets nobody meant to
+  // disclose, and content that never reaches a server cannot be stored by one.
+  assert.equal(stream.sendTerminalInput(terminalId!, 'whoami\r'), true);
+
+  const typed = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+  assert.equal(typed['kind'], 'terminal.input');
+  assert.equal(typed['data'], 'whoami\r');
+
+  assert.equal(signalsOfType('terminal.input').length, 0, 'terminal traffic reached the cloud');
+
+  stream.stop();
+});
+
+test('losing the lease stops the client sending anything more', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+
+  const grant = (granted: boolean, reason: string) =>
+    socketMessage({
+      kind: 'cloud.signal',
+      envelope: {
+        streamId: stream.id,
+        payload: {
+          type: 'terminal.control',
+          granted,
+          holderSessionId: granted ? 'a-session' : null,
+          expiresAt: granted ? new Date(Date.now() + 600_000).toISOString() : null,
+          reason,
+        },
+      },
+    });
+
+  grant(true, 'granted');
+  const terminalId = stream.openTerminal('cmd', 120, 30)!;
+  assert.ok(terminalId);
+
+  grant(false, 'released');
+
+  // The PC closes the shells when the lease lapses. The client refusing to send is the other
+  // half of the same rule, and it means a lapsed lease does not produce a stream of messages
+  // the far end will only refuse.
+  assert.equal(stream.sendTerminalInput(terminalId, 'whoami\r'), false);
+  assert.equal(stream.openTerminal('cmd', 120, 30), null);
+
+  stream.stop();
+});
+
+test('what a shell prints reaches the renderer and nothing else', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  deliverControl({
+      kind: 'terminal.opened',
+      terminalId: 'terminal-1',
+      shell: 'cmd',
+      processId: 4242,
+      columns: 120,
+      rows: 30,
+      elevated: false,
+    });
+
+  deliverControl({
+      kind: 'terminal.output',
+      terminalId: 'terminal-1',
+      sequence: 0,
+      data: 'DOMAIN\operator\r',
+    });
+
+  assert.equal(recorded.terminal[0]!.kind, 'opened');
+  assert.equal(recorded.terminal[1]!.kind, 'output');
+  assert.equal(recorded.terminal[1]!.data, 'DOMAIN\operator\r');
+
+  // It arrived on the data channel, so it never touched a server. The client hands it to a
+  // renderer and keeps no copy of its own.
+  assert.equal(signalsOfType('terminal.output').length, 0);
+
+  stream.stop();
+});
+
+test('a refusal from the PC is surfaced with whether Windows or WOLF said no', async () => {
+  const { stream, recorded } = makeStream();
+  await connectWithControlChannel(stream);
+
+  deliverControl({
+      kind: 'terminal.refused',
+      terminalId: 'terminal-1',
+      reason: 'unsupported',
+      detail: 'An elevated terminal needs the terminal-admin capability.',
+      limitation: true,
+    });
+
+  const refused = recorded.terminal.at(-1)!;
+  assert.equal(refused.kind, 'refused');
+  assert.match(refused.detail!, /terminal-admin/);
+
+  stream.stop();
+});
+
+test('an oversized paste into a terminal is refused before it is sent', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+
+  socketMessage({
+    kind: 'cloud.signal',
+    envelope: {
+      streamId: stream.id,
+      payload: {
+        type: 'terminal.control',
+        granted: true,
+        holderSessionId: 'a-session',
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        reason: 'granted',
+      },
+    },
+  });
+
+  const terminalId = stream.openTerminal('cmd', 120, 30)!;
+  const before = sentOnChannel.length;
+
+  // Bounded here as well as at the far end, which is the difference between a message and a
+  // wasted round trip that the PC then has to refuse.
+  assert.equal(stream.sendTerminalInput(terminalId, 'x'.repeat(MAX_TERMINAL_CHUNK + 1)), false);
+  assert.equal(sentOnChannel.length, before);
 
   stream.stop();
 });

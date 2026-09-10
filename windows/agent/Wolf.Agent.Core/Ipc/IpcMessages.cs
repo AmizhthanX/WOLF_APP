@@ -217,7 +217,16 @@ public sealed record ServiceSignalMessage(
     /// watching their screen. False by default, so a message that lost the field produces a
     /// stream without clipboard sharing rather than one that shares without permission.
     /// </summary>
-    [property: JsonPropertyName("clipboardAllowed")] bool ClipboardAllowed = false)
+    [property: JsonPropertyName("clipboardAllowed")] bool ClipboardAllowed = false,
+    /// <summary>
+    /// Whether the session that sent this may run commands on the PC.
+    ///
+    /// Its own grant, and the one that matters most: this is arbitrary command execution,
+    /// and no other capability implies it. False by default, so a message that lost the
+    /// field produces a stream with no terminal rather than one with a shell nobody
+    /// authorised.
+    /// </summary>
+    [property: JsonPropertyName("terminalAllowed")] bool TerminalAllowed = false)
 {
     [JsonPropertyName("kind")]
     public string Kind { get; init; } = "service.signal";
