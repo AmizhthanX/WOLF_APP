@@ -69,6 +69,18 @@ beforeEach(async () => {
   // Retention in one test drops the partitions the next test's samples need. Recreated here
   // rather than ordering the tests around each other.
   await repos.telemetry.ensurePartitions(3);
+
+  // The partition function works from the wall clock and these tests from a fixed one. Without
+  // the days they write to created explicitly, the suite passed on the day it was written and
+  // failed four days later with "no partition found for row".
+  for (let day = 8; day <= 14; day += 1) {
+    const start = `2026-09-${String(day).padStart(2, '0')}`;
+    const end = new Date(Date.parse(`${start}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    await db.query(
+      `CREATE TABLE IF NOT EXISTS telemetry_samples_${start.replaceAll('-', '')}
+         PARTITION OF telemetry_samples FOR VALUES FROM ('${start}') TO ('${end}')`,
+    );
+  }
 });
 
 /** A sample at a moment, with one CPU reading and one disk. */

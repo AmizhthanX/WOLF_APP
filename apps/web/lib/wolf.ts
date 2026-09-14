@@ -244,3 +244,68 @@ export const createEnrollmentToken = (label?: string) =>
     '/api/v1/pcs/enrollment-tokens',
     { method: 'POST', body: { label, expiresInMinutes: 60 } },
   );
+
+/* ------------------------------------------------------------------------- */
+/* Alerts and notifications                                                   */
+/* ------------------------------------------------------------------------- */
+
+export type AlertCondition = 'metric-above' | 'metric-below' | 'pc-offline';
+export type AlertSeverity = 'info' | 'warning' | 'critical';
+
+export interface AlertRule {
+  id: string;
+  /** Null watches every PC on the account, including ones enrolled later. */
+  pcId: string | null;
+  name: string;
+  condition: AlertCondition;
+  metric: string | null;
+  seriesKey: string | null;
+  threshold: number | null;
+  forMinutes: number;
+  severity: AlertSeverity;
+  cooldownMinutes: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AlertRuleInput = Omit<AlertRule, 'id' | 'createdAt' | 'updatedAt'>;
+
+export interface WolfNotification {
+  id: string;
+  ruleId: string | null;
+  pcId: string | null;
+  kind: 'fired' | 'resolved';
+  severity: AlertSeverity;
+  title: string;
+  detail: string;
+  metric: string | null;
+  seriesKey: string | null;
+  value: number | null;
+  threshold: number | null;
+  occurredAt: string;
+  readAt: string | null;
+}
+
+export const listAlertRules = () =>
+  api<{ rules: AlertRule[]; limit: number }>('/api/v1/alert-rules');
+
+export const createAlertRule = (rule: AlertRuleInput) =>
+  api<{ rule: AlertRule }>('/api/v1/alert-rules', { method: 'POST', body: rule });
+
+export const updateAlertRule = (ruleId: string, patch: Partial<AlertRuleInput>) =>
+  api<{ rule: AlertRule }>(`/api/v1/alert-rules/${ruleId}`, { method: 'PATCH', body: patch });
+
+export const deleteAlertRule = (ruleId: string) =>
+  api<void>(`/api/v1/alert-rules/${ruleId}`, { method: 'DELETE' });
+
+export const listNotifications = (options: { unreadOnly?: boolean; limit?: number } = {}) =>
+  api<{ notifications: WolfNotification[]; unreadCount: number }>(
+    `/api/v1/notifications?unread=${options.unreadOnly ? 'true' : 'false'}&limit=${options.limit ?? 50}`,
+  );
+
+export const markNotificationRead = (notificationId: string) =>
+  api<void>(`/api/v1/notifications/${notificationId}/read`, { method: 'POST' });
+
+export const markAllNotificationsRead = () =>
+  api<{ marked: number }>('/api/v1/notifications/read-all', { method: 'POST' });

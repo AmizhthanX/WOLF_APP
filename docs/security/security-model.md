@@ -222,6 +222,11 @@ new payload field cannot leak by being forgotten; it has to be deliberately name
 the filter. There is a test asserting that clipboard text, terminal output, and file
 content are redacted while the surrounding metadata survives.
 
+Alert notifications follow the same line. Their text is built from fixed templates and the
+facts of the rule — PC name, metric, threshold, the number that crossed it — and nothing a rule
+evaluates carries terminal output, file names, clipboard or event-log text, so none can reach
+one. The evaluator logs counts only; rule and PC names are the owner's words and stay out of logs.
+
 ## Windows path safety
 
 Two gates guard every file path, and only the first is in shared code:
@@ -311,6 +316,15 @@ request.
 ## Known gaps
 
 Stated plainly rather than left to be discovered:
+
+- **Notifications are in-app only.** Nothing is e-mailed, pushed or sent to a webhook. A
+  webhook is a URL the owner supplies that the server then requests, which is a server-side
+  request forgery surface into the cloud network; it is not built until egress is allow-listed,
+  DNS rebinding is handled and payloads are signed. An owner who is not looking at WOLF is not
+  told anything.
+- **Alert evaluation needs a running API.** The evaluator runs inside the API process. With no
+  instance up, nothing is evaluated, and an offline rule about the API's own host has nobody to
+  fire it.
 
 - **The per-instance rate limiter is per-instance.** Across several API instances it bounds
   abuse per instance, not globally. The per-account lockout is shared through Postgres and

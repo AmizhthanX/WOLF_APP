@@ -1,4 +1,5 @@
 import type { Database } from '../pool.js';
+import { AlertRepository } from './alerts.js';
 import { AuditRepository } from './audit.js';
 import { CommandRepository } from './commands.js';
 import { DeviceRepository } from './devices.js';
@@ -10,6 +11,7 @@ import { SessionRepository } from './sessions.js';
 import { TelemetryRepository } from './telemetry.js';
 import { UserRepository } from './users.js';
 
+export * from './alerts.js';
 export * from './audit.js';
 export * from './commands.js';
 export * from './devices.js';
@@ -31,6 +33,7 @@ export interface Repositories {
   readonly commands: CommandRepository;
   readonly remoteDesktop: RemoteDesktopRepository;
   readonly telemetry: TelemetryRepository;
+  readonly alerts: AlertRepository;
   readonly audit: AuditRepository;
 }
 
@@ -45,6 +48,7 @@ export function createRepositories(db: Database): Repositories {
     commands: new CommandRepository(db),
     remoteDesktop: new RemoteDesktopRepository(db),
     telemetry: new TelemetryRepository(db),
+    alerts: new AlertRepository(db),
     audit: new AuditRepository(db),
   };
 }

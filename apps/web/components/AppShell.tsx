@@ -4,6 +4,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
 import { currentUser, ensureToken, signOut } from '@/lib/client';
+import { listNotifications } from '@/lib/wolf';
+
+/** How often the unread count is checked. Alerts are evaluated once a minute; this need not be faster. */
+const INBOX_REFRESH_MS = 30_000;
 
 /**
  * Shell for every authenticated page.
@@ -16,6 +20,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [state, setState] = useState<'checking' | 'ready'>('checking');
   const [email, setEmail] = useState<string | null>(null);
+  const [unread, setUnread] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,6 +40,23 @@ export function AppShell({ children }: { children: ReactNode }) {
     };
   }, [router]);
 
+  useEffect(() => {
+    if (state !== 'ready') return;
+
+    const check = async () => {
+      try {
+        setUnread((await listNotifications({ unreadOnly: true, limit: 1 })).unreadCount);
+      } catch {
+        // A count that cannot be read is shown as nothing rather than as zero.
+        setUnread(null);
+      }
+    };
+
+    void check();
+    const timer = setInterval(() => void check(), INBOX_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [state]);
+
   if (state === 'checking') {
     return (
       <main className="app-shell">
@@ -52,6 +74,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           WOLF
         </Link>
         <div className="top-bar-spacer" />
+        <Link href="/alerts" className="button-small" aria-label={unread ? `Alerts, ${unread} unread` : 'Alerts'}>
+          Alerts{unread ? <span className="status status-danger" style={{ marginLeft: 6 }}>{unread}</span> : null}
+        </Link>
         {email ? <span className="muted">{email}</span> : null}
         <button
           type="button"

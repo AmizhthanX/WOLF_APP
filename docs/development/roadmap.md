@@ -697,10 +697,41 @@ milestone 2 and is never persisted in cloud history.
   and the daily watermark then sat past the day for ever. A cascade bucket is now eligible only
   when the resolution beneath it covers all of it
 
+**Done — alert rules and the in-app inbox**
+
+- Rules ask about a metric staying above or below a line for a window, or a PC being offline for
+  one; on one PC or on every PC, including ones enrolled later. Evaluated once a minute in every
+  API instance. See [alerts](../architecture/alerts.md)
+- **Three verdicts, not two.** Breaching, clear, or unknown — and unknown never moves an alert.
+  Treating "no data" as "fine" resolves an alert at the moment a machine stops reporting, which
+  is exactly when somebody needs it. An alert about a disk that vanished stays firing
+- "Sustained" means every reading in the window, and the window must actually have been
+  observed: samples reaching back across 90% of it, nothing stale at the end, and no hole in the
+  middle wider than a tenth of it
+- Told once, not every minute; a cooldown keeps a metric hovering at its threshold from flooding
+  the inbox; a firing suppressed by the cooldown recovers silently rather than announcing "back
+  to normal" about something the owner never heard was wrong
+- **Two instances cannot both notify.** State changes are compare-and-set on the state and when
+  it changed, in the same transaction as the notification; whichever instance's change lands
+  writes it
+- Long windows are judged from the five-minute bucket minimums (maximums for below rules) plus the
+  raw tail, which is exact rather than approximate, instead of reading seventeen thousand raw
+  samples a day per rule per minute
+- Rule changes are audited under `automation`; editing a rule clears its state, because the old
+  answers were to a different question
+- **In-app only.** Webhooks are an SSRF surface that needs egress controls first, e-mail needs a
+  provider and its secrets, push needs the Android client. None is implied to exist
+
+**A real bug found on the way, in the previous slice**
+
+- The rollup suite used a fixed clock of 10 September while telemetry partitions are created
+  around the wall clock. It passed the day it was written and failed four days later with "no
+  partition found for row". The suite now creates the days it writes to
+
 **Still open in this milestone**
 - Process, GPU, and storage intelligence
-- Notifications and the rule engine
-- The automation engine: triggers, conditions, actions, cooldowns
+- The automation engine: triggers, conditions, actions, cooldowns — the rule evaluator's
+  verdicts and state machine are the trigger half of it; actions are not built
 - Configuration backup and restore
 
 ## Android

@@ -113,6 +113,14 @@ Longer windows are answered from `telemetry_aggregates` at 5-minute, hourly, and
 resolution; the API picks the coarsest tier that covers the requested window rather than
 letting a caller ask for a year of one-second samples.
 
+## Alerts
+
+Alert rules are evaluated once a minute inside every API instance against the same telemetry
+the charts draw. A rule answers breaching, clear or unknown, and unknown never changes an
+alert, so a PC that stops reporting cannot resolve its own alert. State changes are
+compare-and-set, so several instances still produce one notification. Delivery is an in-app
+inbox only. See [alerts](alerts.md).
+
 ## Cloud portability
 
 Everything cloud-specific stays behind an interface. The application depends on Postgres,

@@ -5,7 +5,7 @@ import { createDatabase } from '@wolf/server-core';
 import { createRepositories } from '@wolf/server-core';
 import { InMemoryRateLimiter } from './http/rate-limit.js';
 import { buildApp } from './http/app.js';
-import { MaintenanceJob, RollupJob } from '@wolf/server-core';
+import { AlertJob, MaintenanceJob, RollupJob } from '@wolf/server-core';
 import type { AppContext } from './http/context.js';
 
 async function main(): Promise<void> {
@@ -36,10 +36,16 @@ async function main(): Promise<void> {
   const rollup = new RollupJob(context);
   rollup.start();
 
+  // Its own job for the same reason. Two instances evaluating at once is safe: state changes are
+  // compare-and-set, and only the instance whose change lands writes the notification.
+  const alerts = new AlertJob(context);
+  alerts.start();
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutting down');
     maintenance.stop();
     rollup.stop();
+    alerts.stop();
     try {
       await app.close();
       await db.end();

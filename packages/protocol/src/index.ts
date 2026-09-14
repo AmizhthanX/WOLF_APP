@@ -6,5 +6,6 @@ export * from './control-channel.js';
 export * from './input.js';
 export * from './terminal.js';
 export * from './files.js';
+export * from './alerts.js';
 export * from './signaling.js';
 export * from './messages.js';

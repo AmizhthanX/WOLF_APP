@@ -49,7 +49,7 @@ export interface AggregateRow {
 }
 
 /** One measurement pulled out of a sample, before it is bucketed. */
-interface Reading {
+export interface Reading {
   readonly metric: AggregatedMetric;
   readonly seriesKey: string | null;
   readonly value: number;
@@ -68,8 +68,14 @@ export function bucketStart(at: Date, resolution: Exclude<AggregateResolution, '
   return new Date(Math.floor(at.getTime() / ms) * ms);
 }
 
-/** Every metric a single sample contributes, flattened. */
-function read(sample: TelemetrySample): Reading[] {
+/**
+ * Every metric a single sample contributes, flattened.
+ *
+ * Exported because alert rules judge metrics too, and they must judge the same number the history
+ * chart draws. Two definitions of "disk used" — one here, one in the rule engine — would be a rule
+ * firing on a value the owner cannot find on any chart.
+ */
+export function readingsOf(sample: TelemetrySample): Reading[] {
   const readings: Reading[] = [];
 
   const add = (metric: AggregatedMetric, seriesKey: string | null, value: number | null | undefined) => {
@@ -178,7 +184,7 @@ export function rollupSamples(
   for (const entry of samples) {
     const bucket = bucketStart(entry.sampledAt, resolution);
 
-    for (const reading of read(entry.sample)) {
+    for (const reading of readingsOf(entry.sample)) {
       // The series key is part of the identity, not a label: two GPUs in one machine are two
       // series, and averaging them together would describe neither.
       const key = `${bucket.getTime()}|${reading.metric}|${reading.seriesKey ?? ''}`;
