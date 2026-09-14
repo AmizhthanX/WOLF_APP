@@ -2,10 +2,13 @@ import {
   COMMAND_REGISTRY,
   agentCommandBody,
   classifyRisk,
+  isAutomatableCommand,
   isKnownCommandType,
+  riskRank,
   type AgentCommandBody,
   type AgentCommandType,
   type AuthorizationContext,
+  type AutomationSkipReason,
 } from '@wolf/protocol';
 import { newId, policyFor, type ExclusiveResource, type RiskLevel } from '@wolf/shared-types';
 import { parseOrThrow } from '@wolf/validation';
@@ -59,6 +62,24 @@ export interface DispatchOutcome {
   /** False when a repeated idempotency key resolved to an existing command. */
   readonly created: boolean;
 }
+
+/** A command an automation is about to send, on the authority recorded when it was saved. */
+export interface AutomatedDispatchInput {
+  readonly automationId: string;
+  readonly runId: string;
+  readonly stepIndex: number;
+  readonly userId: string;
+  /** The device the automation was authorized from. */
+  readonly deviceId: string;
+  readonly authorizedAt: Date;
+  readonly authorizedRisk: RiskLevel;
+  readonly pcId: string;
+  readonly command: AgentCommandBody;
+}
+
+export type AutomatedDispatchOutcome =
+  | { readonly ok: true; readonly command: CommandRecord }
+  | { readonly ok: false; readonly reason: AutomationSkipReason; readonly detail: string };
 
 export class CommandService {
   constructor(private readonly context: AppContext) {}
@@ -235,6 +256,154 @@ export class CommandService {
     }
 
     return { command: outcome.command, created: outcome.created };
+  }
+
+  /**
+   * Enqueue a command for an automation.
+   *
+   * A separate path rather than a flag on {@link dispatch}, so that nothing about unattended dispatch
+   * can loosen the interactive one. The checks that stand in for a person:
+   *
+   * - the command must be on the automatable list, and classify at or below the risk level the owner
+   *   confirmed when saving — never critical, however it was saved;
+   * - the kill switch, agent support and presence are checked exactly as for a person;
+   * - an exclusive resource held by a live session is never taken: an automation does not restart a
+   *   machine out from under somebody who is holding its power control.
+   *
+   * Refusals are returned rather than thrown, because an automation has nobody to show an error to;
+   * each is audited as denied.
+   */
+  async dispatchAutomated(input: AutomatedDispatchInput): Promise<AutomatedDispatchOutcome> {
+    const { repos } = this.context;
+    const now = this.context.now();
+
+    const refuse = async (reason: AutomationSkipReason, detail: string, riskLevel: RiskLevel, type: string) => {
+      await repos.audit.record({
+        category: isKnownCommandType(type) ? COMMAND_REGISTRY[type].auditCategory : 'automation',
+        action: type,
+        outcome: 'denied',
+        riskLevel,
+        userId: input.userId,
+        deviceId: input.deviceId,
+        pcId: input.pcId,
+        requestId: input.runId,
+        target: { kind: 'automation', automationId: input.automationId, runId: input.runId, step: input.stepIndex },
+        errorCode: reason,
+      });
+      return { ok: false as const, reason, detail };
+    };
+
+    const parsed = agentCommandBody.safeParse(input.command);
+    if (!parsed.success || !isAutomatableCommand(parsed.data.type)) {
+      return refuse('unsupported-command', 'The action is not one an automation may carry.', 'low', input.command.type);
+    }
+
+    const command = parsed.data as AgentCommandBody;
+    const definition = COMMAND_REGISTRY[command.type];
+    const riskLevel = classifyRisk(command);
+
+    if (riskLevel === 'critical' || riskRank(riskLevel) > riskRank(input.authorizedRisk)) {
+      return refuse(
+        'risk-escalated',
+        `The action classifies ${riskLevel} risk, above the ${input.authorizedRisk} the automation was authorized for.`,
+        riskLevel,
+        command.type,
+      );
+    }
+
+    const pc = await repos.pcs.findById(input.pcId, input.userId);
+    if (!pc || pc.registrationState === 'revoked') {
+      return refuse('pc-unavailable', 'The PC is no longer enrolled on this account.', riskLevel, command.type);
+    }
+
+    if (!pc.remoteAccessEnabled) {
+      return refuse('kill-switch', `Remote access to ${pc.name} is switched off.`, riskLevel, command.type);
+    }
+
+    const capabilities = await repos.pcs.getCapabilities(input.pcId);
+    if (capabilities && !capabilities.supportedCommands.includes(command.type)) {
+      return refuse('unsupported-command', `${pc.name} does not support ${command.type}.`, riskLevel, command.type);
+    }
+
+    if (pc.status !== 'online') {
+      return refuse('pc-offline', `${pc.name} is offline.`, riskLevel, command.type);
+    }
+
+    const resource = COMMAND_RESOURCE[command.type];
+    if (resource && definition.mutating) {
+      const holder = await repos.sessions.activeResourceHolder(input.pcId, resource);
+      if (holder) {
+        return refuse('resource-held', `A connected session holds ${resource} control on ${pc.name}.`, riskLevel, command.type);
+      }
+    }
+
+    const policy = policyFor(riskLevel);
+    const authorization: AuthorizationContext = {
+      userId: input.userId,
+      deviceId: input.deviceId,
+      // There is no session: the authority is the automation's, recorded against the device it was
+      // saved from. The same fallback the interactive path uses for an account token.
+      sessionId: input.deviceId,
+      route: 'relay',
+      grantedCapabilities: [definition.capability],
+      riskLevel,
+      // When the owner confirmed and re-entered their password: at save time, not now. Recorded as
+      // what it is rather than stamped with the moment of dispatch.
+      confirmedAt: policy.requiresConfirmation ? input.authorizedAt.toISOString() : null,
+      reauthenticatedAt: policy.requiresPasswordReauth ? input.authorizedAt.toISOString() : null,
+      privilegedGrantId: null,
+    };
+
+    const commandId = newId();
+    const expiresAt = new Date(now.getTime() + this.context.config.commandTtlSeconds * 1000);
+
+    const outcome = await withTransaction(this.context.db, async (client) => {
+      const created = await repos.commands.create(
+        {
+          id: commandId,
+          pcId: input.pcId,
+          sessionId: null,
+          userId: input.userId,
+          deviceId: input.deviceId,
+          requestId: input.runId,
+          type: command.type,
+          riskLevel,
+          payload: command,
+          authorization,
+          idempotencyKey: `automation:${input.runId}:${input.stepIndex}`,
+          expiresAt,
+        },
+        client,
+      );
+
+      if (created.created) {
+        await repos.audit.record(
+          {
+            category: definition.auditCategory,
+            action: command.type,
+            outcome: 'pending',
+            riskLevel,
+            userId: input.userId,
+            deviceId: input.deviceId,
+            pcId: input.pcId,
+            requestId: input.runId,
+            target: { ...commandAuditTarget(command), automationId: input.automationId, runId: input.runId },
+          },
+          client,
+        );
+      }
+
+      return created;
+    });
+
+    if (outcome.created) {
+      await this.context.db.query('SELECT pg_notify($1, $2)', [
+        'wolf_command',
+        JSON.stringify({ pcId: input.pcId, commandId }),
+      ]);
+    }
+
+    return { ok: true, command: outcome.command };
   }
 
   private async privilegedGrantIsValid(input: {

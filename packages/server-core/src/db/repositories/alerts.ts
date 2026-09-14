@@ -49,6 +49,7 @@ function toRule(row: RuleRow): StoredRule {
 interface NotificationRow {
   id: string;
   rule_id: string | null;
+  automation_id: string | null;
   pc_id: string | null;
   kind: NotificationKind;
   severity: AlertSeverity;
@@ -66,6 +67,7 @@ function toNotification(row: NotificationRow): Notification {
   return {
     id: row.id,
     ruleId: row.rule_id,
+    automationId: row.automation_id,
     pcId: row.pc_id,
     kind: row.kind,
     severity: row.severity,
@@ -356,7 +358,7 @@ export class AlertRepository {
     options: { readonly unreadOnly: boolean; readonly limit: number },
   ): Promise<Notification[]> {
     const { rows } = await this.db.query<NotificationRow>(
-      `SELECT id, rule_id, pc_id, kind, severity, title, detail, metric, series_key, value,
+      `SELECT id, rule_id, automation_id, pc_id, kind, severity, title, detail, metric, series_key, value,
               threshold, occurred_at, read_at
          FROM notifications
         WHERE user_id = $1 AND ($2::boolean IS FALSE OR read_at IS NULL)

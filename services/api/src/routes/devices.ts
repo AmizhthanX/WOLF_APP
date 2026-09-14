@@ -52,6 +52,25 @@ export async function registerDeviceRoutes(
       if (ok) {
         await context.repos.refreshTokens.revokeForDevice(params.deviceId, client);
         await context.repos.sessions.endAllForDevice(params.deviceId, 'device-revoked', client);
+
+        // An automation acts on the authority of the device it was saved from. That authority ends
+        // with the device, in the same transaction, rather than at each automation's next run.
+        const disabled = await context.repos.automations.disableForDevice(params.deviceId, client);
+        if (disabled.length > 0) {
+          await context.repos.audit.record(
+            {
+              category: 'automation',
+              action: 'automation.disable',
+              outcome: 'success',
+              riskLevel: 'low',
+              userId: caller.userId,
+              deviceId: caller.deviceId,
+              requestId: request.id,
+              target: { kind: 'device-revoked', deviceId: params.deviceId, automationIds: disabled.join(',') },
+            },
+            client,
+          );
+        }
       }
       return ok;
     });

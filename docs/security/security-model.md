@@ -326,6 +326,15 @@ Stated plainly rather than left to be discovered:
   assert the documented null. The agent service runs as `LocalSystem` and should read them.
 - **The display-kernel interop is read-only by construction.** Only enumerate, query and close are
   bound; every adapter handle opened is closed in a `finally`.
+- **An automation acts on authority granted earlier.** That is its purpose and its risk. The bounds:
+  nothing critical, ever; medium and high need the same confirmation and password a hand-sent
+  command does, at save time; the authority is tied to the saving device and ends when it is
+  revoked; actions are reclassified at every run; only four allow-listed command types; no
+  identifiers that go stale; nothing queued for an offline PC; no exclusive resource taken from a
+  connected session; cooldown and daily limit on every automation; every command audited on the
+  ordinary path with the automation and run that sent it. What remains is that a high-risk automation
+  saved today will restart the machine next month without asking again — which is what the owner
+  asked for.
 - **Notifications are in-app only.** Nothing is e-mailed, pushed or sent to a webhook. A
   webhook is a URL the owner supplies that the server then requests, which is a server-side
   request forgery surface into the cloud network; it is not built until egress is allow-listed,

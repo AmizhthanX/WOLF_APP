@@ -5,6 +5,7 @@ export * from './context.js';
 export * from './db/pool.js';
 export * from './db/migrate.js';
 export * from './db/repositories/index.js';
+export * from './automation/engine.js';
 export * from './jobs/alerts.js';
 export * from './jobs/maintenance.js';
 export * from './jobs/rollup.js';

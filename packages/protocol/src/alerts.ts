@@ -127,7 +127,8 @@ export const alertRule = z.object({
 });
 export type AlertRule = z.infer<typeof alertRule>;
 
-export const NOTIFICATION_KINDS = ['fired', 'resolved'] as const;
+/** `automation`: written by an automation's notify action, or to say one failed or was turned off. */
+export const NOTIFICATION_KINDS = ['fired', 'resolved', 'automation'] as const;
 export const notificationKind = z.enum(NOTIFICATION_KINDS);
 export type NotificationKind = z.infer<typeof notificationKind>;
 
@@ -135,6 +136,7 @@ export const notification = z.object({
   id: z.string().length(26),
   /** Null once the rule has been deleted; the notification outlives it on purpose. */
   ruleId: z.string().length(26).nullable(),
+  automationId: z.string().length(26).nullable(),
   pcId: z.string().length(26).nullable(),
   kind: notificationKind,
   severity: alertSeverity,

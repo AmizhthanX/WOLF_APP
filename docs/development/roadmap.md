@@ -753,9 +753,34 @@ milestone 2 and is never persisted in cloud history.
 - Clock speeds, fan and GPU power in watts stay null: the display kernel reports power as a share of
   the limit and fan in RPM, which are not what those fields mean
 
+**Done — the automation engine: triggers, conditions, actions, cooldowns**
+
+- When a schedule comes round, an alert fires or resolves, or the owner presses "Run now" — and
+  nobody is connected, the machine is idle, it is inside a time window — notify, or run one of four
+  commands on chosen PCs. See [automations](../architecture/automations.md)
+- **Saving an automation is authorizing it.** The same policy as a command sent by hand, applied once,
+  at the moment of decision: the confirmed risk level must equal the server's, and a high-risk
+  automation needs the password. **Critical actions can never be automated** — they need a single-use
+  grant per action, and an automation would turn that into a standing permission. Refused by the
+  schema, the API, the engine and a database check
+- **Authority belongs to a device.** Revoking the device an automation was saved from turns it off in
+  the same transaction; a run that finds its device revoked turns itself off and tells the owner.
+  Actions are classified again at every run, so an upgrade that makes one riskier stops the
+  automations using it
+- A separate, unattended dispatch path onto the ordinary command pipeline, so nothing about it can
+  loosen the interactive one. It never queues for an offline PC, never takes power control from a
+  connected session, and dates the confirmation to when it was actually given
+- Actions run in order and wait for each command's result; the first failure skips the rest
+- **Nothing runs twice, and nothing runs late.** A scheduled minute is claimed by its local date and
+  time, an alert event in the transaction that created it, a cooldown by compare-and-set, the daily
+  limit under a row lock. Schedules are due for five minutes, events for five, and a run whose API
+  instance died is marked interrupted rather than finished an hour later. Daylight saving follows the
+  wall clock: a skipped time does not run, a repeated one runs once
+- Only `power.action`, `service.control`, `task.control` and `startup.set-enabled` are automatable.
+  Nothing that names a PID, and nothing the agent does not implement — `process.start` was on the
+  first draft of the list and came off it for that reason
+
 **Still open in this milestone**
-- The automation engine: triggers, conditions, actions, cooldowns — the rule evaluator's
-  verdicts and state machine are the trigger half of it; actions are not built
 - Configuration backup and restore
 
 ## Android

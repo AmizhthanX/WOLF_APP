@@ -45,6 +45,10 @@
     "./rate-limit": {
       "types": "./dist/http/rate-limit.d.ts",
       "default": "./dist/http/rate-limit.js"
+    },
+    "./automation": {
+      "types": "./dist/automation/job.d.ts",
+      "default": "./dist/automation/job.js"
     }
   }
 }

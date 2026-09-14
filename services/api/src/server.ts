@@ -7,6 +7,7 @@ import { InMemoryRateLimiter } from './http/rate-limit.js';
 import { buildApp } from './http/app.js';
 import { AlertJob, MaintenanceJob, RollupJob } from '@wolf/server-core';
 import type { AppContext } from './http/context.js';
+import { AutomationJob } from './automation/job.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -41,11 +42,17 @@ async function main(): Promise<void> {
   const alerts = new AlertJob(context);
   alerts.start();
 
+  // Schedules, alert events and interrupted runs. Safe on several instances: a scheduled minute, an
+  // event and a cooldown are each claimed by exactly one of them.
+  const automations = new AutomationJob(context);
+  automations.start();
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutting down');
     maintenance.stop();
     rollup.stop();
     alerts.stop();
+    automations.stop();
     try {
       await app.close();
       await db.end();

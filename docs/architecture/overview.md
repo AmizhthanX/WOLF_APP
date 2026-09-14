@@ -121,6 +121,14 @@ alert, so a PC that stops reporting cannot resolve its own alert. State changes 
 compare-and-set, so several instances still produce one notification. Delivery is an in-app
 inbox only. See [alerts](alerts.md).
 
+## Automations
+
+Schedules, alert events and "Run now" start automations inside every API instance, and each claim —
+a scheduled minute, an event, a cooldown — is made by exactly one instance. Their commands go
+through a separate unattended dispatch path onto the ordinary pipeline, on authority recorded when
+the automation was saved and tied to the device that saved it. Nothing critical can be automated.
+See [automations](automations.md).
+
 ## Cloud portability
 
 Everything cloud-specific stays behind an interface. The application depends on Postgres,

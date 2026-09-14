@@ -291,6 +291,17 @@ export class AlertJob {
 
       if (!moved) return false;
 
+      // In the same transaction as the state change, so an automation sees each change exactly once.
+      // Written for a silent (cooldown-suppressed) firing too: the notification cooldown is about
+      // the inbox, and an automation has a cooldown of its own.
+      await this.context.repos.automations.recordAlertEvent(client, {
+        userId: rule.userId,
+        ruleId: rule.id,
+        pcId: pc.id,
+        kind: firing ? 'alert-fired' : 'alert-resolved',
+        occurredAt: now,
+      });
+
       if (next.notify) {
         const words = describe({
           kind: firing ? 'fired' : 'resolved',

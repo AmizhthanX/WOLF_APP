@@ -288,7 +288,8 @@ export interface WolfNotification {
   id: string;
   ruleId: string | null;
   pcId: string | null;
-  kind: 'fired' | 'resolved';
+  kind: 'fired' | 'resolved' | 'automation';
+  automationId: string | null;
   severity: AlertSeverity;
   title: string;
   detail: string;
@@ -375,3 +376,92 @@ export interface PcInsights {
 }
 
 export const getInsights = (pcId: string) => api<PcInsights>(`/api/v1/pcs/${pcId}/insights`);
+
+/* ------------------------------------------------------------------------- */
+/* Automations                                                                */
+/* ------------------------------------------------------------------------- */
+
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export type AutomationTrigger =
+  | { kind: 'schedule'; time: string; days: Weekday[]; timeZone: string }
+  | { kind: 'alert'; ruleId: string | null; on: 'fired' | 'resolved' }
+  | { kind: 'manual' };
+
+export type AutomationCondition =
+  | { kind: 'time-window'; start: string; end: string; days: Weekday[]; timeZone: string }
+  | { kind: 'metric'; metric: string; seriesKey: string | null; comparison: 'above' | 'below'; threshold: number }
+  | { kind: 'no-active-session' };
+
+export type AutomationAction =
+  | { kind: 'notify'; severity: AlertSeverity; message: string }
+  | { kind: 'command'; command: { type: string; payload: Record<string, unknown> } };
+
+export type AutomationTargets = { mode: 'pcs'; pcIds: string[] } | { mode: 'alert-pc' };
+
+export interface AutomationDefinition {
+  name: string;
+  enabled: boolean;
+  trigger: AutomationTrigger;
+  conditions: AutomationCondition[];
+  actions: AutomationAction[];
+  targets: AutomationTargets;
+  cooldownMinutes: number;
+  maxRunsPerDay: number;
+}
+
+export interface Automation extends AutomationDefinition {
+  id: string;
+  authorizedRiskLevel: RiskLevel;
+  authorizedAt: string;
+  lastRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutomationRun {
+  id: string;
+  automationId: string;
+  pcId: string | null;
+  triggerKind: 'schedule' | 'alert' | 'manual';
+  status: 'running' | 'completed' | 'failed' | 'skipped' | 'interrupted';
+  reason: string | null;
+  steps: {
+    index: number;
+    kind: 'notify' | 'command';
+    status: 'completed' | 'failed' | 'skipped';
+    commandId: string | null;
+    commandType: string | null;
+    detail: string | null;
+  }[];
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export const listAutomations = () =>
+  api<{ automations: Automation[]; limit: number }>('/api/v1/automations');
+
+export const createAutomation = (automation: AutomationDefinition, confirmedRiskLevel?: RiskLevel) =>
+  api<{ automation: Automation }>('/api/v1/automations', {
+    method: 'POST',
+    body: { automation, confirmedRiskLevel },
+  });
+
+export const updateAutomation = (
+  automationId: string,
+  patch: Partial<AutomationDefinition>,
+  confirmedRiskLevel?: RiskLevel,
+) =>
+  api<{ automation: Automation }>(`/api/v1/automations/${automationId}`, {
+    method: 'PATCH',
+    body: { automation: patch, confirmedRiskLevel },
+  });
+
+export const deleteAutomation = (automationId: string) =>
+  api<void>(`/api/v1/automations/${automationId}`, { method: 'DELETE' });
+
+export const runAutomation = (automationId: string) =>
+  api<{ accepted: boolean; pcIds: string[] }>(`/api/v1/automations/${automationId}/run`, { method: 'POST' });
+
+export const listAutomationRuns = (automationId: string, limit = 20) =>
+  api<{ runs: AutomationRun[] }>(`/api/v1/automations/${automationId}/runs?limit=${limit}`);

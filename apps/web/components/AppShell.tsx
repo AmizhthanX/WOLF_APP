@@ -74,6 +74,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           WOLF
         </Link>
         <div className="top-bar-spacer" />
+        <Link href="/automations" className="button-small">
+          Automations
+        </Link>
         <Link href="/alerts" className="button-small" aria-label={unread ? `Alerts, ${unread} unread` : 'Alerts'}>
           Alerts{unread ? <span className="status status-danger" style={{ marginLeft: 6 }}>{unread}</span> : null}
         </Link>

@@ -112,6 +112,18 @@ export class SessionRepository {
     return rows.map((row) => toSession(row));
   }
 
+  /** The live session holding a resource on a PC, or null. Never takes the lease. */
+  async activeResourceHolder(pcId: string, resource: ExclusiveResource): Promise<string | null> {
+    const { rows } = await this.db.query<{ session_id: string }>(
+      `SELECT l.session_id FROM session_resource_leases l
+         JOIN sessions s ON s.id = l.session_id
+        WHERE l.pc_id = $1 AND l.resource = $2 AND l.expires_at > now()
+          AND s.ended_at IS NULL AND s.expires_at > now()`,
+      [pcId, resource],
+    );
+    return rows[0]?.session_id ?? null;
+  }
+
   async countActiveForPc(pcId: string): Promise<number> {
     const { rows } = await this.db.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM sessions
