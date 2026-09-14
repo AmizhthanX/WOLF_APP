@@ -805,8 +805,31 @@ and storage intelligence, automations, and configuration backup.
 ## Android
 
 Kotlin and Jetpack Compose, native WebRTC, platform keystore for tokens and device
-identity, signed APK through CI. Scheduled after milestone 2, so the client arrives when
-there is a desktop to stream to it.
+identity, signed APK through CI. See [the Android client](../architecture/android.md).
+
+**Done — first slice: sign-in, PCs and live metrics**
+
+- A Keystore ECDSA P-256 identity key — the curve the server and the agent already use — in StrongBox
+  where there is one, created with no way to read it back; its encoding pinned to the server's by test
+- The refresh token encrypted under a Keystore AES-GCM key in the no-backup directory, backups turned
+  off; the access token in memory only
+- **One refresh for many callers.** Refresh tokens rotate and a reused one revokes the family, so eight
+  concurrent calls with an expired token must produce exactly one refresh — tested against a mock server
+  that behaves that way. Only a refused refresh signs out; being offline does not
+- TLS with system trust anchors only in release; cleartext only to the emulator's host alias, only in
+  debug. Screenshots and screen recording blocked
+- Proven against the real API, not only a model of it: a gated instrumented test signs in with the
+  Keystore key against a local cloud, restores after a relaunch and confirms sign-out revokes the token
+- **A build finding:** the Android Gradle plugin compiles Java through a `jlink`-built JDK image, and no
+  JDK on the development machine was both new enough to have `jlink` and old enough for the plugin. The
+  app's only Java was generated `BuildConfig`, so it is gone — per-build-type values are Kotlin — and the
+  build runs on any JDK 21–25 runtime
+
+**Still open for Android**
+- Commands with the confirm-and-password flow; alerts, automations and configuration backup
+- Remote desktop over WebRTC, with touch mapped to WOLF input
+- Release signing and distribution through CI
+- Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
 
 ## Infrastructure
 

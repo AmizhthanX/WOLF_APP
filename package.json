@@ -24,7 +24,10 @@
     "dev:cloud": "npm run cloud -w @wolf/e2e",
     "check:secrets": "node scripts/check-secrets.mjs",
     "test:windows": "dotnet test windows/Wolf.sln",
-    "test:windows:perf": "dotnet test windows/Wolf.sln -s windows/agent/Wolf.Agent.Core.Tests/performance.runsettings --logger \"console;verbosity=detailed\""
+    "test:windows:perf": "dotnet test windows/Wolf.sln -s windows/agent/Wolf.Agent.Core.Tests/performance.runsettings --logger \"console;verbosity=detailed\"",
+    "build:android": "node scripts/android.mjs :app:assembleDebug",
+    "test:android": "node scripts/android.mjs :app:testDebugUnitTest",
+    "test:android:device": "node scripts/android.mjs :app:connectedDebugAndroidTest"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -171,6 +171,26 @@ WOLF is built in vertical slices. A new capability touches, in this order:
 The agent must advertise a command type before the cloud will dispatch it, so a
 half-finished slice is inert rather than dangerous.
 
+## Building the Android app
+
+Needs the Android SDK (platform 36) and a JDK 21–25 for Gradle; the app has no Java sources, so an
+IDE's bundled runtime is enough even without `jlink`. Point `apps/android/local.properties` at the SDK
+(`sdk.dir=…`) and `JAVA_HOME` at the JDK.
+
+```bash
+npm run test:android
+```
+
+With an emulator or phone connected, the Keystore tests run on it:
+
+```bash
+npm run test:android:device
+```
+
+To run the live test against a real API, start the local cloud first and pass its address and the
+owner password as instrumentation arguments — see `LiveApiTest.kt`. From the emulator the development
+machine is `10.0.2.2`.
+
 ## Useful commands
 
 ```bash

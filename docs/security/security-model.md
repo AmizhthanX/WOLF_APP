@@ -31,9 +31,9 @@ each runtime pins the encodings so neither side can drift.
 
 | Token | Lifetime | Storage | Revocation |
 | --- | --- | --- | --- |
-| Access | 10 minutes | Browser memory only | Expiry, or device revocation on next call |
-| Session | 10 minutes, PC-scoped | Browser memory only | Session end |
-| Refresh | 30 days, rotating | httpOnly `SameSite=Strict` cookie | Rotation, family revocation, device revocation |
+| Access | 10 minutes | Browser memory only; process memory only on Android | Expiry, or device revocation on next call |
+| Session | 10 minutes, PC-scoped | Browser memory only; process memory only on Android | Session end |
+| Refresh | 30 days, rotating | httpOnly `SameSite=Strict` cookie; on Android, a file encrypted under a Keystore AES-GCM key, excluded from backup | Rotation, family revocation, device revocation |
 
 Access tokens are signed compact JWS with a pinned algorithm — the token's own `alg` is
 never trusted, which is how `none` and algorithm-confusion attacks get in. Issuer and
@@ -338,6 +338,9 @@ Stated plainly rather than left to be discovered:
 - **A configuration backup is plaintext and unsigned.** It holds no credential, key or authority, so
   reading one gives a map of the owner's PCs and rules but no way into them. Its checksum detects
   damage, not forgery; a restore re-validates every item and grants no authority from the file.
+- **Device keys are registered but nothing is signed with them yet.** The Android app and the web
+  client send a P-256 public key at sign-in and the server stores it; no request carries a signature
+  made with it. Revocation and refresh-token rotation are what protect a session today.
 - **Notifications are in-app only.** Nothing is e-mailed, pushed or sent to a webhook. A
   webhook is a URL the owner supplies that the server then requests, which is a server-side
   request forgery surface into the cloud network; it is not built until egress is allow-listed,
