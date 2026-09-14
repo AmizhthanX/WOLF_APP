@@ -253,7 +253,7 @@ export class AlertRepository {
    *
    * The comparison includes when the state last changed, not only what it is. Comparing the state
    * alone would let a slow pass that read "firing" resolve an alert that another instance had
-   * already resolved and re-fired in the meantime — the same word, a different firing.
+   * already resolved and re-fired in the meantime â€” the same word, a different firing.
    *
    * Returns false when another instance got there first, and nothing is written.
    */

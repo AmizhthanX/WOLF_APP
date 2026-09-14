@@ -697,12 +697,12 @@ milestone 2 and is never persisted in cloud history.
   and the daily watermark then sat past the day for ever. A cascade bucket is now eligible only
   when the resolution beneath it covers all of it
 
-**Done � alert rules and the in-app inbox**
+**Done — alert rules and the in-app inbox**
 
 - Rules ask about a metric staying above or below a line for a window, or a PC being offline for
   one; on one PC or on every PC, including ones enrolled later. Evaluated once a minute in every
   API instance. See [alerts](../architecture/alerts.md)
-- **Three verdicts, not two.** Breaching, clear, or unknown � and unknown never moves an alert.
+- **Three verdicts, not two.** Breaching, clear, or unknown — and unknown never moves an alert.
   Treating "no data" as "fine" resolves an alert at the moment a machine stops reporting, which
   is exactly when somebody needs it. An alert about a disk that vanished stays firing
 - "Sustained" means every reading in the window, and the window must actually have been
@@ -728,9 +728,33 @@ milestone 2 and is never persisted in cloud history.
   around the wall clock. It passed the day it was written and failed four days later with "no
   partition found for row". The suite now creates the days it writes to
 
+**Done — GPU, process and storage intelligence**
+
+- **The agent now measures what it only claimed not to.** Before this, every sample carried an empty
+  GPU list, every drive was "unknown" and every process's CPU was null. See
+  [insights](../architecture/insights.md)
+- GPUs from the display kernel — plain structs, no COM, no device created just to ask a name —
+  with load from the GPU Engine counters computed by Task Manager's rules, so the two agree on the
+  same machine. Software renderers and virtual displays are left out
+- **A GPU's id is its PCI location, not its LUID.** Windows assigns a new LUID every boot; a series
+  key that changed on restart would have broken every GPU chart and every alert rule narrowed to one
+- The process list measures CPU and GPU over a real interval — half a second on a first look, since
+  the previous list otherwise — and matches PIDs on start time so a reused PID is never differenced
+  against the process that had it. A process new to the GPU is unknown, not idle
+- Drive health is Windows' own verdict per volume, cached for five minutes; temperature needs the
+  rights the agent service has
+- **Insights are computed on request and never stored.** A straight line through a month of hourly
+  usage gives a fill date, with the history it rests on and how well the line fits; nothing is
+  forecast from under three days. A day of GPU buckets gives load, the busiest five minutes, peak
+  memory and heat. Findings are fixed templates over numbers, a failing drive ranked above a
+  filling one
+- **Nothing about processes reaches the cloud.** Process-level insight lives in the live list on the
+  PC; the cloud's findings are about drives and GPUs only
+- Clock speeds, fan and GPU power in watts stay null: the display kernel reports power as a share of
+  the limit and fan in RPM, which are not what those fields mean
+
 **Still open in this milestone**
-- Process, GPU, and storage intelligence
-- The automation engine: triggers, conditions, actions, cooldowns � the rule evaluator's
+- The automation engine: triggers, conditions, actions, cooldowns — the rule evaluator's
   verdicts and state machine are the trigger half of it; actions are not built
 - Configuration backup and restore
 

@@ -19,9 +19,14 @@ namespace Wolf.Agent.Core.Telemetry;
 /// and anything that would need a per-sample WMI query is left out until it can be done
 /// affordably.
 ///
-/// Not yet sampled, and therefore honestly absent rather than faked:
-/// GPU engines and VRAM (needs vendor or DXGI interop), CPU package power and per-sensor
-/// temperatures (needs a kernel driver or vendor SDK), and disk SMART health.
+/// GPUs come from the display kernel (names, dedicated memory, temperature where the driver reports
+/// one) and the GPU Engine counters (load per engine family) - see <see cref="GpuAdapters"/> and
+/// <see cref="GpuCounterReader"/>. Drive health is Windows' own verdict per volume, cached for five
+/// minutes - see <see cref="StorageHealthReader"/>.
+///
+/// Not yet sampled, and therefore honestly absent rather than faked: CPU package power and CPU
+/// temperature (needs a kernel driver or vendor SDK), GPU clock speeds, fan and power in watts
+/// (vendor SDKs; the display kernel reports power only as a share of the limit), and thermal zones.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class TelemetryCollector : IDisposable
@@ -40,6 +45,9 @@ public sealed class TelemetryCollector : IDisposable
     private TimeSpan _previousSelfCpu;
     private DateTimeOffset _previousSelfAt = DateTimeOffset.UtcNow;
     private bool _countersAvailable;
+    private readonly GpuCounterReader _gpuCounters = new();
+    private readonly StorageHealthReader _storageHealth = new();
+    private bool _gpuEnumerationFailed;
 
     public TelemetryCollector(ILogger<TelemetryCollector> logger)
     {
@@ -96,8 +104,8 @@ public sealed class TelemetryCollector : IDisposable
             UptimeSeconds: Environment.TickCount64 / 1000.0,
             Cpu: CollectCpu(),
             Memory: CollectMemory(),
-            Gpus: Array.Empty<GpuSample>(),
-            Disks: CollectDisks(),
+            Gpus: CollectGpus(),
+            Disks: CollectDisks(now),
             Networks: CollectNetworks(now),
             Thermal: Array.Empty<ThermalSample>(),
             Battery: CollectBattery(),
@@ -182,9 +190,67 @@ public sealed class TelemetryCollector : IDisposable
             CachedBytes: cached);
     }
 
-    private IReadOnlyList<DiskSample> CollectDisks()
+    private IReadOnlyList<GpuSample> CollectGpus()
+    {
+        if (_gpuEnumerationFailed)
+        {
+            return Array.Empty<GpuSample>();
+        }
+
+        IReadOnlyList<GpuAdapter> adapters;
+        try
+        {
+            adapters = GpuAdapters.Enumerate();
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            // Windows before 8 has no D3DKMTEnumAdapters2. Stop asking rather than failing every tick.
+            _logger.LogWarning(ex, "GPU enumeration is unavailable on this Windows; GPUs will not be reported.");
+            _gpuEnumerationFailed = true;
+            return Array.Empty<GpuSample>();
+        }
+
+        if (adapters.Count == 0)
+        {
+            return Array.Empty<GpuSample>();
+        }
+
+        GpuCounterSnapshot? counters = _gpuCounters.Read();
+        var samples = new List<GpuSample>();
+
+        foreach (GpuAdapter adapter in adapters.Take(8))
+        {
+            // Null - not zero - until the counters have a rate for this adapter: the first tick after
+            // start, or an adapter no process has opened.
+            AdapterUtilization? load = counters?.Utilization?.ByAdapterLuid.GetValueOrDefault(adapter.Luid);
+            long? used = counters?.DedicatedBytesByLuid is { } memory && memory.TryGetValue(adapter.Luid, out long bytes)
+                ? bytes
+                : null;
+
+            samples.Add(new GpuSample(
+                AdapterId: adapter.AdapterId,
+                Name: adapter.Name,
+                UsagePercent: load?.UsagePercent,
+                GraphicsEnginePercent: load?.GraphicsPercent,
+                ComputeEnginePercent: load?.ComputePercent,
+                VideoEncodeEnginePercent: load?.VideoEncodePercent,
+                VideoDecodeEnginePercent: load?.VideoDecodePercent,
+                VramTotalBytes: adapter.DedicatedVideoMemoryBytes,
+                VramUsedBytes: used,
+                TemperatureCelsius: adapter.TemperatureCelsius is double celsius ? Math.Clamp(celsius, -50, 150) : null,
+                CoreClockMhz: null,
+                MemoryClockMhz: null,
+                FanPercent: null,
+                PowerWatts: null));
+        }
+
+        return samples;
+    }
+
+    private IReadOnlyList<DiskSample> CollectDisks(DateTimeOffset now)
     {
         var samples = new List<DiskSample>();
+        IReadOnlyDictionary<string, VolumeHealth> health = _storageHealth.Read(now);
 
         foreach (DriveInfo drive in DriveInfo.GetDrives())
         {
@@ -246,10 +312,9 @@ public sealed class TelemetryCollector : IDisposable
                 WriteBytesPerSecond: write,
                 ActiveTimePercent: active,
                 QueueLength: queue,
-                TemperatureCelsius: null,
-                // SMART requires elevated device access; until the privileged helper exposes
-                // it, WOLF reports the honest "unknown" rather than assuming health.
-                HealthStatus: "unknown"));
+                TemperatureCelsius: health.GetValueOrDefault(volume)?.TemperatureCelsius,
+                // Windows' own verdict on the drive behind the volume; "unknown" when it has none.
+                HealthStatus: health.GetValueOrDefault(volume)?.HealthStatus ?? "unknown"));
         }
 
         return samples;

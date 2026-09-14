@@ -138,7 +138,8 @@ them instead of queueing work that would never run:
   session, and the analysis is in [remote unlock](remote-unlock.md). What WOLF does instead is
   show the lock screen and let the operator sign in to it themselves
 - Wake-on-LAN
-- GPU telemetry, CPU package power, thermal sensors
+- CPU package power, CPU temperature and thermal zones (GPU telemetry, drive health and per-process
+  CPU and GPU arrived in milestone 5 — see [insights](insights.md))
 
 The file manager is built and is described in [the file manager](file-manager.md). Delete,
 rename and move are not: they are mutations that belong on the command path, where risk levels

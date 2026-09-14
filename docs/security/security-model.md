@@ -222,8 +222,12 @@ new payload field cannot leak by being forgotten; it has to be deliberately name
 the filter. There is a test asserting that clipboard text, terminal output, and file
 content are redacted while the surrounding metadata survives.
 
+Process data follows it too. CPU, GPU and memory per process are measured on the PC and returned
+on the command path to the caller who asked; the cloud stores none of it, and the insights it
+computes from stored telemetry are about drives and GPUs only.
+
 Alert notifications follow the same line. Their text is built from fixed templates and the
-facts of the rule — PC name, metric, threshold, the number that crossed it — and nothing a rule
+facts of the rule â€” PC name, metric, threshold, the number that crossed it â€” and nothing a rule
 evaluates carries terminal output, file names, clipboard or event-log text, so none can reach
 one. The evaluator logs counts only; rule and PC names are the owner's words and stay out of logs.
 
@@ -317,6 +321,11 @@ request.
 
 Stated plainly rather than left to be discovered:
 
+- **Drive temperatures have not been observed from an elevated context.** They come from the
+  storage reliability counters, which need administrative rights; the tests run unelevated and
+  assert the documented null. The agent service runs as `LocalSystem` and should read them.
+- **The display-kernel interop is read-only by construction.** Only enumerate, query and close are
+  bound; every adapter handle opened is closed in a `finally`.
 - **Notifications are in-app only.** Nothing is e-mailed, pushed or sent to a webhook. A
   webhook is a URL the owner supplies that the server then requests, which is a server-side
   request forgery surface into the cloud network; it is not built until egress is allow-listed,

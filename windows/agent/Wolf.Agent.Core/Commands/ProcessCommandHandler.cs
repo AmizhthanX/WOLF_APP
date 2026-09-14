@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Wolf.Agent.Core.Protocol;
+using Wolf.Agent.Core.Telemetry;
 
 namespace Wolf.Agent.Core.Commands;
 
@@ -71,22 +72,74 @@ public sealed class ProcessCommandHandler : ICommandHandler
         "process.set-priority",
     };
 
-    public Task<CommandExecution> ExecuteAsync(CommandEnvelope envelope, CancellationToken cancellationToken) =>
-        Task.FromResult(envelope.Type switch
+    public async Task<CommandExecution> ExecuteAsync(CommandEnvelope envelope, CancellationToken cancellationToken) =>
+        envelope.Type switch
         {
-            "process.list" => List(envelope.Payload),
+            "process.list" => await ListAsync(envelope.Payload, cancellationToken),
             "process.tree" => Tree(envelope.Payload),
             "process.details" => Details(envelope.Payload),
             "process.terminate" => Terminate(envelope.Payload),
             "process.set-priority" => SetPriority(envelope.Payload),
             _ => CommandExecution.Failed("unsupported-command", $"Unhandled type {envelope.Type}."),
-        });
+        };
 
     // -----------------------------------------------------------------------
     // Reads
     // -----------------------------------------------------------------------
 
-    private CommandExecution List(JsonElement payload)
+    /// <summary>How long the first list after a quiet spell waits for its second CPU and GPU reading.</summary>
+    public static readonly TimeSpan BaselineWait = TimeSpan.FromMilliseconds(500);
+
+    private static readonly Stopwatch Clock = Stopwatch.StartNew();
+    private readonly ProcessCpuSampler _cpuSampler = new(Environment.ProcessorCount);
+    private readonly GpuCounterReader _gpuReader = new();
+    private readonly object _gpuGate = new();
+
+    private GpuCounterSnapshot? ReadGpu()
+    {
+        lock (_gpuGate)
+        {
+            return _gpuReader.Read();
+        }
+    }
+
+    private static List<ProcessCpuSampler.Observation> ObserveCpu(Process[] processes)
+    {
+        var observations = new List<ProcessCpuSampler.Observation>(processes.Length);
+        foreach (Process process in processes)
+        {
+            try
+            {
+                observations.Add(new ProcessCpuSampler.Observation(
+                    process.Id,
+                    process.StartTime.ToUniversalTime().Ticks,
+                    process.TotalProcessorTime));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+            {
+                // Exited, or protected from this account. Its CPU stays null.
+            }
+        }
+
+        return observations;
+    }
+
+    private static void DisposeAll(Process[] processes)
+    {
+        foreach (Process process in processes)
+        {
+            process.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The process list, with CPU and GPU load measured over a real interval.
+    ///
+    /// Both are rates, so a list with no recent predecessor takes a reading, waits half a second and
+    /// takes another. A list within thirty seconds of the last one reuses that reading as its baseline
+    /// and answers at once, measuring the load since then.
+    /// </summary>
+    private async Task<CommandExecution> ListAsync(JsonElement payload, CancellationToken cancellationToken)
     {
         string? search = payload.TryGetProperty("search", out JsonElement searchElement) &&
                          searchElement.ValueKind == JsonValueKind.String
@@ -97,13 +150,33 @@ public sealed class ProcessCommandHandler : ICommandHandler
             ? parsedLimit
             : 500;
 
+        if (!_cpuSampler.HasFreshBaseline(Clock.Elapsed))
+        {
+            Process[] baseline = Process.GetProcesses();
+            try
+            {
+                _cpuSampler.Observe(ObserveCpu(baseline), Clock.Elapsed);
+            }
+            finally
+            {
+                DisposeAll(baseline);
+            }
+
+            ReadGpu();
+            await Task.Delay(BaselineWait, cancellationToken);
+        }
+
         Dictionary<int, int> parents = LoadParentMap();
         var infos = new List<ProcessInfoPayload>();
         int total = 0;
 
-        foreach (Process process in Process.GetProcesses())
+        Process[] all = Process.GetProcesses();
+        try
         {
-            using (process)
+            IReadOnlyDictionary<int, double> cpu = _cpuSampler.Observe(ObserveCpu(all), Clock.Elapsed);
+            GpuCounterSnapshot? gpu = ReadGpu();
+
+            foreach (Process process in all)
             {
                 string name;
                 try
@@ -126,8 +199,12 @@ public sealed class ProcessCommandHandler : ICommandHandler
                     continue;
                 }
 
-                infos.Add(Describe(process, name, parents));
+                infos.Add(Describe(process, name, parents, cpu, gpu));
             }
+        }
+        finally
+        {
+            DisposeAll(all);
         }
 
         return CommandExecution.Success(new
@@ -197,7 +274,7 @@ public sealed class ProcessCommandHandler : ICommandHandler
             return CommandExecution.Success(new
             {
                 sampledAt = DateTimeOffset.UtcNow.ToString("o"),
-                process = Describe(process, process.ProcessName, LoadParentMap()),
+                process = Describe(process, process.ProcessName, LoadParentMap(), cpu: null, gpu: null),
             });
         }
     }
@@ -347,7 +424,12 @@ public sealed class ProcessCommandHandler : ICommandHandler
     // Helpers
     // -----------------------------------------------------------------------
 
-    private static ProcessInfoPayload Describe(Process process, string name, IReadOnlyDictionary<int, int> parents)
+    private static ProcessInfoPayload Describe(
+        Process process,
+        string name,
+        IReadOnlyDictionary<int, int> parents,
+        IReadOnlyDictionary<int, double>? cpu,
+        GpuCounterSnapshot? gpu)
     {
         string? path = null;
         string? startedAt = null;
@@ -405,12 +487,12 @@ public sealed class ProcessCommandHandler : ICommandHandler
             SessionId: sessionId,
             Status: status,
             StartedAt: startedAt,
-            CpuPercent: null,
+            CpuPercent: cpu is not null && cpu.TryGetValue(process.Id, out double cpuPercent) ? Math.Round(cpuPercent, 2) : null,
             CpuTimeSeconds: cpuTime,
             WorkingSetBytes: workingSet,
             PrivateBytes: privateBytes,
-            GpuPercent: null,
-            GpuMemoryBytes: null,
+            GpuPercent: gpu?.ProcessPercent(process.Id) is double gpuPercent ? Math.Round(gpuPercent, 2) : null,
+            GpuMemoryBytes: gpu?.ProcessDedicatedBytes(process.Id),
             ThreadCount: threads,
             HandleCount: handles,
             DiskReadBytesPerSecond: null,

@@ -14,6 +14,7 @@ import {
   type TelemetrySample,
 } from '@/lib/wolf';
 import { usePcSession } from '@/lib/use-pc-session';
+import { getInsights, type PcInsights } from '@/lib/wolf';
 import { AppShell } from '@/components/AppShell';
 import { RemoteDesktopPanel } from '@/components/RemoteDesktopPanel';
 import { ServicesPanel } from '@/components/ServicesPanel';
@@ -244,6 +245,47 @@ function Overview({ pc, telemetry }: { pc: Pc; telemetry: TelemetrySample | null
         )}
       </Panel>
 
+      {telemetry && telemetry.gpus.length > 0 ? (
+        <Panel title="GPUs" flush>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>GPU</th>
+                  <th className="numeric">Load</th>
+                  <th className="numeric">3D</th>
+                  <th className="numeric">Compute</th>
+                  <th className="numeric">Encode</th>
+                  <th className="numeric">Decode</th>
+                  <th className="numeric">Video memory</th>
+                  <th className="numeric">Temp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {telemetry.gpus.map((gpu) => (
+                  <tr key={gpu.adapterId}>
+                    <td>{gpu.name}</td>
+                    <td className="numeric">{percent(gpu.usagePercent)}</td>
+                    <td className="numeric">{percent(gpu.graphicsEnginePercent)}</td>
+                    <td className="numeric">{percent(gpu.computeEnginePercent)}</td>
+                    <td className="numeric">{percent(gpu.videoEncodeEnginePercent)}</td>
+                    <td className="numeric">{percent(gpu.videoDecodeEnginePercent)}</td>
+                    <td className="numeric">
+                      {bytes(gpu.vramUsedBytes)} of {bytes(gpu.vramTotalBytes)}
+                    </td>
+                    <td className="numeric">
+                      {gpu.temperatureCelsius === null ? UNAVAILABLE : `${gpu.temperatureCelsius.toFixed(0)} °C`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      ) : null}
+
+      <InsightsPanel pcId={pc.id} />
+
       {telemetry && telemetry.disks.length > 0 ? (
         <Panel title="Storage" flush>
           <table>
@@ -254,6 +296,7 @@ function Overview({ pc, telemetry }: { pc: Pc; telemetry: TelemetrySample | null
                 <th className="numeric">Free</th>
                 <th className="numeric">Total</th>
                 <th className="numeric">Active</th>
+                <th className="numeric">Temp</th>
                 <th>Health</th>
               </tr>
             </thead>
@@ -265,6 +308,9 @@ function Overview({ pc, telemetry }: { pc: Pc; telemetry: TelemetrySample | null
                   <td className="numeric">{bytes(disk.freeBytes)}</td>
                   <td className="numeric">{bytes(disk.totalBytes)}</td>
                   <td className="numeric">{percent(disk.activeTimePercent)}</td>
+                  <td className="numeric">
+                    {disk.temperatureCelsius === null ? UNAVAILABLE : `${disk.temperatureCelsius.toFixed(0)} °C`}
+                  </td>
                   <td className={disk.healthStatus === 'unknown' ? 'unavailable' : undefined}>
                     {disk.healthStatus}
                   </td>
@@ -417,13 +463,25 @@ interface ProcessRow {
   pid: number;
   name: string;
   cpuPercent: number | null;
+  gpuPercent: number | null;
+  gpuMemoryBytes: number | null;
   workingSetBytes: number | null;
   threadCount: number | null;
   status: string;
   protectedProcess: boolean;
 }
 
+type ProcessSort = 'cpu' | 'memory' | 'gpu' | 'gpuMemory';
+
+/** Unknown values sort last in every order: a null is not a small number. */
+function processOrder(sort: ProcessSort) {
+  const key = (row: ProcessRow) =>
+    sort === 'cpu' ? row.cpuPercent : sort === 'gpu' ? row.gpuPercent : sort === 'gpuMemory' ? row.gpuMemoryBytes : row.workingSetBytes;
+  return (a: ProcessRow, b: ProcessRow) => (key(b) ?? -1) - (key(a) ?? -1);
+}
+
 function Processes({ session }: { session: ReturnType<typeof usePcSession> }) {
+  const [sort, setSort] = useState<ProcessSort>('cpu');
   const [rows, setRows] = useState<ProcessRow[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<WolfProblem | null>(null);
@@ -512,6 +570,12 @@ function Processes({ session }: { session: ReturnType<typeof usePcSession> }) {
               style={{ width: 180 }}
               aria-label="Filter processes"
             />
+            <select value={sort} onChange={(event) => setSort(event.target.value as ProcessSort)} aria-label="Sort processes">
+              <option value="cpu">Sort by CPU</option>
+              <option value="memory">Sort by memory</option>
+              <option value="gpu">Sort by GPU</option>
+              <option value="gpuMemory">Sort by GPU memory</option>
+            </select>
             <button type="button" onClick={() => void refresh()} disabled={busy}>
               {busy ? 'Reading…' : 'Refresh'}
             </button>
@@ -530,7 +594,10 @@ function Processes({ session }: { session: ReturnType<typeof usePcSession> }) {
                 <tr>
                   <th>Name</th>
                   <th className="numeric">PID</th>
+                  <th className="numeric" title="Share of the whole machine, measured over the last half second or since the previous refresh">CPU</th>
                   <th className="numeric">Memory</th>
+                  <th className="numeric" title="The process's busiest GPU engine">GPU</th>
+                  <th className="numeric">GPU memory</th>
                   <th className="numeric">Threads</th>
                   <th>Status</th>
                   <th />
@@ -539,7 +606,7 @@ function Processes({ session }: { session: ReturnType<typeof usePcSession> }) {
               <tbody>
                 {visible
                   .slice()
-                  .sort((a, b) => (b.workingSetBytes ?? 0) - (a.workingSetBytes ?? 0))
+                  .sort(processOrder(sort))
                   .map((row) => (
                     <tr key={row.pid}>
                       <td>
@@ -551,7 +618,10 @@ function Processes({ session }: { session: ReturnType<typeof usePcSession> }) {
                         ) : null}
                       </td>
                       <td className="numeric">{row.pid}</td>
+                      <td className="numeric">{percent(row.cpuPercent, 1)}</td>
                       <td className="numeric">{bytes(row.workingSetBytes)}</td>
+                      <td className="numeric">{percent(row.gpuPercent, 1)}</td>
+                      <td className="numeric">{bytes(row.gpuMemoryBytes)}</td>
                       <td className="numeric">{row.threadCount ?? UNAVAILABLE}</td>
                       <td className="secondary">{row.status}</td>
                       <td style={{ textAlign: 'right' }}>
@@ -812,5 +882,144 @@ function AuditLog({ pcId }: { pcId: string }) {
         )}
       </Panel>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------------- */
+
+const SEVERITY_TONE: Record<string, string> = {
+  info: 'status status-info',
+  warning: 'status status-warn',
+  critical: 'status status-danger',
+};
+
+function trendText(volume: PcInsights['storage'][number]): string {
+  switch (volume.trend) {
+    case 'insufficient-history':
+      return `Needs 3 days of history (has ${volume.historyDays.toFixed(1)})`;
+    case 'not-growing':
+      return 'Not growing';
+    case 'shrinking':
+      return 'Shrinking';
+    case 'growing':
+      return volume.daysUntilFull === null
+        ? 'Growing slowly — not full within ten years'
+        : `Full in about ${Math.max(0, Math.floor(volume.daysUntilFull))} days${volume.fit === 'poor' ? ' (rough: growth in steps)' : ''}`;
+  }
+}
+
+/**
+ * Conclusions from the stored history: storage forecasts, a day of GPU load, and findings.
+ *
+ * Computed by the server on request and refreshed every few minutes; history moves slowly.
+ */
+function InsightsPanel({ pcId }: { pcId: string }) {
+  const [insights, setInsights] = useState<PcInsights | null>(null);
+  const [error, setError] = useState<WolfProblem | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setInsights(await getInsights(pcId));
+      setError(null);
+    } catch (caught) {
+      if (caught instanceof WolfApiError) setError(caught.problem);
+    }
+  }, [pcId]);
+
+  useEffect(() => {
+    void load();
+    const timer = setInterval(() => void load(), 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  if (error) return <Problem problem={error} onRetry={() => void load()} />;
+  if (insights === null || insights.sampledAt === null) return null;
+
+  return (
+    <Panel title="Insights">
+      <div className="stack">
+        {insights.findings.length === 0 ? (
+          <p className="muted" style={{ margin: 0 }}>Nothing in the stored history needs attention.</p>
+        ) : (
+          insights.findings.map((finding) => (
+            <div key={`${finding.code}:${finding.key}`} className="row" style={{ alignItems: 'flex-start' }}>
+              <span className={SEVERITY_TONE[finding.severity]}>{finding.severity}</span>
+              <div>
+                <strong>{finding.title}</strong>
+                <div className="muted">{finding.detail}</div>
+              </div>
+            </div>
+          ))
+        )}
+
+        {insights.storage.length > 0 ? (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Volume</th>
+                  <th className="numeric">Used</th>
+                  <th className="numeric">Change a day</th>
+                  <th>Outlook</th>
+                </tr>
+              </thead>
+              <tbody>
+                {insights.storage.map((volume) => (
+                  <tr key={volume.volume}>
+                    <td className="mono">{volume.volume}</td>
+                    <td className="numeric">{percent(volume.usedPercent)}</td>
+                    <td className="numeric">
+                      {volume.growthBytesPerDay === null
+                        ? UNAVAILABLE
+                        : `${volume.growthBytesPerDay < 0 ? '−' : '+'}${bytes(Math.abs(volume.growthBytesPerDay))}`}
+                    </td>
+                    <td>{trendText(volume)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        {insights.gpus.length > 0 ? (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>GPU, last 24 hours</th>
+                  <th className="numeric">Average load</th>
+                  <th className="numeric" title="The highest five-minute 95th percentile">Busiest 5 min</th>
+                  <th className="numeric">Peak video memory</th>
+                  <th className="numeric">Peak temp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {insights.gpus.map((gpu) => (
+                  <tr key={gpu.adapterId}>
+                    <td>{gpu.name}</td>
+                    <td className="numeric">
+                      {gpu.coverage === 'insufficient-history' ? 'under an hour of history' : percent(gpu.averageUsagePercent)}
+                    </td>
+                    <td className="numeric">{percent(gpu.busiestFiveMinuteP95Percent)}</td>
+                    <td className="numeric">
+                      {bytes(gpu.peakVramUsedBytes)}
+                      {gpu.peakVramShare === null ? '' : ` (${Math.round(gpu.peakVramShare * 100)}%)`}
+                    </td>
+                    <td className="numeric">
+                      {gpu.peakTemperatureCelsius === null ? UNAVAILABLE : `${gpu.peakTemperatureCelsius.toFixed(0)} °C`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+          From history up to {relativeTime(insights.sampledAt)}. Forecasts draw a straight line through
+          the last month of hourly readings; nothing about processes is stored in the cloud.
+        </p>
+      </div>
+    </Panel>
   );
 }

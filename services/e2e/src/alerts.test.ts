@@ -206,7 +206,7 @@ test('coherence is checked on the merged rule, not only on the patch', async () 
 
 test('a rule cannot point at a PC the caller does not own', async () => {
   // WOLF has a single owner account, so "somebody else's PC" and "an id that exists nowhere" are
-  // the same query — scoped by owner — and answer the same way, which is the property that matters:
+  // the same query â€” scoped by owner â€” and answer the same way, which is the property that matters:
   // the endpoint cannot be used to learn which ids are real.
   const unknown = await call('POST', '/alert-rules', { ...diskRule, pcId: newId() });
   assert.equal(unknown.statusCode, 404);

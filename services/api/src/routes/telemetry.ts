@@ -1,6 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { AGGREGATED_METRICS, resolutionForWindow } from '@wolf/telemetry-schema';
+import {
+  AGGREGATED_METRICS,
+  findingsFor,
+  forecastVolume,
+  resolutionForWindow,
+  summariseGpu,
+  type GpuBucket,
+} from '@wolf/telemetry-schema';
 import { parseOrThrow } from '@wolf/validation';
 import type { AppContext } from '../http/context.js';
 import { requireAuth } from '../http/auth.js';
@@ -101,6 +108,87 @@ export async function registerTelemetryRoutes(
         p95: row.p95,
         sampleCount: row.sampleCount,
       })),
+    });
+  });
+
+  /**
+   * What the history says: storage fill forecasts, a GPU load summary, and the findings worth
+   * attention.
+   *
+   * Computed on every request from telemetry already held and never stored, so there is no second
+   * copy of anything to keep in step or to delete with the PC. Nothing about processes is here: the
+   * cloud holds no process data, and process-level insight lives in the live process list on the PC.
+   */
+  app.get('/pcs/:pcId/insights', { preHandler: app.authenticate }, async (request, reply) => {
+    const caller = requireAuth(request);
+    const params = parseOrThrow(pcParams, request.params, { what: 'The PC id' });
+
+    const pc = await context.repos.pcs.findById(params.pcId, caller.userId);
+    if (!pc) throw notFound('That PC');
+
+    const now = context.now();
+    const latest = await context.repos.telemetry.latestSample(params.pcId);
+
+    if (!latest) {
+      return reply.send({ generatedAt: now.toISOString(), sampledAt: null, storage: [], gpus: [], findings: [] });
+    }
+
+    // Storage trends are read from hourly buckets over a month: long enough to see past a week of
+    // churn, and the hourly tier retains it. GPU load from five-minute buckets over a day.
+    const [usage, gpuRows] = await Promise.all([
+      context.repos.telemetry.listAggregates({
+        pcId: params.pcId,
+        resolution: '1h',
+        metrics: ['disk.usedPercent'],
+        from: new Date(now.getTime() - 30 * 86_400_000),
+        to: now,
+      }),
+      context.repos.telemetry.listAggregates({
+        pcId: params.pcId,
+        resolution: '5m',
+        metrics: ['gpu.usage', 'gpu.vramUsed', 'gpu.temperature'],
+        from: new Date(now.getTime() - 24 * 3_600_000),
+        to: now,
+      }),
+    ]);
+
+    const storage = latest.sample.disks.map((disk) =>
+      forecastVolume({
+        disk,
+        now,
+        history: usage
+          .filter((row) => row.seriesKey === disk.volume && row.avg !== null)
+          .map((row) => ({ at: row.bucketStart, usedPercent: row.avg! })),
+      }),
+    );
+
+    const gpus = latest.sample.gpus.map((gpu) =>
+      summariseGpu({
+        adapterId: gpu.adapterId,
+        name: gpu.name,
+        vramTotalBytes: gpu.vramTotalBytes,
+        windowHours: 24,
+        buckets: gpuRows
+          .filter((row) => row.seriesKey === gpu.adapterId)
+          .map((row) => ({
+            metric: row.metric as GpuBucket['metric'],
+            min: row.min,
+            max: row.max,
+            avg: row.avg,
+            p95: row.p95,
+            sampleCount: row.sampleCount,
+          })),
+      }),
+    );
+
+    return reply.send({
+      generatedAt: now.toISOString(),
+      // Insights about a PC that has been silent for a week describe that week-old PC; the caller is
+      // told when the newest reading was taken rather than left to assume it is current.
+      sampledAt: latest.sampledAt.toISOString(),
+      storage,
+      gpus,
+      findings: findingsFor(storage, gpus),
     });
   });
 }

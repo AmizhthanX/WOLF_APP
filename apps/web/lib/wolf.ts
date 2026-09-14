@@ -107,12 +107,25 @@ export interface TelemetrySample {
     usedBytes: number | null;
     availableBytes: number | null;
   };
+  gpus: {
+    adapterId: string;
+    name: string;
+    usagePercent: number | null;
+    graphicsEnginePercent: number | null;
+    computeEnginePercent: number | null;
+    videoEncodeEnginePercent: number | null;
+    videoDecodeEnginePercent: number | null;
+    vramTotalBytes: number | null;
+    vramUsedBytes: number | null;
+    temperatureCelsius: number | null;
+  }[];
   disks: {
     volume: string;
     label: string | null;
     totalBytes: number | null;
     freeBytes: number | null;
     activeTimePercent: number | null;
+    temperatureCelsius: number | null;
     healthStatus: string;
   }[];
   networks: {
@@ -309,3 +322,56 @@ export const markNotificationRead = (notificationId: string) =>
 
 export const markAllNotificationsRead = () =>
   api<{ marked: number }>('/api/v1/notifications/read-all', { method: 'POST' });
+
+/* ------------------------------------------------------------------------- */
+/* Insights                                                                   */
+/* ------------------------------------------------------------------------- */
+
+export interface StorageForecast {
+  volume: string;
+  label: string | null;
+  totalBytes: number | null;
+  usedBytes: number | null;
+  usedPercent: number | null;
+  healthStatus: string;
+  temperatureCelsius: number | null;
+  trend: 'insufficient-history' | 'not-growing' | 'growing' | 'shrinking';
+  growthBytesPerDay: number | null;
+  daysUntilFull: number | null;
+  fullAt: string | null;
+  historyDays: number;
+  fit: 'good' | 'poor' | null;
+}
+
+export interface GpuInsight {
+  adapterId: string;
+  name: string;
+  windowHours: number;
+  coverage: 'ok' | 'insufficient-history';
+  averageUsagePercent: number | null;
+  busiestFiveMinuteP95Percent: number | null;
+  heavyLoadShare: number | null;
+  peakTemperatureCelsius: number | null;
+  peakVramUsedBytes: number | null;
+  vramTotalBytes: number | null;
+  peakVramShare: number | null;
+}
+
+export interface Finding {
+  severity: 'info' | 'warning' | 'critical';
+  subject: 'storage' | 'gpu';
+  key: string;
+  code: string;
+  title: string;
+  detail: string;
+}
+
+export interface PcInsights {
+  generatedAt: string;
+  sampledAt: string | null;
+  storage: StorageForecast[];
+  gpus: GpuInsight[];
+  findings: Finding[];
+}
+
+export const getInsights = (pcId: string) => api<PcInsights>(`/api/v1/pcs/${pcId}/insights`);
