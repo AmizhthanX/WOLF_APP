@@ -129,6 +129,13 @@ through a separate unattended dispatch path onto the ordinary pipeline, on autho
 the automation was saved and tied to the device that saved it. Nothing critical can be automated.
 See [automations](automations.md).
 
+## Configuration backup
+
+The owner's configuration — PC names and tags, remote desktop profiles, alert rules, automations —
+is exported on request as a checksummed file the cloud does not keep, and restored section by section
+in one transaction after the same confirmation a command of that risk needs. No credential, key or
+authority is ever in a backup. See [configuration backup](configuration-backup.md).
+
 ## Cloud portability
 
 Everything cloud-specific stays behind an interface. The application depends on Postgres,

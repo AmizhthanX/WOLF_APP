@@ -2,6 +2,7 @@ import type { Database } from '../pool.js';
 import { AlertRepository } from './alerts.js';
 import { AuditRepository } from './audit.js';
 import { AutomationRepository } from './automations.js';
+import { ConfigurationRepository } from './configuration.js';
 import { CommandRepository } from './commands.js';
 import { DeviceRepository } from './devices.js';
 import { EnrollmentRepository } from './enrollment.js';
@@ -15,6 +16,7 @@ import { UserRepository } from './users.js';
 export * from './alerts.js';
 export * from './audit.js';
 export * from './automations.js';
+export * from './configuration.js';
 export * from './commands.js';
 export * from './devices.js';
 export * from './enrollment.js';
@@ -38,6 +40,7 @@ export interface Repositories {
   readonly alerts: AlertRepository;
   readonly audit: AuditRepository;
   readonly automations: AutomationRepository;
+  readonly configuration: ConfigurationRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -54,5 +57,6 @@ export function createRepositories(db: Database): Repositories {
     alerts: new AlertRepository(db),
     audit: new AuditRepository(db),
     automations: new AutomationRepository(db),
+    configuration: new ConfigurationRepository(db),
   };
 }

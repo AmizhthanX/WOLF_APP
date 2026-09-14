@@ -335,6 +335,9 @@ Stated plainly rather than left to be discovered:
   ordinary path with the automation and run that sent it. What remains is that a high-risk automation
   saved today will restart the machine next month without asking again — which is what the owner
   asked for.
+- **A configuration backup is plaintext and unsigned.** It holds no credential, key or authority, so
+  reading one gives a map of the owner's PCs and rules but no way into them. Its checksum detects
+  damage, not forgery; a restore re-validates every item and grants no authority from the file.
 - **Notifications are in-app only.** Nothing is e-mailed, pushed or sent to a webhook. A
   webhook is a URL the owner supplies that the server then requests, which is a server-side
   request forgery surface into the cloud network; it is not built until egress is allow-listed,

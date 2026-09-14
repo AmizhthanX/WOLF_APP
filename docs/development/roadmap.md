@@ -780,8 +780,27 @@ milestone 2 and is never persisted in cloud history.
   Nothing that names a PID, and nothing the agent does not implement — `process.start` was on the
   first draft of the list and came off it for that reason
 
-**Still open in this milestone**
-- Configuration backup and restore
+**Done — configuration backup and restore**
+
+- PC names and tags, remote desktop profiles, alert rules and automations, in a file the owner keeps
+  and back. See [configuration backup](../architecture/configuration-backup.md)
+- **A backup grants nothing.** No password hash, token, key, enrollment token or recorded authority,
+  asserted by a test that looks for them in the file. Built on request and handed to the browser;
+  the cloud keeps no copy
+- **A checksum, not a signature, and the docs say which.** It catches a damaged or edited file. What
+  protects a restore is that every item is validated against the schema it was first saved with, so
+  a doctored automation carrying a critical action is refused as it would be from the API
+- **Restoring is not a way round authorization.** Automations come back turned off unless the owner
+  confirms turning them on at the risk of the riskiest one — with a password if that is high — and
+  their authority is re-recorded from the restoring device. Every restore is at least a medium
+  confirmation, because it replaces configuration wholesale
+- Sections replace in one transaction, keeping ids so run history and notifications stay attached;
+  a rule about a PC that is gone is not widened to every PC; two swapped PC names do not trip the
+  uniqueness constraint halfway
+- A shared confirm-and-password hook now serves both automations and restore
+
+**Milestone 5 is complete.** Every item it set out to build is built: rollups, alerts, GPU, process
+and storage intelligence, automations, and configuration backup.
 
 ## Android
 

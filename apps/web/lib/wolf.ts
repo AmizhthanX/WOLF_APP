@@ -465,3 +465,39 @@ export const runAutomation = (automationId: string) =>
 
 export const listAutomationRuns = (automationId: string, limit = 20) =>
   api<{ runs: AutomationRun[] }>(`/api/v1/automations/${automationId}/runs?limit=${limit}`);
+
+/* ------------------------------------------------------------------------- */
+/* Configuration backup                                                       */
+/* ------------------------------------------------------------------------- */
+
+export type ConfigurationSection = 'pcs' | 'remoteDesktopProfiles' | 'alertRules' | 'automations';
+
+export interface ConfigurationBackup {
+  format: 'wolf.configuration';
+  version: number;
+  createdAt: string;
+  checksum: string;
+  content: unknown;
+}
+
+export interface RestorePlan {
+  sections: Partial<Record<ConfigurationSection, { created: number; updated: number; deleted: number; skipped: number }>>;
+  warnings: { code: string; section: ConfigurationSection; id: string; message: string }[];
+  automationsEnabled: number;
+  riskLevel: RiskLevel;
+}
+
+export interface RestoreInput {
+  backup: unknown;
+  sections: ConfigurationSection[];
+  enableAutomations: boolean;
+  confirmedRiskLevel?: RiskLevel;
+}
+
+export const getConfigurationBackup = () => api<ConfigurationBackup>('/api/v1/configuration/backup');
+
+export const previewRestore = (input: RestoreInput) =>
+  api<{ plan: RestorePlan }>('/api/v1/configuration/restore/preview', { method: 'POST', body: input });
+
+export const restoreConfiguration = (input: RestoreInput) =>
+  api<{ plan: RestorePlan; restoredAt: string }>('/api/v1/configuration/restore', { method: 'POST', body: input });

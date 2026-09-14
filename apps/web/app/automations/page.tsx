@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { adoptAccessToken, WolfApiError, type WolfProblem } from '@/lib/client';
+import { WolfApiError, type WolfProblem } from '@/lib/client';
 import {
   createAutomation,
   deleteAutomation,
@@ -9,7 +9,6 @@ import {
   listAutomationRuns,
   listAutomations,
   listPcs,
-  reauthenticate,
   runAutomation,
   updateAutomation,
   type AlertRule,
@@ -25,7 +24,8 @@ import {
   type Weekday,
 } from '@/lib/wolf';
 import { AppShell } from '@/components/AppShell';
-import { ConfirmDialog, Empty, Problem } from '@/components/ui';
+import { Empty, Problem } from '@/components/ui';
+import { useAuthority } from '@/components/use-authority';
 import { relativeTime } from '@/lib/format';
 
 const REFRESH_MS = 30_000;
@@ -74,102 +74,6 @@ export default function AutomationsPage() {
       <Automations />
     </AppShell>
   );
-}
-
-interface PendingAuthority {
-  readonly title: string;
-  readonly riskLevel: RiskLevel;
-  readonly retry: (confirmed: RiskLevel) => Promise<void>;
-}
-
-/**
- * The confirm-then-password flow, for saving rather than for a single command.
- *
- * The first attempt goes without a confirmation. If the server says one is needed, it names the
- * risk level; that level is what the dialog shows and what is sent back. High risk asks for the
- * password first, so the retry carries a fresh sign-in.
- */
-function useAuthority(onError: (problem: WolfProblem) => void) {
-  const [pending, setPending] = useState<PendingAuthority | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [dialogError, setDialogError] = useState<WolfProblem | null>(null);
-
-  const attempt = useCallback(
-    async (title: string, action: (confirmed?: RiskLevel) => Promise<void>) => {
-      try {
-        await action();
-      } catch (caught) {
-        if (!(caught instanceof WolfApiError)) throw caught;
-        const code = caught.problem.code;
-        if (code !== 'command.confirmation_required' && code !== 'command.reauth_required') {
-          onError(caught.problem);
-          return;
-        }
-        const riskLevel = (caught.problem.context?.['riskLevel'] as RiskLevel | undefined) ?? 'high';
-        setDialogError(null);
-        setPending({ title, riskLevel, retry: (confirmed) => action(confirmed) });
-      }
-    },
-    [onError],
-  );
-
-  const confirm = useCallback(
-    (password?: string) => {
-      const request = pending;
-      if (!request) return;
-      setBusy(true);
-      setDialogError(null);
-
-      void (async () => {
-        try {
-          if (request.riskLevel === 'high' || request.riskLevel === 'critical') {
-            if (!password) throw new Error('Your password is needed to authorize this automation.');
-            const reauth = await reauthenticate(password);
-            adoptAccessToken(reauth.accessToken, reauth.accessTokenExpiresAt);
-          }
-          await request.retry(request.riskLevel);
-          setPending(null);
-        } catch (caught) {
-          setDialogError(
-            caught instanceof WolfApiError
-              ? caught.problem
-              : {
-                  code: 'automation.authorize_failed',
-                  problem: 'The automation could not be authorized.',
-                  cause: caught instanceof Error ? caught.message : 'Unknown error.',
-                  currentState: 'Nothing was saved.',
-                  recommendedAction: 'Check the details and try again.',
-                  referenceId: 'WOLF-API-AUTOMATION',
-                  httpStatus: 400,
-                },
-          );
-        } finally {
-          setBusy(false);
-        }
-      })();
-    },
-    [pending],
-  );
-
-  const dialog = pending ? (
-    <ConfirmDialog
-      title={pending.title}
-      description={
-        <>
-          This automation will act on this authority later, when nobody is watching, every time it runs.
-          {pending.riskLevel === 'high' ? ' Because it is high risk, your password is needed.' : ''}
-        </>
-      }
-      riskLevel={pending.riskLevel}
-      requiresPassword={pending.riskLevel === 'high' || pending.riskLevel === 'critical'}
-      busy={busy}
-      error={dialogError}
-      onCancel={() => setPending(null)}
-      onConfirm={confirm}
-    />
-  ) : null;
-
-  return { attempt, dialog };
 }
 
 function Automations() {
