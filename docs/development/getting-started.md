@@ -96,6 +96,12 @@ against the previous run is gone. The owner is `owner@example.com` with the pass
 `a-long-local-passphrase`, both overridable with `WOLF_OWNER_EMAIL` and
 `WOLF_OWNER_PASSWORD`. It refuses to start with `NODE_ENV=production`.
 
+Commands reach the agent the way they do deployed: the API writes the command and issues
+`pg_notify('wolf_command', …)`. A deployed realtime service hears that through its own Postgres
+`LISTEN` connection, which an in-process Postgres has no server for, so the local cloud subscribes
+the same channels in-process, with the same 15-second backstop sweep. (Until that was added, a
+command sent through the local cloud was written and never delivered.)
+
 Point the agent at it with `Wolf__ApiBaseUrl`, `Wolf__RealtimeUrl`, and — unless you are
 running elevated — `Wolf__DataDirectory`, since the identity store's default lives under
 `C:\ProgramData` where a standard user cannot create it.

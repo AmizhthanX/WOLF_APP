@@ -15,6 +15,14 @@ import type { Database } from '../db/pool.js';
 export interface TestDatabase extends Database {
   /** Close the underlying database. */
   end(): Promise<void>;
+  /**
+   * Subscribe to a notification channel: the in-process equivalent of `LISTEN`.
+   *
+   * A deployed realtime service listens through its own Postgres connection, which an in-process
+   * engine has no server for. `pg_notify` from any query on this database reaches the callback.
+   * Returns the function that unsubscribes.
+   */
+  listen(channel: string, onPayload: (payload: string) => void): Promise<() => Promise<void>>;
 }
 
 interface QueryResultLike {
@@ -67,6 +75,12 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     connect: async () => client,
     end: async () => {
       await pglite.close();
+    },
+    listen: async (channel: string, onPayload: (payload: string) => void) => {
+      const unsubscribe = await pglite.listen(channel, onPayload);
+      return async () => {
+        await unsubscribe();
+      };
     },
   };
 

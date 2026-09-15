@@ -130,6 +130,36 @@ async function main(): Promise<void> {
 
   await new Promise<void>((resolve) => wsServer.listen(REALTIME_PORT, '127.0.0.1', resolve));
 
+  // Command delivery. Deployed, the realtime service LISTENs on these channels through a Postgres
+  // connection (`NotificationListener`), and an in-process engine has no server for that connection.
+  // So the same channels are subscribed in-process, handled as that listener handles them, with the
+  // same backstop sweep. The API's `pg_notify` is untouched: "command written" to "agent told" is the
+  // shipping path. Without this, no command sent through the local cloud ever reached an agent.
+  const deliver = (pcId: string): void => {
+    void realtime.agents.get(pcId)?.deliverPending().catch((error: unknown) => {
+      logger.error({ pcId, err: String(error) }, 'Pending command delivery failed');
+    });
+  };
+
+  const unsubscribe = [
+    await db.listen('wolf_command', (payload) => {
+      const notification = parseNotification(payload);
+      if (notification) deliver(notification.pcId);
+    }),
+    await db.listen('wolf_kill_switch', (payload) => {
+      const notification = parseNotification(payload);
+      const link = notification ? realtime.agents.get(notification.pcId) : undefined;
+      if (!notification || !link) return;
+      link.notifyKillSwitch(notification.remoteAccessEnabled);
+      if (!notification.remoteAccessEnabled) link.close('kill-switch');
+    }),
+  ];
+
+  const sweep = setInterval(() => {
+    for (const pcId of realtime.agents.connectedPcIds()) deliver(pcId);
+  }, 15_000);
+  sweep.unref();
+
   logger.info(
     {
       api: `http://127.0.0.1:${API_PORT}`,
@@ -143,6 +173,8 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     logger.info('Shutting down.');
+    clearInterval(sweep);
+    await Promise.all(unsubscribe.map((stop) => stop()));
     realtime.agents.closeAll('local-cloud-shutdown');
     await app.close();
     wss.close();
@@ -153,6 +185,16 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+}
+
+/** A notification's PC, as the realtime listener reads it. Anything malformed is ignored, as it is there. */
+function parseNotification(payload: string): { pcId: string; remoteAccessEnabled: boolean } | null {
+  try {
+    const parsed = JSON.parse(payload) as { pcId?: unknown; remoteAccessEnabled?: unknown };
+    return typeof parsed.pcId === 'string' ? { pcId: parsed.pcId, remoteAccessEnabled: parsed.remoteAccessEnabled === true } : null;
+  } catch {
+    return null;
+  }
 }
 
 main().catch((error: unknown) => {
