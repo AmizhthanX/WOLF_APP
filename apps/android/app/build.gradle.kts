@@ -17,6 +17,20 @@ val localProperties = Properties().apply {
 
 fun wolfSetting(name: String): String = (findProperty(name) as String?) ?: localProperties.getProperty(name) ?: ""
 
+/*
+ * Release signing, from the environment only. The release pipeline decodes the upload key from its secret store into a
+ * temporary file and sets these; nothing about the key is committed, and nothing reads it from local.properties, where
+ * it would sit beside the source. A release without all four refuses to package — see the check at the bottom — rather
+ * than producing an unsigned or debug-signed APK that looks like a release.
+ */
+val releaseSigning: Map<String, String> =
+    listOf("WOLF_ANDROID_KEYSTORE_FILE", "WOLF_ANDROID_KEYSTORE_PASSWORD", "WOLF_ANDROID_KEY_ALIAS", "WOLF_ANDROID_KEY_PASSWORD")
+        .associateWith { System.getenv(it).orEmpty() }
+
+/** A release's version, set by the release pipeline; any other build is 0.1.0 (1). */
+val releaseVersionName: String = System.getenv("WOLF_ANDROID_VERSION_NAME").orEmpty().ifEmpty { "0.1.0" }
+val releaseVersionCode: Int = System.getenv("WOLF_ANDROID_VERSION_CODE")?.toIntOrNull() ?: 1
+
 android {
     namespace = "app.amizhthan.wolf"
     compileSdk = 36
@@ -27,8 +41,8 @@ android {
         // cleartext traffic is refused by default.
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         resValue("string", "wolf_firebase_application_id", wolfSetting("wolf.firebase.applicationId"))
@@ -37,10 +51,20 @@ android {
         resValue("string", "wolf_firebase_sender_id", wolfSetting("wolf.firebase.senderId"))
     }
 
+    signingConfigs {
+        create("release") {
+            releaseSigning.getValue("WOLF_ANDROID_KEYSTORE_FILE").takeIf { it.isNotEmpty() }?.let { storeFile = file(it) }
+            storePassword = releaseSigning.getValue("WOLF_ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = releaseSigning.getValue("WOLF_ANDROID_KEY_ALIAS")
+            keyPassword = releaseSigning.getValue("WOLF_ANDROID_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -85,4 +109,19 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.kotlinx.coroutines.test)
+}
+
+// Packaging or signing a release without its key stops here, naming everything the pipeline must provide. The Android
+// Gradle plugin refuses as well, but names only the first missing property; and because this runs before the packaging
+// task's own work, a refused build leaves the previous signed APK where it was.
+val missingReleaseSigning: List<String> = releaseSigning.filterValues { it.isEmpty() }.keys.toList()
+tasks.configureEach {
+    if ((name == "packageRelease" || name == "signReleaseBundle") && missingReleaseSigning.isNotEmpty()) {
+        doFirst {
+            throw GradleException(
+                "A release is never built unsigned: set ${missingReleaseSigning.joinToString(", ")} " +
+                    "(the upload key, from the release pipeline's secrets). Debug builds and :app:minifyReleaseWithR8 need none of them.",
+            )
+        }
+    }
 }

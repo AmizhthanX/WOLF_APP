@@ -946,12 +946,31 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   separately. It was chased first as a sound bug: a loopback test of picture loss with sound on — which passes,
   and stays — ruled that out, and the same failure without sound confirmed it
 
+**Done — release signing and distribution**
+
+- Release signing from the environment only; a release without its key refuses to package and names every
+  variable the pipeline must provide — no unsigned or debug-signed fallback
+- CI builds the app on every push with no key: JVM tests, a debug build, and R8 over the release build
+- A tag-triggered release workflow: signing secrets in a reviewer-gated environment, the version code derived from
+  the version, the key decoded to the runner's temporary directory and deleted, a GitHub release with the APK,
+  `SHA256SUMS` and the certificate fingerprint; the app bundle and R8 mapping kept with the run
+- **A release gate** (`scripts/verify-android-release.mjs`, tested): v2+ signature, one signer, no debug
+  certificate, not debuggable, the expected version, and only the permissions WOLF chose — a dependency that adds
+  an advertising id or a microphone fails the release
+- Proven here, not in CI: the first minified release ever built, signed with a throwaway key, passed the gate,
+  installed on the emulator, launched to the sign-in screen with no crash, and took an update signed with the
+  same key. The workflows parse, but have never run — the repository has no GitHub remote yet. A release build was
+  not signed in to a real API, so R8's keep rules for serialization are proven by startup only
+- **A finding from inspecting the release:** Android allows other apps to capture an app's audio playback by
+  default, so an app with the owner's screen-capture grant could have recorded the PC's sound. The window was
+  already `FLAG_SECURE`; audio playback capture is now off as well, checked on the installed package
+
 **Still open for Android**
 - Push: an end-to-end delivery through a real Firebase project
 - Files: resuming an interrupted transfer; browsing without a stream (as on the web)
 - Changing services, tasks and startup items against a machine with the privileged helper installed
 - Remote desktop: a display switch on a two-monitor PC; the first picture on a still desktop (a session host fix)
-- Release signing and distribution through CI
+- The release pipeline run on GitHub; Google Play publishing; per-ABI APKs
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
 
 ## Infrastructure

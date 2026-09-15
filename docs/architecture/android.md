@@ -321,7 +321,9 @@ later piece of work; until then the key identifies the device in the list and no
 `FLAG_SECURE` on the window: no screenshots, no screen recording, no recent-apps thumbnail. The app
 shows the owner's password field and other machines' screens, and the remote desktop renderer draws
 inside that window, so the PC's picture is covered too. The password field is not kept in saved
-instance state.
+instance state. **Audio playback capture is off** (`allowAudioPlaybackCapture="false"`): Android lets other apps
+record an app's sound by default, and this app plays a PC's. Found by inspecting the first release build, checked
+on the installed package.
 
 ## Errors
 
@@ -339,6 +341,26 @@ npm run test:android          # JVM tests
 npm run test:android:device   # Keystore tests on a running emulator or phone
 npm run build:android         # debug APK
 ```
+
+**Release builds** are minified by R8 and signed with the upload key, which comes from the environment only
+(`WOLF_ANDROID_KEYSTORE_FILE`, `WOLF_ANDROID_KEYSTORE_PASSWORD`, `WOLF_ANDROID_KEY_ALIAS`,
+`WOLF_ANDROID_KEY_PASSWORD`) — never from `local.properties`, never committed. Without them a release refuses to
+package and names what is missing; there is no unsigned or debug-signed fallback. Debug builds, the tests and
+`:app:minifyReleaseWithR8`, which CI runs on every push, need none of it. The version comes from
+`WOLF_ANDROID_VERSION_NAME` and `WOLF_ANDROID_VERSION_CODE`, set by the release pipeline.
+
+```bash
+npm run build:android:release                               # signed APK and app bundle
+npm run verify:android:release -- <path to app-release.apk>  # the release gate
+```
+
+The gate (`scripts/verify-android-release.mjs`) is what the release pipeline runs before publishing: signed with
+APK Signature Scheme v2 or later by one signer, not a debug certificate, not debuggable, the expected version, and
+only the permissions WOLF chose — `INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`, and what Firebase
+Cloud Messaging needs (`WAKE_LOCK`, `c2dm.permission.RECEIVE`), plus AndroidX's guard on the app's own
+receivers. The release manifest's exported components are the launcher activity, Firebase's receiver (only
+Google Play services may send to it) and AndroidX's profile installer (only the shell). Signing, the pipeline and
+key custody: [deployment](../deployment/README.md#android-app).
 
 ## Tests
 
@@ -462,6 +484,8 @@ AndroidX Test (Apache-2.0).
   true of those changes from the web (see the roadmap's Milestone 4).
 - Remote desktop: a display switch proven live on a PC with two monitors; profile changes mid-stream; a
   hardware keyboard's shortcuts. A first picture on a still desktop waits on a session host fix (above).
-- Release signing and distribution through CI.
+- The release pipeline run for real: it needs the repository on GitHub, the `android-release` environment and an
+  upload key. Publishing to Google Play, and per-ABI APKs (x86 and x86_64, for emulators only, are over half of
+  the 50 MB universal APK).
 - Unlocking the vault with the phone's biometric or screen lock.
 - Device proof-of-possession, above.

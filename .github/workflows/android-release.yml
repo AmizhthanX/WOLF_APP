@@ -1,0 +1,159 @@
+name: Android release
+
+# A signed release of the Android app, from a tag such as `android-v0.2.0`.
+#
+# The upload key exists only in the `android-release` environment's secrets. It is decoded into the
+# runner's temporary directory for the build, used, and deleted, and it is never printed. A run
+# without it fails before anything is built: there is no unsigned or debug-signed fallback. Every
+# APK is checked before it is published — signature, not debuggable, only the permissions WOLF
+# chose, the version the tag names — and published with its SHA-256 and the signing certificate's
+# fingerprint, so a person installing it can check both.
+#
+# Required secrets (environment `android-release`):
+#   WOLF_ANDROID_KEYSTORE_BASE64   the upload keystore, base64
+#   WOLF_ANDROID_KEYSTORE_PASSWORD
+#   WOLF_ANDROID_KEY_ALIAS
+#   WOLF_ANDROID_KEY_PASSWORD
+# Optional variables — without them the app is built with no push service, and says so:
+#   WOLF_FIREBASE_APPLICATION_ID, WOLF_FIREBASE_PROJECT_ID, WOLF_FIREBASE_API_KEY, WOLF_FIREBASE_SENDER_ID
+
+on:
+  push:
+    tags: ['android-v*']
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version, MAJOR.MINOR.PATCH. A manual run builds and uploads artifacts; it publishes no release.'
+        required: true
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build, sign, verify and publish
+    runs-on: ubuntu-latest
+    environment: android-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Signing secrets are present
+        env:
+          KEYSTORE_BASE64: ${{ secrets.WOLF_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.WOLF_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.WOLF_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.WOLF_ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=()
+          [ -n "$KEYSTORE_BASE64" ] || missing+=(WOLF_ANDROID_KEYSTORE_BASE64)
+          [ -n "$KEYSTORE_PASSWORD" ] || missing+=(WOLF_ANDROID_KEYSTORE_PASSWORD)
+          [ -n "$KEY_ALIAS" ] || missing+=(WOLF_ANDROID_KEY_ALIAS)
+          [ -n "$KEY_PASSWORD" ] || missing+=(WOLF_ANDROID_KEY_PASSWORD)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing secrets in the android-release environment: ${missing[*]}. A release is never built unsigned."
+            exit 1
+          fi
+
+      # From the tag or the manual input, through the environment rather than into the script text.
+      - name: Version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version_name }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then name="${GITHUB_REF_NAME#android-v}"; else name="$INPUT_VERSION"; fi
+          if ! printf '%s' "$name" | grep -Eq '^[0-9]{1,4}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+            echo "::error::'$name' is not a version of the form MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          IFS=. read -r major minor patch <<< "$name"
+          # Grows with every version, so Android accepts each release as an update to the last.
+          code=$(( 10#$major * 1000000 + 10#$minor * 1000 + 10#$patch ))
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" > /dev/null
+
+      - name: Decode the upload key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.WOLF_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/wolf-upload.keystore"
+          echo "WOLF_ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/wolf-upload.keystore" >> "$GITHUB_ENV"
+
+      - name: Test, build and sign
+        working-directory: apps/android
+        env:
+          WOLF_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.WOLF_ANDROID_KEYSTORE_PASSWORD }}
+          WOLF_ANDROID_KEY_ALIAS: ${{ secrets.WOLF_ANDROID_KEY_ALIAS }}
+          WOLF_ANDROID_KEY_PASSWORD: ${{ secrets.WOLF_ANDROID_KEY_PASSWORD }}
+          WOLF_ANDROID_VERSION_NAME: ${{ steps.version.outputs.name }}
+          WOLF_ANDROID_VERSION_CODE: ${{ steps.version.outputs.code }}
+          FIREBASE_APPLICATION_ID: ${{ vars.WOLF_FIREBASE_APPLICATION_ID }}
+          FIREBASE_PROJECT_ID: ${{ vars.WOLF_FIREBASE_PROJECT_ID }}
+          FIREBASE_API_KEY: ${{ vars.WOLF_FIREBASE_API_KEY }}
+          FIREBASE_SENDER_ID: ${{ vars.WOLF_FIREBASE_SENDER_ID }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease \
+            "-Pwolf.firebase.applicationId=$FIREBASE_APPLICATION_ID" \
+            "-Pwolf.firebase.projectId=$FIREBASE_PROJECT_ID" \
+            "-Pwolf.firebase.apiKey=$FIREBASE_API_KEY" \
+            "-Pwolf.firebase.senderId=$FIREBASE_SENDER_ID"
+
+      - name: Verify the APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          node --test scripts/verify-android-release.test.mjs
+          mkdir -p dist
+          cp apps/android/app/build/outputs/apk/release/app-release.apk "dist/wolf-android-$VERSION_NAME.apk"
+          node scripts/verify-android-release.mjs "dist/wolf-android-$VERSION_NAME.apk" \
+            --version-name "$VERSION_NAME" --version-code "$VERSION_CODE" --summary dist/release-notes.md
+          (cd dist && sha256sum "wolf-android-$VERSION_NAME.apk" > SHA256SUMS)
+
+      - name: Remove the upload key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/wolf-upload.keystore"
+
+      # The mapping turns a release crash's stack trace back into names. It is kept with the run, not
+      # published: it describes the code, not anything a user needs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wolf-android-${{ steps.version.outputs.name }}
+          path: |
+            dist
+            apps/android/app/build/outputs/bundle/release/app-release.aab
+            apps/android/app/build/outputs/mapping/release/mapping.txt
+          retention-days: 90
+
+      - name: Publish the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/wolf-android-$VERSION_NAME.apk" dist/SHA256SUMS \
+            --title "WOLF for Android $VERSION_NAME" \
+            --notes-file dist/release-notes.md \
+            --verify-tag

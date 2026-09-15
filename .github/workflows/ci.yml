@@ -101,3 +101,37 @@ jobs:
           name: wolf-agent
           path: artifacts/agent
           retention-days: 14
+
+  android:
+    name: Android app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The runner's SDK has the command-line tools; the platform this app compiles against is installed
+      # here rather than assumed. Licences are accepted first, on their own, because `yes` piped into a
+      # command that stops reading fails the step under pipefail.
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" > /dev/null
+
+      # JVM tests, a debug build, and R8 over the release build, which catches a keep rule a dependency
+      # needs before a release does. No signing key is involved: the release is minified, never packaged.
+      - name: Test and build
+        working-directory: apps/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:minifyReleaseWithR8
+
+      - name: Release gate tests
+        run: node --test scripts/verify-android-release.test.mjs

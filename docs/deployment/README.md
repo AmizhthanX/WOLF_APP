@@ -94,6 +94,65 @@ Cloud Run keeps revisions; roll traffic back to the previous one. Because migrat
 kept backwards-compatible with the running version, a code rollback does not require a
 schema rollback.
 
+## Android app
+
+Released by `.github/workflows/android-release.yml` from a tag of the form `android-vMAJOR.MINOR.PATCH`;
+a manual run with a version builds and uploads artifacts but publishes nothing. CI builds every
+push without any key: JVM tests, a debug build, and R8 over the release build.
+
+**The upload key** lives only in the secrets of a GitHub environment named `android-release` — give
+that environment required reviewers, so a release waits for a person:
+
+| Secret | |
+| --- | --- |
+| `WOLF_ANDROID_KEYSTORE_BASE64` | The keystore, base64 |
+| `WOLF_ANDROID_KEYSTORE_PASSWORD` | |
+| `WOLF_ANDROID_KEY_ALIAS` | |
+| `WOLF_ANDROID_KEY_PASSWORD` | |
+
+Optional variables `WOLF_FIREBASE_APPLICATION_ID`, `WOLF_FIREBASE_PROJECT_ID`, `WOLF_FIREBASE_API_KEY`
+and `WOLF_FIREBASE_SENDER_ID` give the app its push project; without them it is built with no push
+service and says so ([push](../architecture/push.md)).
+
+Create the key once, on a machine you trust, with the passwords in the environment rather than on
+the command line:
+
+```bash
+keytool -genkeypair -keystore wolf-upload.keystore -storetype PKCS12 -alias wolf-upload \
+  -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=WOLF" \
+  -storepass:env WOLF_ANDROID_KEYSTORE_PASSWORD -keypass:env WOLF_ANDROID_KEYSTORE_PASSWORD
+base64 -w0 wolf-upload.keystore    # the value of WOLF_ANDROID_KEYSTORE_BASE64
+```
+
+Keep an offline copy. Android updates an installed app only from an APK signed with the same key, so
+a lost key means every user uninstalls — losing their sign-in — to move to a new one. Never commit
+it: `.keystore`, `.jks` and `.p12` files fail the secrets check.
+
+**What a release run does.** Fails at once if a signing secret is missing — there is no unsigned or
+debug-signed fallback, and the Gradle build refuses the same way locally. Derives the version code
+from the version (`MAJOR·1000000 + MINOR·1000 + PATCH`), so every release is an update to the last.
+Runs the JVM tests, builds and signs the APK and the app bundle, and passes the APK through the
+release gate (`scripts/verify-android-release.mjs`): signed with APK Signature Scheme v2 or later by
+one signer and not with a debug certificate, not debuggable, the version the tag names, and **no
+permission outside the list the gate holds** — a dependency that adds an advertising id or a
+microphone fails the release instead of shipping in it. It then deletes the decoded key and publishes
+a GitHub release with the APK, `SHA256SUMS`, and notes giving the APK's SHA-256 and the signing
+certificate's fingerprint, which is what a person installing it checks. The app bundle and the R8
+mapping stay with the run for 90 days; archive the mapping with each release, since it is the only way
+to read a release crash's stack trace.
+
+To build a release locally, set the four signing variables (`WOLF_ANDROID_KEYSTORE_FILE` holding a
+path, and the passwords and alias), then:
+
+```bash
+npm run build:android:release
+npm run verify:android:release -- apps/android/app/build/outputs/apk/release/app-release.apk
+```
+
+Not yet: publishing to Google Play, which needs a Play Console service account; and per-ABI APKs —
+the one APK carries WebRTC for four ABIs, and x86 and x86_64, which only emulators use, are over half
+of its 50 MB.
+
 ## AWS migration
 
 The mapping the PRD calls for, none of which touches business logic:

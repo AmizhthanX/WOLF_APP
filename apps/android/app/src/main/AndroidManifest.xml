@@ -14,9 +14,13 @@
         and the device identity must not be copied to a cloud backup or another phone. The Keystore
         keys that decrypt them would not come along anyway, so a restored copy would only be a
         broken sign-in that looks like a working one.
+
+        allowAudioPlaybackCapture is off for the same reason the window is FLAG_SECURE: the app plays another
+        machine's sound, and another app holding a screen-capture grant should not be able to record it.
     -->
     <application
         android:name=".WolfApplication"
+        android:allowAudioPlaybackCapture="false"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"

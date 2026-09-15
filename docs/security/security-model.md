@@ -144,7 +144,9 @@ host keeps only a hash of the last content that crossed, to stop the two machine
 same string forever, and forgets even that when the stream ends. Neither client writes to the
 operator's own clipboard without a click: the Android app reads the phone's clipboard only on
 a tap, which Android shows the owner, and puts PC text on it only on Copy, marked sensitive so
-the system's copy preview does not display it.
+the system's copy preview does not display it. The Android window is `FLAG_SECURE`, and the app
+opts out of audio playback capture, so another app holding a screen-capture grant records
+neither the PC's picture nor its sound.
 
 Audio is **loopback only** — the sound the PC is producing, never a microphone. Nothing in
 the agent can hear the room a machine is sitting in. It is gated on the `audio` capability,

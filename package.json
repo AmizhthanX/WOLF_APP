@@ -27,7 +27,10 @@
     "test:windows:perf": "dotnet test windows/Wolf.sln -s windows/agent/Wolf.Agent.Core.Tests/performance.runsettings --logger \"console;verbosity=detailed\"",
     "build:android": "node scripts/android.mjs :app:assembleDebug",
     "test:android": "node scripts/android.mjs :app:testDebugUnitTest",
-    "test:android:device": "node scripts/android.mjs :app:connectedDebugAndroidTest"
+    "test:android:device": "node scripts/android.mjs :app:connectedDebugAndroidTest",
+    "build:android:release": "node scripts/android.mjs :app:assembleRelease :app:bundleRelease",
+    "verify:android:release": "node scripts/verify-android-release.mjs",
+    "test:android:release-gate": "node --test scripts/verify-android-release.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
