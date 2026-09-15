@@ -65,7 +65,13 @@ private val POWER_ACTIONS = listOf(
 )
 
 @Composable
-fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configuration: ConfigurationViewModel) {
+fun WolfApp(
+    viewModel: AppViewModel,
+    alerts: AlertsAutomationsViewModel,
+    configuration: ConfigurationViewModel,
+    onUnlock: () -> Unit = {},
+    onAppLock: (Boolean) -> Unit = {},
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val alertsState by alerts.state.collectAsStateWithLifecycle()
     val configurationState by configuration.state.collectAsStateWithLifecycle()
@@ -78,6 +84,7 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configu
                 when (val screen = state.screen) {
                     Screen.Starting -> Centered { CircularProgressIndicator() }
                     Screen.SignIn -> SignInScreen(busy = state.busy, onSignIn = viewModel::signIn)
+                    Screen.Locked -> LockedScreen(busy = state.busy, notice = state.notice, onUnlock = onUnlock)
                     Screen.Pcs -> {
                         // Rules fire whether or not their screen is open; the count on this one is how the owner hears of it.
                         LaunchedEffect(Unit) { alerts.refreshUnread() }
@@ -94,6 +101,9 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configu
                             onAutomations = viewModel::openAutomations,
                             onConfiguration = viewModel::openConfiguration,
                             onSignOut = viewModel::signOut,
+                            appLockOn = state.appLockOn,
+                            notice = state.notice,
+                            onAppLock = onAppLock,
                         )
                     }
                     is Screen.Pc -> {
@@ -324,6 +334,23 @@ internal fun ConfirmDialog(
 }
 
 @Composable
+private fun LockedScreen(busy: Boolean, notice: String?, onUnlock: () -> Unit) {
+    // The prompt is offered once on arrival, and after that only when the owner taps: a prompt that reopens itself
+    // after being dismissed is one that cannot be dismissed.
+    LaunchedEffect(Unit) { onUnlock() }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("WOLF", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("WOLF is locked.", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Your sign-in is sealed on this phone until you unlock WOLF with your fingerprint or screen lock.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        OutlinedButton(onClick = onUnlock, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Unlock") }
+        notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
 private fun SignInScreen(busy: Boolean, onSignIn: (String, String) -> Unit) {
     var email by rememberSaveable { mutableStateOf("") }
     // Deliberately not saveable: a password is not written into the saved instance state bundle.
@@ -373,6 +400,9 @@ private fun PcListScreen(
     onAutomations: () -> Unit,
     onConfiguration: () -> Unit,
     onSignOut: () -> Unit,
+    appLockOn: Boolean = false,
+    notice: String? = null,
+    onAppLock: (Boolean) -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -394,6 +424,11 @@ private fun PcListScreen(
             OutlinedButton(onClick = onAutomations, modifier = Modifier.weight(1f)) { Text("Automations") }
         }
         OutlinedButton(onClick = onConfiguration, modifier = Modifier.fillMaxWidth()) { Text("Configuration backup") }
+        // Changed only through the system prompt, both ways: turning it off is as much a decision about this phone as on.
+        OutlinedButton(onClick = { onAppLock(!appLockOn) }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (appLockOn) "App lock is on · Turn off" else "App lock is off · Turn on")
+        }
+        notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         if (pcs != null && pcs.isEmpty()) {
             Text("No PCs are enrolled yet. Add one from the web dashboard.")

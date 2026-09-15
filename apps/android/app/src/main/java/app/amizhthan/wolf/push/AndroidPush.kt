@@ -120,6 +120,21 @@ class AndroidNotifier(private val context: Context) : Notifier {
         manager.notify(TAG, SUMMARY_ID, built)
     }
 
+    override fun showLocked() {
+        if (!allowed()) return
+        ensureChannels()
+        val built = Notification.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("WOLF")
+            .setContentText("Something may be new. Unlock WOLF to see it.")
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion(CHANNEL_ALERTS))
+            .setAutoCancel(true)
+            .setContentIntent(openAlerts())
+            .build()
+        manager.notify(TAG, LOCKED_ID, built)
+    }
+
     private fun publicVersion(channel: String): Notification = Notification.Builder(context, channel)
         .setSmallIcon(android.R.drawable.stat_sys_warning)
         .setContentTitle("WOLF")
@@ -155,6 +170,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         const val CHANNEL_CRITICAL = "wolf-critical"
         const val TAG = "wolf-notification"
         private const val SUMMARY_ID = 1
+        private const val LOCKED_ID = 2
     }
 }
 

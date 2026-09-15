@@ -27,6 +27,7 @@ import app.amizhthan.wolf.session.CommandOutcome
 import app.amizhthan.wolf.session.PcSessionController
 import app.amizhthan.wolf.session.PendingCommand
 import app.amizhthan.wolf.session.SessionManager
+import app.amizhthan.wolf.security.VaultLockedException
 import app.amizhthan.wolf.session.SessionState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -43,6 +44,7 @@ import kotlinx.serialization.json.JsonObject
 sealed interface Screen {
     data object Starting : Screen
     data object SignIn : Screen
+    data object Locked : Screen
     data object Pcs : Screen
     data class Pc(val id: String) : Screen
     data class RemoteDesktop(val pcId: String) : Screen
@@ -82,6 +84,7 @@ data class UiState(
     val confirming: Boolean = false,
     val confirmationProblem: WolfProblem? = null,
     val notice: String? = null,
+    val appLockOn: Boolean = false,
 )
 
 class AppViewModel(
@@ -104,12 +107,14 @@ class AppViewModel(
         viewModelScope.launch {
             val restored = session.restore()
             val screen = when {
+                session.state.value is SessionState.Locked -> Screen.Locked
                 !restored -> Screen.SignIn
                 alertsRequested -> Screen.Alerts
                 else -> Screen.Pcs
             }
             if (restored) alertsRequested = false
-            _state.update { it.copy(screen = screen) }
+            _state.update { it.copy(screen = screen, appLockOn = session.appLockOn) }
+            if (!restored && session.takeLockLoss()) _state.update { it.copy(problem = lockLostProblem(), appLockOn = false) }
             if (restored) {
                 loadPcs()
                 registerPush()
@@ -123,6 +128,12 @@ class AppViewModel(
                     stopRemote()
                     leavePc()
                     _state.update { UiState(screen = Screen.SignIn, problem = it.problem) }
+                }
+                if (state is SessionState.Locked && _state.value.screen !is Screen.Locked && _state.value.screen !is Screen.Starting) {
+                    // Everything on screen is put away with the credentials: a stream, a PC's details, a list.
+                    stopRemote()
+                    leavePc()
+                    _state.update { UiState(screen = Screen.Locked, appLockOn = true) }
                 }
             }
         }
@@ -142,8 +153,50 @@ class AppViewModel(
     /** From a notification tapped on the phone: the inbox, once signed in. */
     fun openAlertsWhenSignedIn() {
         when (_state.value.screen) {
-            Screen.Starting, Screen.SignIn -> alertsRequested = true
+            Screen.Starting, Screen.SignIn, Screen.Locked -> alertsRequested = true
             else -> openAlerts()
+        }
+    }
+
+    /** The owner passed the system prompt: open the vault and carry on where the app left off. */
+    fun unlock() = launchBusy {
+        val restored = try {
+            session.unlock()
+        } catch (_: VaultLockedException) {
+            _state.update { it.copy(problem = stillLockedProblem()) }
+            return@launchBusy
+        }
+        if (!restored) {
+            _state.update { it.copy(screen = Screen.SignIn, notice = null) }
+            return@launchBusy
+        }
+        _state.update { it.copy(screen = if (alertsRequested) Screen.Alerts else Screen.Pcs, problem = null, notice = null, appLockOn = session.appLockOn) }
+        alertsRequested = false
+        loadPcs()
+        registerPush()
+    }
+
+    /** The prompt was dismissed or could not be shown. Said, and nothing changes. */
+    fun lockPromptEnded(reason: String) = _state.update { it.copy(notice = reason) }
+
+    /** Turn the app lock on or off, after the owner confirmed it at the system prompt. */
+    fun setAppLock(enabled: Boolean) = launchBusy {
+        try {
+            session.setAppLock(enabled)
+            _state.update {
+                it.copy(
+                    appLockOn = session.appLockOn,
+                    notice = if (enabled) {
+                        "App lock is on. WOLF locks when it restarts and after ${SessionManager.LOCK_AFTER_MINUTES} minutes in the background."
+                    } else {
+                        "App lock is off."
+                    },
+                )
+            }
+        } catch (error: java.security.GeneralSecurityException) {
+            _state.update { it.copy(problem = lockUnavailableProblem(error.message), appLockOn = session.appLockOn) }
+        } catch (error: IllegalStateException) {
+            _state.update { it.copy(problem = lockUnavailableProblem(error.message), appLockOn = session.appLockOn) }
         }
     }
 
@@ -505,6 +558,33 @@ class AppViewModel(
             }
         }
     }
+
+    private fun lockLostProblem() = WolfProblem(
+        code = "auth.lock_reset",
+        problem = "WOLF's sign-in on this phone was erased.",
+        cause = "The app lock was tied to this phone's screen lock, which has been removed or reset, so nobody can open the sealed sign-in any more.",
+        currentState = "You are signed out, and the app lock is off.",
+        recommendedAction = "Sign in again, and turn the app lock back on once the phone has a screen lock.",
+        referenceId = "WOLF-AUTH-LOCKRESET",
+    )
+
+    private fun stillLockedProblem() = WolfProblem(
+        code = "auth.still_locked",
+        problem = "WOLF is still locked.",
+        cause = "The phone did not confirm a strong unlock: a fingerprint or face of the strongest class, or the screen lock's PIN, pattern or password.",
+        currentState = "Your sign-in is still on this phone, sealed.",
+        recommendedAction = "Unlock again, using the screen lock if a fingerprint or face does not open it.",
+        referenceId = "WOLF-AUTH-LOCKED",
+    )
+
+    private fun lockUnavailableProblem(detail: String?) = WolfProblem(
+        code = "auth.lock_unavailable",
+        problem = "The app lock could not be changed.",
+        cause = detail?.takeIf { it.isNotBlank() } ?: "The phone's Keystore refused the lock key.",
+        currentState = "The app lock is as it was.",
+        recommendedAction = "The app lock needs a screen lock on this phone. Set a PIN, pattern or password in Android's settings, then try again.",
+        referenceId = "WOLF-AUTH-LOCKKEY",
+    )
 
     private fun localProblem(code: String, message: String) = WolfProblem(
         code = code,

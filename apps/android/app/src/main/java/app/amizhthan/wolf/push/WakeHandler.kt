@@ -12,6 +12,9 @@ interface Notifier {
 
     /** "And N more", when a wake-up finds more news than is worth a notification each. */
     fun showSummary(more: Int)
+
+    /** A wake-up arrived while WOLF is locked: something may be new, and nothing can be fetched to say what. */
+    fun showLocked() {}
 }
 
 /** Which notifications this phone has already shown. Ids only. */
@@ -28,7 +31,8 @@ interface SeenStore {
  * The wake-up itself said nothing, so everything shown comes from WOLF, never from the push service. A phone with
  * no credentials shows nothing and asks nothing. A fetch that fails shows nothing and remembers nothing, so the
  * next wake-up — or opening the app — finds the same news. Notifications already read, or already shown on this
- * phone, are not shown again.
+ * phone, are not shown again. A locked WOLF fetches nothing: it posts one notice that something may be new, and the
+ * owner unlocks to see what.
  */
 class WakeHandler(
     private val api: WolfApi,
@@ -39,11 +43,16 @@ class WakeHandler(
 ) {
     /** Returns how many notifications were new. */
     suspend fun onWake(): Int {
-        if (session.state.value !is SessionState.SignedIn && !session.restore()) return 0
+        if (session.state.value !is SessionState.SignedIn && !session.restore()) {
+            if (session.state.value is SessionState.Locked) notifier.showLocked()
+            return 0
+        }
 
         val inbox = try {
             session.authorized { api.listNotifications(it) }
         } catch (_: WolfApiException) {
+            // Locked while this wake-up was on its way: say that something came, and nothing about what.
+            if (session.state.value is SessionState.Locked) notifier.showLocked()
             return 0
         }
 

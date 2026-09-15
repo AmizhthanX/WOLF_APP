@@ -2,6 +2,7 @@ package app.amizhthan.wolf.push
 
 import app.amizhthan.wolf.JvmAesGcmCipher
 import app.amizhthan.wolf.JvmDeviceIdentity
+import app.amizhthan.wolf.JvmLockCipher
 import app.amizhthan.wolf.api.NotificationView
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.security.TokenVault
@@ -40,6 +41,10 @@ class WakeHandlerTest {
     private class Recorder : Notifier {
         val shown = mutableListOf<NotificationView>()
         val summaries = mutableListOf<Int>()
+        var locked = 0
+        override fun showLocked() {
+            locked += 1
+        }
         override fun show(notification: NotificationView) {
             shown += notification
         }
@@ -148,6 +153,26 @@ class WakeHandlerTest {
 
         assertTrue(recorder.shown.isEmpty())
         assertTrue(requests.none { it.path == "/api/v1/notifications" })
+    }
+
+    @Test
+    fun a_wake_up_while_locked_fetches_nothing_and_says_only_that_something_may_be_new() = runBlocking {
+        inbox = listOf(notification('A', 1))
+        val file = File(folder.root, "locked-credentials.bin")
+        val lock = JvmLockCipher()
+        val api = WolfApi(server.url("/"), OkHttpClient())
+        SessionManager(api, TokenVault(file, JvmAesGcmCipher(), lock), JvmDeviceIdentity(), "Pixel", "Android 16").apply {
+            signIn("owner@example.com", "right")
+            setAppLock(true)
+        }
+        val relaunched = SessionManager(api, TokenVault(file, JvmAesGcmCipher(), lock), JvmDeviceIdentity(), "Pixel", "Android 16")
+        val recorder = Recorder()
+
+        assertEquals(0, WakeHandler(api, relaunched, recorder, MemorySeen()).onWake())
+
+        assertEquals(1, recorder.locked)
+        assertTrue(recorder.shown.isEmpty())
+        assertTrue("nothing is fetched while locked", requests.none { it.path == "/api/v1/notifications" })
     }
 
     @Test

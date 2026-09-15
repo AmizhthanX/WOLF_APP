@@ -101,6 +101,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.webrtc)
     implementation(libs.firebase.messaging)
+    implementation(libs.androidx.biometric)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

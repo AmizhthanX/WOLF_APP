@@ -2,6 +2,8 @@ package app.amizhthan.wolf.session
 
 import app.amizhthan.wolf.JvmAesGcmCipher
 import app.amizhthan.wolf.JvmDeviceIdentity
+import app.amizhthan.wolf.JvmLockCipher
+import app.amizhthan.wolf.security.VaultLockedException
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.api.WolfJson
@@ -99,6 +101,15 @@ class SessionManagerTest {
 
     @After
     fun stop() = server.shutdown()
+
+    private fun lockable(file: File, lock: JvmLockCipher, now: () -> Instant = Instant::now) = SessionManager(
+        api = WolfApi(server.url("/"), OkHttpClient()),
+        vault = TokenVault(file, cipher, lock),
+        identity = identity,
+        deviceName = "Google Pixel 9",
+        platform = "Android 16 (API 36)",
+        clock = now,
+    )
 
     private fun manager(vaultFile: File = File(folder.root, "credentials.bin")) = SessionManager(
         api = WolfApi(server.url("/"), OkHttpClient()),
@@ -212,6 +223,127 @@ class SessionManagerTest {
         val relaunched = manager(file)
         assertTrue(relaunched.restore())
         assertEquals(0, relaunched.authorized { WolfApi(server.url("/"), OkHttpClient()).listPcs(it) }.pcs.size)
+    }
+
+    /* The app lock. */
+
+    @Test
+    fun with_the_lock_on_a_relaunch_is_locked_and_sends_nothing_until_the_owner_unlocks() = runBlocking {
+        val file = File(folder.root, "credentials.bin")
+        val lock = JvmLockCipher()
+        val first = lockable(file, lock)
+        first.signIn("owner@example.com", "pw")
+        first.setAppLock(true)
+
+        val relaunched = lockable(file, lock)
+        val refreshesBefore = refreshes.get()
+        assertEquals(false, relaunched.restore())
+        assertTrue(relaunched.state.value is SessionState.Locked)
+        assertTrue("the sealed sign-in is kept", file.exists())
+
+        try {
+            relaunched.authorized { WolfApi(server.url("/"), OkHttpClient()).listPcs(it) }
+            fail("a locked session makes no calls")
+        } catch (error: WolfApiException) {
+            assertEquals("auth.locked", error.problem.code)
+        }
+        assertEquals("nothing reached the server while locked", refreshesBefore, refreshes.get())
+
+        lock.unlocked = true
+        assertTrue(relaunched.unlock())
+        assertTrue(relaunched.state.value is SessionState.SignedIn)
+        assertEquals(0, relaunched.authorized { WolfApi(server.url("/"), OkHttpClient()).listPcs(it) }.pcs.size)
+    }
+
+    @Test
+    fun an_unlock_the_keystore_does_not_accept_leaves_the_session_locked() = runBlocking {
+        val file = File(folder.root, "credentials.bin")
+        val lock = JvmLockCipher()
+        lockable(file, lock).apply {
+            signIn("owner@example.com", "pw")
+            setAppLock(true)
+        }
+
+        val relaunched = lockable(file, lock)
+        relaunched.restore()
+        try {
+            relaunched.unlock()
+            fail("still locked")
+        } catch (_: VaultLockedException) {
+        }
+        assertTrue(relaunched.state.value is SessionState.Locked)
+        assertTrue(file.exists())
+    }
+
+    @Test
+    fun a_token_rotated_while_the_lock_key_is_shut_is_the_one_found_after_unlock() = runBlocking {
+        val file = File(folder.root, "credentials.bin")
+        val lock = JvmLockCipher()
+        val session = lockable(file, lock)
+        session.signIn("owner@example.com", "pw")
+        session.setAppLock(true)
+
+        // The server moved on; the refresh that follows rotates the token and seals it with the public key alone.
+        validAccess = "moved-on"
+        session.authorized { WolfApi(server.url("/"), OkHttpClient()).listPcs(it) }
+        assertEquals(1, refreshes.get())
+
+        lock.unlocked = true
+        assertEquals("refresh-2-0123456789abcdef", TokenVault(file, cipher, lock).read()?.refreshToken)
+    }
+
+    @Test
+    fun minutes_in_the_background_lock_the_session_and_a_short_trip_does_not() = runBlocking {
+        var now = Instant.now()
+        val file = File(folder.root, "credentials.bin")
+        val session = lockable(file, JvmLockCipher()) { now }
+        session.signIn("owner@example.com", "pw")
+        session.setAppLock(true)
+        val api = WolfApi(server.url("/"), OkHttpClient())
+
+        session.wentToBackground()
+        now = now.plusSeconds(60)
+        session.cameToForeground()
+        assertTrue("a minute away changes nothing", session.state.value is SessionState.SignedIn)
+
+        session.wentToBackground()
+        now = now.plusSeconds(4 * 60)
+        assertEquals("a wake-up four minutes in still works", 0, session.authorized { api.listPcs(it) }.pcs.size)
+
+        now = now.plusSeconds(2 * 60)
+        try {
+            session.authorized { api.listPcs(it) }
+            fail("six minutes in the background is locked")
+        } catch (error: WolfApiException) {
+            assertEquals("auth.locked", error.problem.code)
+        }
+        assertTrue(session.state.value is SessionState.Locked)
+    }
+
+    @Test
+    fun without_the_lock_an_hour_in_the_background_changes_nothing() = runBlocking {
+        var now = Instant.now()
+        val session = lockable(File(folder.root, "credentials.bin"), JvmLockCipher()) { now }
+        session.signIn("owner@example.com", "pw")
+
+        session.wentToBackground()
+        now = now.plusSeconds(3600)
+        session.cameToForeground()
+
+        assertTrue(session.state.value is SessionState.SignedIn)
+        assertEquals(0, session.authorized { WolfApi(server.url("/"), OkHttpClient()).listPcs(it) }.pcs.size)
+    }
+
+    @Test
+    fun turning_the_lock_off_lets_a_relaunch_restore_without_it() = runBlocking {
+        val file = File(folder.root, "credentials.bin")
+        val session = lockable(file, JvmLockCipher())
+        session.signIn("owner@example.com", "pw")
+        session.setAppLock(true)
+        session.setAppLock(false)
+
+        // A different lock key altogether: the vault no longer needs one.
+        assertTrue(lockable(file, JvmLockCipher()).restore())
     }
 
     @Test

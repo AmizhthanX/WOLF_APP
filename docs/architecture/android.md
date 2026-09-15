@@ -14,6 +14,7 @@ notifications that carry nothing through Google.
 | Session | `session/SessionManager.kt` | The only code that touches account tokens: sign-in, refresh, sign-out |
 | PC session | `session/PcSessionController.kt` | A remote session on one PC; commands and their confirmation |
 | Token vault | `security/TokenVault.kt` | The refresh token at rest, AES-GCM under a Keystore key |
+| App lock | `security/AppLock.kt`, `MainActivity.kt` (the prompt) | A Keystore key only the owner's fingerprint or screen lock opens; the vault sealed to need nobody to write and the owner to read |
 | Device identity | `security/DeviceIdentity.kt` | ECDSA P-256 key in the Android Keystore |
 | Stream session | `remote/StreamSession.kt` | Signaling and the stream's state machine; no Android types, so JVM-tested |
 | WebRTC | `remote/WebRtcAndroid.kt` | libwebrtc peer connection, decoders, the signaling socket |
@@ -48,6 +49,32 @@ notifications that carry nothing through Google.
 - Backups are off (`allowBackup=false`, every domain excluded from cloud backup and device transfer),
   and the vault is in the no-backup directory besides. A restored copy would only be a broken sign-in
   that looked like a working one, since the Keystore key does not travel.
+
+## App lock
+
+Off until the owner turns it on from the PC list, through the system prompt — and turned off only through it.
+
+- **It locks the sign-in, not only the screen.** With the lock on, the vault is sealed by `HybridLockCipher`: a
+  fresh AES-256 key for every write, wrapped with an RSA key in the Android Keystore whose private half opens for 30
+  seconds after a fingerprint or face of the strong class, or the screen lock's PIN, pattern or password. Writing needs
+  only the public half, so a refresh token the server rotates is stored when it arrives, in the background too.
+- **Locked is not lost.** A read without the owner is a `VaultLockedException`, and the sealed sign-in stays. The
+  session is `Locked`: nothing is sent, and a call that would need a token fails with `auth.locked` instead of
+  refreshing.
+- **Once unlocked, the credentials are held in memory**, so refreshing goes on while WOLF is in use. They are dropped
+  when the process ends and after five minutes in the background — checked when WOLF comes back and before any call
+  made from the background, so a wake-up does not outlast the lock.
+- **A wake-up while locked fetches nothing.** It posts one notification, "Something may be new. Unlock WOLF to see
+  it.", private on the lock screen like every other.
+- **Removing or resetting the screen lock destroys the key**, so nobody can open that sign-in again. It reads as
+  signed out, the lock turns itself off rather than failing the next sign-in, and the owner is told why.
+- **The prompt** is AndroidX Biometric's: a strong biometric or the screen lock on Android 11 and later. Android 9 and
+  10 cannot offer the screen lock beside a strong biometric, so there it sits beside a weak one; a weak biometric does
+  not open the Keystore key, and the unlock says so and asks again.
+
+What it does not do: protect a phone handed over, unlocked, within five minutes of using WOLF, or one whose screen
+lock the person holding it knows. There is no sign-out on the locked screen — revoking the sign-in on the server needs
+the token, so the owner unlocks first, or revokes the phone from the web dashboard.
 
 ## Commands
 
@@ -408,6 +435,20 @@ key custody: [deployment](../deployment/README.md#android-app).
   vault format (no plaintext on disk, tampering, another key, truncation); the identity key encoding.
 - **Instrumented (emulator or phone):** the Keystore identity key is stable, non-exportable and signs
   verifiably; the vault round-trips through the Keystore and a deleted key reads as signed out.
+- **JVM, app lock:** a locked vault written without the owner and opened only after unlock; a token rotated while
+  locked found after unlock; the setting outliving sign-out and turning off back to the ordinary format; a key lost
+  with the screen lock read as signed out, said once, and the lock turned off; a tampered locked file signed out
+  without blaming the screen lock. The session locked on relaunch and sending nothing, an unlock the Keystore does not
+  accept staying locked, five minutes in the background locking it and one minute not, no lock meaning no locking.
+  A wake-up while locked fetching nothing and posting the generic notice.
+- **Instrumented, app lock** (`AppLockKeystoreTest`), with a throwaway PIN the runner sets on the emulator and
+  removes: the real Keystore key refuses a read as locked and keeps the file, opens once the lock-screen credential is
+  verified, takes a token rotated after the window has closed, and — when the PIN is removed — loses the sign-in,
+  says so, and turns the lock off.
+- **The locked app on screen** (`PrepareLockedAppTest`, through `am instrument`): the real app signed in against a
+  local cloud with the lock on, relaunched past the unlock window to the system prompt ("Unlock WOLF"), and — the
+  prompt dismissed, nothing entered — the locked screen saying "Not unlocked: Authentication canceled". Completing
+  the prompt and a fingerprint were not driven: that would mean typing a PIN into the system's own UI.
 - **Live:** the same session and Keystore against a real WOLF API (`npm run dev:cloud`), gated on a
   runner argument: sign in, the server records an Android device, a relaunch restores from the rotated
   token, sign-out revokes the refresh token on the server.
@@ -471,7 +512,7 @@ kotlinx-coroutines (Apache-2.0), OkHttp (Apache-2.0), the WebRTC SDK for Android
 under `org.webrtc`. Firebase Cloud Messaging `com.google.firebase:firebase-messaging` 24.1.0 from
 Google's Maven repository (Apache-2.0), which brings Google Play services libraries under the Android
 Software Development Kit License; it is started by the app only when the build has a Firebase project, and
-its automatic start-up provider is removed. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
+its automatic start-up provider is removed. AndroidX Biometric 1.1.0 (Apache-2.0), for the system's prompt. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
 AndroidX Test (Apache-2.0).
 
 ## Not built yet
@@ -487,5 +528,4 @@ AndroidX Test (Apache-2.0).
 - The release pipeline run for real: it needs the repository on GitHub, the `android-release` environment and an
   upload key. Publishing to Google Play, and per-ABI APKs (x86 and x86_64, for emulators only, are over half of
   the 50 MB universal APK).
-- Unlocking the vault with the phone's biometric or screen lock.
 - Device proof-of-possession, above.

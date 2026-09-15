@@ -15,6 +15,8 @@ webrtc = "137.7151.05"
 # Firebase Cloud Messaging, from Google Maven. The SDK is Apache-2.0; the Play services libraries it pulls in are
 # under the Android Software Development Kit License.
 firebase-messaging = "24.1.0"
+# The system's fingerprint, face and screen-lock prompt, for the app lock. AndroidX, Apache-2.0.
+biometric = "1.1.0"
 
 [libraries]
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
@@ -31,6 +33,7 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 webrtc = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging", version.ref = "firebase-messaging" }
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidx-test-ext" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidx-test-runner" }

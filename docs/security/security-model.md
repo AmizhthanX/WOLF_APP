@@ -33,7 +33,7 @@ each runtime pins the encodings so neither side can drift.
 | --- | --- | --- | --- |
 | Access | 10 minutes | Browser memory only; process memory only on Android | Expiry, or device revocation on next call |
 | Session | 10 minutes, PC-scoped | Browser memory only; process memory only on Android | Session end |
-| Refresh | 30 days, rotating | httpOnly `SameSite=Strict` cookie; on Android, a file encrypted under a Keystore AES-GCM key, excluded from backup | Rotation, family revocation, device revocation |
+| Refresh | 30 days, rotating | httpOnly `SameSite=Strict` cookie; on Android, a file encrypted under a Keystore AES-GCM key, excluded from backup — or, with the app lock on, sealed so only the owner's fingerprint or screen lock opens it | Rotation, family revocation, device revocation |
 
 Access tokens are signed compact JWS with a pinned algorithm — the token's own `alg` is
 never trusted, which is how `none` and algorithm-confusion attacks get in. Issuer and

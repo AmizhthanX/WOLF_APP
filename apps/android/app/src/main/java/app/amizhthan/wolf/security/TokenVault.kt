@@ -28,22 +28,40 @@ data class StoredCredentials(val refreshToken: String, val deviceId: String)
 /**
  * Where the refresh token lives between launches.
  *
- * On disk only as ciphertext, in `noBackupFilesDir`, sealed with a Keystore AES-256-GCM key the app
- * can use and cannot read. The access token is never here: it lives in memory and dies with the
- * process.
+ * On disk only as ciphertext, in `noBackupFilesDir`. The access token is never here: it lives in memory and dies with
+ * the process. Two ways of sealing, told apart by the first byte:
  *
- * Anything that does not decrypt — a file from another install, a Keystore key that was wiped when the
- * lock screen changed, a bit flipped on disk — is treated as "not signed in" and deleted, never as an
- * error the owner has to understand.
+ * - **1, ordinary:** a Keystore AES-256-GCM key the app can use and cannot read.
+ * - **2, locked,** while the owner has the app lock on: [HybridLockCipher], which seals with a public key and opens
+ *   only after the owner's fingerprint or screen lock. Reading it while locked throws [VaultLockedException] and keeps
+ *   the file, because nothing is wrong with it.
+ *
+ * Anything else that does not decrypt — a file from another install, a Keystore key wiped when the lock screen
+ * changed, a bit flipped on disk — is treated as "not signed in" and deleted, never as an error the owner has to
+ * understand. When it was a locked vault whose key went with the screen lock, the app lock is turned off too, and
+ * [takeLockLoss] says so once.
  */
 class TokenVault(
     private val file: File,
     private val cipher: SecretCipher,
+    private val lockCipher: SecretCipher? = null,
+    /** Present while the app lock is on. It holds nothing — its existence is the setting — and it outlives signing out. */
+    private val lockSetting: File = File(file.parentFile, "${file.name}.lock"),
 ) {
+    @Volatile
+    private var lockLost = false
+
+    val lockEnabled: Boolean get() = lockCipher != null && lockSetting.exists()
+
     @Synchronized
     fun write(credentials: StoredCredentials) {
         val plaintext = WolfJson.encodeToString(StoredCredentials.serializer(), credentials).toByteArray(Charsets.UTF_8)
-        val sealed = byteArrayOf(FORMAT_VERSION) + cipher.encrypt(plaintext)
+        val lock = lockCipher?.takeIf { lockSetting.exists() }
+        val sealed = if (lock != null) {
+            byteArrayOf(FORMAT_LOCKED) + lock.encrypt(plaintext)
+        } else {
+            byteArrayOf(FORMAT_VERSION) + cipher.encrypt(plaintext)
+        }
 
         // Written beside the real file and renamed over it, so a crash mid-write leaves the previous
         // credentials rather than half of new ones.
@@ -56,75 +74,117 @@ class TokenVault(
         }
     }
 
+    /**
+     * The stored credentials, or null when there are none or they can no longer be opened.
+     *
+     * @throws VaultLockedException when they are there, locked, and the owner has not unlocked WOLF.
+     */
     @Synchronized
     fun read(): StoredCredentials? {
         if (!file.exists()) return null
         val sealed = file.readBytes()
 
-        if (sealed.isEmpty() || sealed[0] != FORMAT_VERSION) {
-            clear()
-            return null
+        val opening = when (sealed.firstOrNull()) {
+            FORMAT_VERSION -> cipher
+            FORMAT_LOCKED -> lockCipher ?: return discard()
+            else -> return discard()
         }
 
         return try {
-            val plaintext = cipher.decrypt(sealed.copyOfRange(1, sealed.size))
+            val plaintext = opening.decrypt(sealed.copyOfRange(1, sealed.size))
             WolfJson.decodeFromString(StoredCredentials.serializer(), plaintext.toString(Charsets.UTF_8))
+        } catch (_: LockKeyLostException) {
+            // Nobody can open this one again. The lock it depended on is gone, so the setting goes with it rather than
+            // failing the next sign-in on a key that cannot be made.
+            lockSetting.delete()
+            lockLost = true
+            discard()
         } catch (_: GeneralSecurityException) {
-            clear()
-            null
+            discard()
         } catch (_: SerializationException) {
-            clear()
-            null
+            discard()
         } catch (_: IllegalArgumentException) {
-            clear()
-            null
+            discard()
         }
     }
 
+    /**
+     * Turn the app lock on or off, and seal [current] — the credentials in use, if any — the new way.
+     *
+     * Turning it on makes and uses the lock key first. On a phone without a secure screen lock that throws, and the
+     * vault is left exactly as it was.
+     */
+    @Synchronized
+    fun setLockEnabled(enabled: Boolean, current: StoredCredentials?) {
+        if (enabled) {
+            val lock = requireNotNull(lockCipher) { "This vault has no lock." }
+            lock.encrypt(byteArrayOf(0))
+            lockSetting.parentFile?.mkdirs()
+            lockSetting.writeBytes(ByteArray(0))
+        } else {
+            lockSetting.delete()
+        }
+        if (current != null) write(current)
+    }
+
+    /** True once, after a locked vault was lost with the screen lock it depended on. */
+    fun takeLockLoss(): Boolean = lockLost.also { lockLost = false }
+
+    /** Forget the credentials. The app lock setting is the owner's choice and stays. */
     @Synchronized
     fun clear() {
         file.delete()
     }
 
+    private fun discard(): StoredCredentials? {
+        file.delete()
+        return null
+    }
+
     companion object {
         const val FORMAT_VERSION: Byte = 1
+        const val FORMAT_LOCKED: Byte = 2
     }
 }
 
 /**
  * AES-GCM over any key. Layout: one byte of IV length, the IV, then ciphertext with its tag.
  *
- * The Keystore cipher below and the JVM tests share this layout, so the format is tested without a
- * phone and the Keystore is tested only for being the Keystore.
+ * The Keystore cipher below, the app lock's per-write keys and the JVM tests share this layout, so the format is
+ * tested without a phone and the Keystore is tested only for being the Keystore.
  */
 abstract class AesGcmCipher : SecretCipher {
     protected abstract fun key(): SecretKey
 
-    override fun encrypt(plaintext: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        // The IV is chosen by the provider: the Keystore refuses caller-chosen IVs for encryption,
-        // which is what stops an IV from ever being reused.
-        cipher.init(Cipher.ENCRYPT_MODE, key())
-        val iv = cipher.iv
-        val ciphertext = cipher.doFinal(plaintext)
-        return byteArrayOf(iv.size.toByte()) + iv + ciphertext
-    }
+    override fun encrypt(plaintext: ByteArray): ByteArray = seal(key(), plaintext)
 
-    override fun decrypt(sealed: ByteArray): ByteArray {
-        if (sealed.isEmpty()) throw GeneralSecurityException("Empty ciphertext.")
-        val ivLength = sealed[0].toInt()
-        if (ivLength !in 12..16 || sealed.size < 1 + ivLength + TAG_BITS / 8) {
-            throw GeneralSecurityException("Malformed ciphertext.")
+    override fun decrypt(sealed: ByteArray): ByteArray = open(key(), sealed)
+
+    companion object {
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private const val TAG_BITS = 128
+
+        fun seal(key: SecretKey, plaintext: ByteArray): ByteArray {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            // The IV is chosen by the provider: the Keystore refuses caller-chosen IVs for encryption,
+            // which is what stops an IV from ever being reused.
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val iv = cipher.iv
+            val ciphertext = cipher.doFinal(plaintext)
+            return byteArrayOf(iv.size.toByte()) + iv + ciphertext
         }
 
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, sealed, 1, ivLength))
-        return cipher.doFinal(sealed, 1 + ivLength, sealed.size - 1 - ivLength)
-    }
+        fun open(key: SecretKey, sealed: ByteArray): ByteArray {
+            if (sealed.isEmpty()) throw GeneralSecurityException("Empty ciphertext.")
+            val ivLength = sealed[0].toInt()
+            if (ivLength !in 12..16 || sealed.size < 1 + ivLength + TAG_BITS / 8) {
+                throw GeneralSecurityException("Malformed ciphertext.")
+            }
 
-    private companion object {
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val TAG_BITS = 128
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, sealed, 1, ivLength))
+            return cipher.doFinal(sealed, 1 + ivLength, sealed.size - 1 - ivLength)
+        }
     }
 }
 

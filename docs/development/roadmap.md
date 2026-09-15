@@ -965,13 +965,29 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   default, so an app with the owner's screen-capture grant could have recorded the PC's sound. The window was
   already `FLAG_SECURE`; audio playback capture is now off as well, checked on the installed package
 
+**Done — app lock**
+
+- Opt-in, changed only through the system prompt: a strong biometric or the screen lock
+- It locks the sign-in itself: the vault sealed with a fresh AES key per write, wrapped under a Keystore RSA key whose
+  private half opens only after the owner authenticates. Writing needs only the public half, so rotated refresh
+  tokens are stored while locked; reading needs the owner
+- Locked, the session sends nothing and says `auth.locked`; unlocked, credentials are held in memory and dropped when
+  the process ends or after five minutes in the background. A wake-up while locked fetches nothing and posts a
+  generic notice
+- A screen lock removed or reset destroys the key: signed out, the lock turned off, the owner told why — never a crash
+  or a silent downgrade
+- Proven: the vault, session and wake-up behaviour on the JVM; on the emulator with a throwaway PIN, the real Keystore
+  key refusing a read as locked, opening after the lock-screen credential was verified, taking a token rotated while
+  shut, and losing the sign-in cleanly when the PIN was removed; the real app relaunched to the system prompt and, the
+  prompt dismissed, to the locked screen. **Not driven:** completing the prompt, and a fingerprint
+
 **Still open for Android**
 - Push: an end-to-end delivery through a real Firebase project
 - Files: resuming an interrupted transfer; browsing without a stream (as on the web)
 - Changing services, tasks and startup items against a machine with the privileged helper installed
 - Remote desktop: a display switch on a two-monitor PC; the first picture on a still desktop (a session host fix)
 - The release pipeline run on GitHub; Google Play publishing; per-ABI APKs
-- Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
+- Device proof-of-possession, which the server does not ask for yet
 
 ## Infrastructure
 
