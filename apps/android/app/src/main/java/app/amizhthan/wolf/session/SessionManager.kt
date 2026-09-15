@@ -9,6 +9,7 @@ import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.api.WolfProblem
 import app.amizhthan.wolf.security.DeviceIdentityProvider
+import app.amizhthan.wolf.security.RefreshProof
 import app.amizhthan.wolf.security.StoredCredentials
 import app.amizhthan.wolf.security.TokenVault
 import app.amizhthan.wolf.security.VaultLockedException
@@ -39,7 +40,9 @@ sealed interface SessionState {
  * - **Concurrent callers share one refresh.** Refresh tokens rotate and the server revokes the whole
  *   family when a used one is presented again, so two parallel refreshes would sign the phone out.
  * - **Only a 401 from refresh signs out.** A network failure keeps the credentials; being offline is
- *   not being revoked.
+ *   not being revoked, and neither is a clock the server says is wrong.
+ * - **Every refresh is signed with the Keystore identity key**, so a refresh token copied off the phone is refused
+ *   without the phone.
  * - **With the app lock on**, the vault opens only after the owner's fingerprint or screen lock. Once opened, the
  *   credentials are held here, in memory, so refreshing goes on while WOLF is in use; they are dropped when the process
  *   ends and after [lockAfter] in the background, and the session is [SessionState.Locked] until the owner unlocks
@@ -210,9 +213,9 @@ class SessionManager(
         refreshLocked()
         true
     } catch (error: WolfApiException) {
-        // Offline at launch with credentials that may well still be good: stay signed in, and let
-        // the first call report the network problem.
-        if (error.httpStatus == 0) {
+        // Offline at launch, or a clock the server calls wrong, with credentials that may well still be good: stay
+        // signed in, and let the first call report the problem.
+        if (error.httpStatus == 0 || error.problem.code == "auth.device_clock") {
             _state.value = SessionState.SignedIn(credentials.deviceId)
             true
         } else {
@@ -232,7 +235,13 @@ class SessionManager(
         }
 
         val grant = try {
-            api.refresh(RefreshRequest(credentials.refreshToken, credentials.deviceId))
+            api.refresh(
+                RefreshRequest(
+                    credentials.refreshToken,
+                    credentials.deviceId,
+                    RefreshProof.create(identity, credentials.deviceId, credentials.refreshToken, clock()),
+                ),
+            )
         } catch (error: WolfApiException) {
             if (error.httpStatus == 401) forget()
             throw error

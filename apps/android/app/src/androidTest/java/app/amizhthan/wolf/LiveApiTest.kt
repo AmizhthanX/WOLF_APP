@@ -9,6 +9,7 @@ import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.security.KeystoreDeviceIdentity
 import app.amizhthan.wolf.security.KeystoreSecretCipher
+import app.amizhthan.wolf.security.RefreshProof
 import app.amizhthan.wolf.security.TokenVault
 import app.amizhthan.wolf.session.SessionManager
 import kotlinx.coroutines.runBlocking
@@ -22,14 +23,16 @@ import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.time.Instant
 
 /**
  * The app against a real WOLF API — not a model of one.
  *
  * The JVM tests prove the client behaves the way this code believes the server does. This proves the
  * server agrees: that a Keystore identity key is accepted at sign-in, that the device is recorded as an
- * Android device, that a rotated refresh token restores a session after a relaunch, and that signing out
- * really revokes the refresh token on the server.
+ * Android device, that a rotated refresh token restores a session after a relaunch, that the server verifies the
+ * Keystore key's signature on every refresh — refusing a wrong clock without revoking, and revoking the device's
+ * tokens when a refresh arrives unsigned — and that signing out really revokes the refresh token on the server.
  *
  * It needs a running cloud, so it is off unless asked for:
  *
@@ -76,6 +79,35 @@ class LiveApiTest {
             val relaunched = session()
             assertTrue(relaunched.restore())
             assertEquals(me.device?.id, relaunched.authorized { api.me(it) }.device?.id)
+
+            // Proof of possession, against the server's own verifier.
+            val deviceId = requireNotNull(me.device?.id)
+            var token = requireNotNull(TokenVault(file, cipher).read()).refreshToken
+            try {
+                api.refresh(RefreshRequest(token, deviceId, RefreshProof.create(identity, deviceId, token, Instant.now().minusSeconds(3600))))
+                fail("a signature an hour old is refused")
+            } catch (error: WolfApiException) {
+                assertEquals(400, error.httpStatus)
+                assertEquals("auth.device_clock", error.problem.code)
+                Log.i(TAG, "a Keystore signature by a wrong clock refused without revoking: ${error.problem.code}")
+            }
+
+            token = api.refresh(RefreshRequest(token, deviceId, RefreshProof.create(identity, deviceId, token, Instant.now()))).refreshToken
+            Log.i(TAG, "a Keystore-signed refresh accepted by the server's verifier")
+
+            try {
+                api.refresh(RefreshRequest(token, deviceId))
+                fail("an unsigned refresh from a device with a key is refused")
+            } catch (error: WolfApiException) {
+                assertEquals(401, error.httpStatus)
+            }
+            try {
+                api.refresh(RefreshRequest(token, deviceId, RefreshProof.create(identity, deviceId, token, Instant.now())))
+                fail("the unsigned refresh revoked the device's tokens, so even a signed one of that token fails")
+            } catch (error: WolfApiException) {
+                assertEquals(401, error.httpStatus)
+                Log.i(TAG, "an unsigned refresh revoked the device's tokens: ${error.problem.code}")
+            }
 
             val stored = TokenVault(file, cipher).read()
             assertNotNull(stored)

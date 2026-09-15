@@ -981,13 +981,27 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   shut, and losing the sign-in cleanly when the PIN was removed; the real app relaunched to the system prompt and, the
   prompt dismissed, to the locked screen. **Not driven:** completing the prompt, and a fingerprint
 
+**Done — device proof-of-possession on refresh**
+
+- Every refresh from the phone is signed with its Keystore identity key: the device id, that exact refresh token,
+  and the time. No server nonce: rotation already makes each token single-use
+- The server requires it of any device that registered a key. Missing or signed by another key: the family revoked,
+  the device's sessions ended, a `device-proof-failure` security event with no token in it. A correct signature by a
+  clock more than five minutes off: `auth.device_clock`, a 400, nothing revoked — and the phone keeps its sign-in
+- A sign-in naming a key-bound device's id with a different key makes a new device instead of rebinding it
+- One payload builder in the protocol and one on the phone, pinned to the same bytes in both test suites
+- Proven: end-to-end tests through the real HTTP app; the phone's refreshes checked by a mock server enforcing the
+  rule; and live, a Keystore signature accepted by the real server's verifier, a wrong clock refused without revoking,
+  and an unsigned refresh revoking the device's tokens
+- **Found on the way:** the security model said the web client registers a key. It does not — its login sends
+  none — so its refreshes are not asked for a proof, and the docs now say so rather than implying otherwise
+
 **Still open for Android**
 - Push: an end-to-end delivery through a real Firebase project
 - Files: resuming an interrupted transfer; browsing without a stream (as on the web)
 - Changing services, tasks and startup items against a machine with the privileged helper installed
 - Remote desktop: a display switch on a two-monitor PC; the first picture on a still desktop (a session host fix)
 - The release pipeline run on GitHub; Google Play publishing; per-ABI APKs
-- Device proof-of-possession, which the server does not ask for yet
 
 ## Infrastructure
 

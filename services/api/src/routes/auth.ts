@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { refreshProof } from '@wolf/protocol';
 import { DEVICE_KINDS } from '@wolf/shared-types';
 import { displayName, email, parseOrThrow, password } from '@wolf/validation';
 import type { AppContext } from '../http/context.js';
@@ -25,6 +26,8 @@ const loginBody = z.object({
 const refreshBody = z.object({
   refreshToken: z.string().min(16).max(512),
   deviceId: z.string().length(26),
+  /** Required of a device that registered an identity key; see `refreshProof` in the protocol. */
+  proof: refreshProof.nullish(),
 });
 
 const logoutBody = z.object({
@@ -85,6 +88,7 @@ export async function registerAuthRoutes(app: FastifyInstance, context: AppConte
     const result = await auth.refresh({
       refreshToken: body.refreshToken,
       deviceId: body.deviceId,
+      proof: body.proof ?? null,
       sourceIp,
     });
     return reply.status(200).send(result);

@@ -50,7 +50,16 @@ data class DeviceDescriptor(
 data class LoginRequest(val email: String, val password: String, val device: DeviceDescriptor)
 
 @Serializable
-data class RefreshRequest(val refreshToken: String, val deviceId: String)
+data class RefreshRequest(
+    val refreshToken: String,
+    val deviceId: String,
+    /** The identity key's signature over this refresh. The server refuses a refresh from a device with a key without one. */
+    val proof: DeviceProof? = null,
+)
+
+/** A refresh signed with the phone's identity key. Built by `RefreshProof`. */
+@Serializable
+data class DeviceProof(val signedAt: String, val signature: String)
 
 @Serializable
 data class LogoutRequest(val refreshToken: String)

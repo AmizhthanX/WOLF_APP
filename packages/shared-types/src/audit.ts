@@ -59,6 +59,8 @@ export const SECURITY_EVENT_TYPES = [
   'login-failure',
   'brute-force-block',
   'token-replay',
+  /** A refresh from a device with an identity key, without that key's signature — or a correct one by a wrong clock. */
+  'device-proof-failure',
   'device-revoked',
   'pc-revoked',
   'kill-switch-engaged',

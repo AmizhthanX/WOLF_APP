@@ -21,6 +21,26 @@ export function unauthorized(cause: string, area: ErrorArea = 'AUTH'): WolfError
   });
 }
 
+/**
+ * A device signed its refresh correctly, by a clock too far from the server's.
+ *
+ * Not a 401. The signature proves the device holds its key, so nothing was stolen and nothing is
+ * revoked — and a client that treats a refused refresh as "signed out" must not throw away a good
+ * sign-in over a wrong clock.
+ */
+export function deviceClockSkew(skewSeconds: number, maxSkewSeconds: number): WolfError {
+  return new WolfError({
+    code: 'auth.device_clock',
+    problem: "This device's clock is wrong.",
+    cause: `The device signed its request about ${Math.round(skewSeconds / 60)} minutes away from the server's time; up to ${Math.round(maxSkewSeconds / 60)} is allowed.`,
+    currentState: 'The sign-in is intact. Nothing was revoked.',
+    recommendedAction: "Set the device's date and time to update automatically, then try again.",
+    area: 'AUTH',
+    httpStatus: 400,
+    context: { skewSeconds: Math.round(skewSeconds) },
+  });
+}
+
 export function forbidden(cause: string, recommendedAction: string): WolfError {
   return new WolfError({
     code: 'auth.forbidden',

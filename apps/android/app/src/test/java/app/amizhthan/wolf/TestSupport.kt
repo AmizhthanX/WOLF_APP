@@ -25,6 +25,12 @@ class JvmDeviceIdentity : DeviceIdentityProvider {
     val keyPair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
 
     override fun publicKeySpki(): String = Spki.base64Url(keyPair.public.encoded)
+
+    override fun sign(data: ByteArray): ByteArray = java.security.Signature.getInstance("SHA256withECDSA").run {
+        initSign(keyPair.private)
+        update(data)
+        sign()
+    }
 }
 
 /** The app lock's sealing with a JVM RSA key, and a switch standing in for the owner's fingerprint. */

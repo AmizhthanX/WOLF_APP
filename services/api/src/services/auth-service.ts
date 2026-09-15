@@ -9,12 +9,14 @@ import {
   parseRefreshToken,
   recordFailure,
   verifyPassword,
+  verifySignature,
 } from '@wolf/auth';
+import { REFRESH_PROOF_MAX_SKEW_SECONDS, refreshProofPayload, type RefreshProof } from '@wolf/protocol';
 import { newId } from '@wolf/shared-types';
 import type { DeviceKind, UserDevice } from '@wolf/shared-types';
 import type { AppContext } from '../http/context.js';
 import { withTransaction } from '@wolf/server-core';
-import { tooManyRequests, unauthorized } from '../http/errors.js';
+import { deviceClockSkew, tooManyRequests, unauthorized } from '../http/errors.js';
 
 export interface DeviceDescriptor {
   /** Existing device id when the client has one; a new device is created otherwise. */
@@ -143,11 +145,18 @@ export class AuthService {
    * A token presented twice means it was copied, so the whole family is revoked and every
    * session on that device ends. Losing a session is the correct outcome when the
    * alternative is letting a stolen token keep working.
+   *
+   * A device that registered an identity key at sign-in must also sign the refresh with it. A
+   * refresh without that signature, or with another key's, is a token that left the device, and
+   * is answered the same way as a replay. A correct signature by a clock too far from the
+   * server's is refused without revoking anything: the device proved it holds its key.
    */
   async refresh(input: {
     refreshToken: string;
     /** The device the client claims to be; must match the token's device. */
     deviceId: string;
+    /** The device key's signature over this refresh, or null when the client sent none. */
+    proof: RefreshProof | null;
     sourceIp: string | null;
   }): Promise<AuthResult> {
     const { repos } = this.context;
@@ -188,6 +197,34 @@ export class AuthService {
 
     const user = await repos.users.findById(decision.stored.userId);
     if (!user) throw unauthorized('The account no longer exists.');
+
+    const proven = this.checkDeviceProof(device, input.refreshToken, input.proof);
+    if (proven.outcome === 'clock') {
+      await repos.audit.recordSecurityEvent({
+        type: 'device-proof-failure',
+        userId: user.id,
+        deviceId: device.id,
+        sourceIp: input.sourceIp,
+        detail: { reason: 'clock-skew', skewSeconds: Math.round(proven.skewSeconds) },
+      });
+      throw deviceClockSkew(proven.skewSeconds, REFRESH_PROOF_MAX_SKEW_SECONDS);
+    }
+    if (proven.outcome === 'refused') {
+      await withTransaction(this.context.db, async (client) => {
+        await repos.refreshTokens.revokeFamily(decision.stored.familyId, client);
+        await repos.sessions.endAllForDevice(device.id, 'token-replay', client);
+      });
+      await repos.audit.recordSecurityEvent({
+        type: 'device-proof-failure',
+        userId: user.id,
+        deviceId: device.id,
+        sourceIp: input.sourceIp,
+        detail: { reason: proven.reason, familyId: decision.stored.familyId },
+      });
+      throw unauthorized(
+        "The refresh was not signed with this device's key, so every token for the device was revoked.",
+      );
+    }
 
     const consumed = await repos.refreshTokens.consume(decision.stored.tokenId);
     if (!consumed) {
@@ -299,9 +336,39 @@ export class AuthService {
     };
   }
 
+  /**
+   * Whether a refresh proves it comes from its device.
+   *
+   * A device that registered no key at sign-in — the web dashboard, today — is not asked: there is
+   * nothing to prove against. That is a stated limit, not a quiet exception.
+   */
+  private checkDeviceProof(
+    device: UserDevice,
+    refreshToken: string,
+    proof: RefreshProof | null,
+  ):
+    | { readonly outcome: 'not-required' | 'proven' }
+    | { readonly outcome: 'clock'; readonly skewSeconds: number }
+    | { readonly outcome: 'refused'; readonly reason: 'missing' | 'bad-signature' } {
+    if (!device.publicKey) return { outcome: 'not-required' };
+    if (!proof) return { outcome: 'refused', reason: 'missing' };
+
+    const payload = refreshProofPayload(device.id, refreshToken, proof.signedAt);
+    if (!verifySignature(device.publicKey, payload, proof.signature)) {
+      return { outcome: 'refused', reason: 'bad-signature' };
+    }
+
+    const skewSeconds = Math.abs(this.context.now().getTime() - new Date(proof.signedAt).getTime()) / 1000;
+    if (!(skewSeconds <= REFRESH_PROOF_MAX_SKEW_SECONDS)) return { outcome: 'clock', skewSeconds };
+    return { outcome: 'proven' };
+  }
+
   private async resolveDevice(userId: string, descriptor: DeviceDescriptor): Promise<UserDevice> {
     if (descriptor.id) {
-      const existing = await this.context.repos.devices.findActive(descriptor.id, userId);
+      const found = await this.context.repos.devices.findActive(descriptor.id, userId);
+      // A device bound to a key stays bound to it. A sign-in naming its id with another key, or none,
+      // makes a new device: a password proves the owner, not possession of that device's key.
+      const existing = found && (!found.publicKey || found.publicKey === (descriptor.publicKey ?? '')) ? found : null;
       if (existing) {
         await this.context.repos.devices.touch(existing.id, this.context.now());
         return existing;

@@ -19,6 +19,9 @@ import java.util.Base64
 interface DeviceIdentityProvider {
     /** Base64url (no padding) X.509 SubjectPublicKeyInfo of an ECDSA P-256 key. */
     fun publicKeySpki(): String
+
+    /** SHA256withECDSA over [data], DER-encoded, by the private half that never leaves the phone. */
+    fun sign(data: ByteArray): ByteArray
 }
 
 object Spki {
@@ -57,7 +60,7 @@ class KeystoreDeviceIdentity(
     @Synchronized
     fun publicKey(): PublicKey = keyStore().getCertificate(alias)?.publicKey ?: generate()
 
-    fun sign(data: ByteArray): ByteArray {
+    override fun sign(data: ByteArray): ByteArray {
         publicKey()
         val privateKey = keyStore().getKey(alias, null) as PrivateKey
         return Signature.getInstance("SHA256withECDSA").run {

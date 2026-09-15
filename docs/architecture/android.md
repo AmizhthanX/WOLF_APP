@@ -330,8 +330,12 @@ as base64url SPKI, and a JVM test pins that encoding to the P-256 header the ser
 
 On the emulator the key is software-backed, and the test log says so. On a phone with a TEE it is not.
 
-**The server records the key but no request is signed with it yet.** Device proof-of-possession is a
-later piece of work; until then the key identifies the device in the list and nothing more.
+**Every refresh is signed with it.** `RefreshProof` signs the device id, the exact refresh token and the
+time — the bytes `refreshProofPayload` builds in the protocol, pinned byte for byte in both test suites — and
+the server refuses a refresh without that signature, revoking the device's tokens. A refresh token copied off
+the phone is useless without the phone's Keystore. A clock the server calls wrong comes back as
+`auth.device_clock`, a 400, which the phone does not treat as being signed out. Access tokens are still
+bearer tokens for their few minutes.
 
 ## Network
 
@@ -451,7 +455,9 @@ key custody: [deployment](../deployment/README.md#android-app).
   the prompt and a fingerprint were not driven: that would mean typing a PIN into the system's own UI.
 - **Live:** the same session and Keystore against a real WOLF API (`npm run dev:cloud`), gated on a
   runner argument: sign in, the server records an Android device, a relaunch restores from the rotated
-  token, sign-out revokes the refresh token on the server.
+  token, sign-out revokes the refresh token on the server. And the refresh proof against the server's own
+  verifier: a Keystore signature accepted, one by a clock an hour off refused as `auth.device_clock` without
+  revoking, and an unsigned refresh revoking the device's tokens so that even a signed one then fails.
 - **Live remote desktop** (`LiveRemoteDesktopTest`), gated the same way, against a local cloud and a
   running agent on the development PC: the stream reaches `streaming`, frames are decoded, control is
   granted, and a single `pointer.move` is sent — never a click, since the PC is someone's real desktop.
@@ -528,4 +534,3 @@ AndroidX Test (Apache-2.0).
 - The release pipeline run for real: it needs the repository on GitHub, the `android-release` environment and an
   upload key. Publishing to Google Play, and per-ABI APKs (x86 and x86_64, for emulators only, are over half of
   the 50 MB universal APK).
-- Device proof-of-possession, above.

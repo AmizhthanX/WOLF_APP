@@ -7,6 +7,7 @@ import app.amizhthan.wolf.security.VaultLockedException
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.api.WolfJson
+import app.amizhthan.wolf.security.RefreshProof
 import app.amizhthan.wolf.security.StoredCredentials
 import app.amizhthan.wolf.security.TokenVault
 import kotlinx.coroutines.async
@@ -57,6 +58,10 @@ class SessionManagerTest {
     @Volatile
     private var refreshRevoked = false
 
+    /** The last proof the mock server verified; a recorded request's body can be read only once. */
+    @Volatile
+    private var lastVerifiedProof: kotlinx.serialization.json.JsonObject? = null
+
     private val cipher = JvmAesGcmCipher()
     private val identity = JvmDeviceIdentity()
 
@@ -84,9 +89,22 @@ class SessionManagerTest {
                     "/api/v1/auth/login" -> MockResponse().setBody(grant())
                     "/api/v1/auth/refresh" -> {
                         refreshes.incrementAndGet()
-                        val token = WolfJson.parseToJsonElement(request.body.readUtf8()).jsonObject["refreshToken"]!!.jsonPrimitive.content
-                        // Rotation with replay detection, as the server does it.
-                        if (refreshRevoked || !consumed.add(token)) error(401, "auth.token_replayed") else MockResponse().setBody(grant())
+                        val body = WolfJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+                        val token = body["refreshToken"]!!.jsonPrimitive.content
+                        val proof = body["proof"]?.jsonObject
+                        // As the server does it: signed with the key the phone registered, over this token.
+                        val signed = proof != null && java.security.Signature.getInstance("SHA256withECDSA").run {
+                            initVerify(identity.keyPair.public)
+                            update(RefreshProof.payload(body["deviceId"]!!.jsonPrimitive.content, token, proof["signedAt"]!!.jsonPrimitive.content).toByteArray())
+                            verify(java.util.Base64.getUrlDecoder().decode(proof["signature"]!!.jsonPrimitive.content))
+                        }
+                        if (signed) lastVerifiedProof = proof
+                        when {
+                            !signed -> error(401, "auth.unauthorized")
+                            // Rotation with replay detection, as the server does it.
+                            refreshRevoked || !consumed.add(token) -> error(401, "auth.token_replayed")
+                            else -> MockResponse().setBody(grant())
+                        }
                     }
                     "/api/v1/auth/logout" -> MockResponse().setResponseCode(204)
                     "/api/v1/pcs" ->
@@ -137,6 +155,21 @@ class SessionManagerTest {
         assertEquals("refresh-1-0123456789abcdef", stored?.refreshToken)
         // The access token is not in the vault: it is not a field there at all.
         assertTrue(!file.readBytes().toString(Charsets.ISO_8859_1).contains("access-1"))
+    }
+
+    @Test
+    fun every_refresh_is_signed_with_the_identity_key_or_the_server_refuses_it() = runBlocking {
+        val session = manager()
+        session.signIn("owner@example.com", "pw")
+
+        // The server moved on; the refresh that follows must carry a signature the mock server checks against the key
+        // the phone registered — an unsigned one would be refused and sign the phone out.
+        validAccess = "moved-on"
+        assertEquals(0, session.authorized { WolfApi(server.url("/"), OkHttpClient()).listPcs(it) }.pcs.size)
+
+        assertEquals(1, refreshes.get())
+        assertNotNull("the refresh carried a proof the server verified against the registered key", lastVerifiedProof)
+        assertTrue(session.state.value is SessionState.SignedIn)
     }
 
     @Test

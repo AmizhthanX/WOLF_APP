@@ -12,3 +12,4 @@ export * from './configuration.js';
 export * from './signaling.js';
 export * from './messages.js';
 export * from './push.js';
+export * from './auth.js';

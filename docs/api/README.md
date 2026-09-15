@@ -45,7 +45,7 @@ never payload values.
 | Method | Path | Notes |
 | --- | --- | --- |
 | POST | `/auth/login` | Email, password, device descriptor. Rate limited. No registration endpoint exists. |
-| POST | `/auth/refresh` | Rotates the refresh token. Requires the device id. A replayed token revokes the family. |
+| POST | `/auth/refresh` | Rotates the refresh token. Requires the device id and, from a device that registered an identity key, `proof`: its signature over the device id, this token and the time (`refreshProofPayload`). A missing or wrong proof, like a replayed token, revokes the family; a correct one by a clock more than five minutes off is a 400 `auth.device_clock` and revokes nothing. |
 | POST | `/auth/logout` | Always 204. |
 | POST | `/auth/reauthenticate` | Refreshes `auth_time` for high and critical actions. |
 | GET | `/users/me` | Account, current device, and how long ago the password was proven. |

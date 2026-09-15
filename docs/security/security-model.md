@@ -358,9 +358,17 @@ Stated plainly rather than left to be discovered:
 - **A configuration backup is plaintext and unsigned.** It holds no credential, key or authority, so
   reading one gives a map of the owner's PCs and rules but no way into them. Its checksum detects
   damage, not forgery; a restore re-validates every item and grants no authority from the file.
-- **Device keys are registered but nothing is signed with them yet.** The Android app and the web
-  client send a P-256 public key at sign-in and the server stores it; no request carries a signature
-  made with it. Revocation and refresh-token rotation are what protect a session today.
+- **A device's key proves its refreshes, not every request.** The Android app registers a Keystore
+  P-256 key at sign-in and signs every refresh with it: its device id, that exact refresh token, and
+  the time. A refresh from a device with a key that arrives unsigned, or signed by another key, is
+  treated as a copied token — the family is revoked, the device's sessions end, and a
+  `device-proof-failure` security event is recorded with no token in it. A correct signature by a
+  clock more than five minutes off is refused with `auth.device_clock` and revokes nothing. A sign-in
+  that names a key-bound device with a different key creates a new device rather than rebinding it.
+  Not covered: access tokens remain bearer tokens for their short lifetime, and sign-in proves the
+  password, not the key. **The web dashboard registers no key** — its login sends none, and its
+  refreshes are brokered server-side from an httpOnly cookie — so it is not asked for a proof;
+  rotation, replay detection and revocation are its protection until it has one.
 - **Notifications are not e-mailed or sent to a webhook.** A webhook is a URL the owner supplies
   that the server then requests, which is a server-side request forgery surface into the cloud
   network; it is not built until egress is allow-listed, DNS rebinding is handled and payloads are
