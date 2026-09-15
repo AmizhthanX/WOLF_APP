@@ -106,6 +106,30 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configu
                             onLoadProcesses = viewModel::loadProcesses,
                             onTerminate = viewModel::terminate,
                             onRemoteDesktop = viewModel::openRemoteDesktop,
+                            onServices = viewModel::openServices,
+                            onAutorun = viewModel::openAutorun,
+                        )
+                    }
+                    is Screen.PcServices -> {
+                        BackHandler(onBack = viewModel::closeTool)
+                        ServicesScreen(
+                            pc = state.pcs?.firstOrNull { it.id == screen.pcId },
+                            state = state,
+                            onBack = viewModel::closeTool,
+                            onRefresh = viewModel::loadServices,
+                            onControl = viewModel::controlService,
+                            onSetStartType = viewModel::setServiceStartType,
+                        )
+                    }
+                    is Screen.PcAutorun -> {
+                        BackHandler(onBack = viewModel::closeTool)
+                        AutorunScreen(
+                            pc = state.pcs?.firstOrNull { it.id == screen.pcId },
+                            state = state,
+                            onBack = viewModel::closeTool,
+                            onRefresh = viewModel::loadAutorun,
+                            onControlTask = viewModel::controlTask,
+                            onSetStartupEnabled = viewModel::setStartupEnabled,
                         )
                     }
                     is Screen.RemoteDesktop -> {
@@ -143,6 +167,8 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configu
                             onToggleHistory = alerts::toggleHistory,
                             onDelete = alerts::deleteAutomation,
                             onSave = alerts::save,
+                            onOpenPicker = alerts::openPicker,
+                            onClosePicker = alerts::closePicker,
                             onDismissProblem = alerts::dismissProblem,
                         )
                     }
@@ -400,6 +426,8 @@ private fun PcScreen(
     onLoadProcesses: () -> Unit,
     onTerminate: (ProcessRow) -> Unit,
     onRemoteDesktop: (StreamProfile) -> Unit,
+    onServices: () -> Unit,
+    onAutorun: () -> Unit,
 ) {
     val online = pc?.status == "online" && pc.remoteAccessEnabled
 
@@ -431,6 +459,22 @@ private fun PcScreen(
                     }
                     Text(
                         "Opens view-only. Take control to touch, type and scroll on the PC. The picture never passes through the WOLF cloud.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("What runs on this PC", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onServices, enabled = online, modifier = Modifier.weight(1f)) { Text("Services") }
+                        OutlinedButton(onClick = onAutorun, enabled = online, modifier = Modifier.weight(1f)) { Text("Tasks & startup") }
+                    }
+                    Text(
+                        "Read and changed through the WOLF privileged helper on the PC. WOLF turns things off and on; it never creates or removes them.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

@@ -2,8 +2,8 @@
 
 Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics,
 commands — power actions and the process list — with the same confirmation ladder as the web client, and
-remote desktop over WebRTC with touch mapped to WOLF input, alert rules, the notification inbox and
-automations, and configuration backup and restore.
+remote desktop over WebRTC with touch mapped to WOLF input, services, scheduled tasks and startup items,
+alert rules, the notification inbox and automations, and configuration backup and restore.
 
 ## Pieces
 
@@ -22,6 +22,7 @@ automations, and configuration backup and restore.
 | Account authority | `session/AccountAuthority.kt` | Confirmation and password re-entry for decisions saved rather than sent |
 | Alerts UI | `ui/AlertsAutomationsViewModel.kt`, `ui/AlertsScreen.kt`, `ui/AutomationsScreen.kt` | Inbox, rules, automations and their runs |
 | Configuration backup | `api/ConfigurationBackup.kt`, `storage/Documents.kt`, `ui/ConfigurationViewModel.kt`, `ui/ConfigurationScreen.kt` | The backup file, the system document picker, restore |
+| What runs on a PC | `api/CommandModels.kt` (`Commands`, `PcTools`), `ui/PcToolsScreens.kt` | Services, scheduled tasks and startup items |
 | UI | `ui/`, `MainActivity.kt` | Sign-in, PCs, live metrics |
 | Endpoint | `src/debug/…/ApiEndpoint.kt`, `src/release/…/ApiEndpoint.kt` | API and relay addresses per build type |
 
@@ -48,7 +49,8 @@ automations, and configuration backup and restore.
 A command is sent with a **session token** — scoped to one PC and to the capabilities the session was
 granted — never with the account token. The session is opened the first time a command needs one
 rather than when a PC is looked at, because reading metrics does not need a session and every session
-is audited. It asks for `processes` and `power` and nothing else.
+is audited. It asks for `processes`, `power`, `services` (services and scheduled tasks) and
+`configuration` (startup items), and nothing else; remote desktop opens its own session.
 
 The confirmation ladder is the web client's, rule for rule:
 
@@ -114,6 +116,33 @@ moved the PC's pointer to exactly (0.25, 0.25) of the screen, read back on the P
 changes mid-stream from the phone, a hardware keyboard's shortcuts, pinch-zoom and scroll gestures.
 These exist in the protocol and the web client.
 
+## Services, scheduled tasks and startup items
+
+Two screens off the PC screen, **Services** and **Tasks & startup**, the web dashboard's panels on a phone.
+They share the PC's session, so leaving one keeps the lists already read.
+
+- **Services:** filter, status, account, start type; start, stop, restart; set the start type to automatic,
+  delayed, manual or disabled. `boot` and `system` are shown and never offered — they belong to drivers that
+  load before the service control manager exists. Stop and restart are off for a service WOLF protects, or
+  that Windows says does not accept a stop, and the card says which.
+- **Tasks & startup:** startup items (source, whose, what it runs) enabled and disabled; scheduled tasks
+  (path, what it runs, state, last and next run in local time, a non-zero exit code) run, enabled and
+  disabled. Disabling is off for protected entries; enabling them stays possible.
+- **WOLF turns things off and on and never creates or removes them**, and the screen says why: those are
+  how Windows persistence is installed. There is no field for what a startup entry runs.
+
+Every change is a typed command on the command path, through the same confirmation ladder as power: the
+server names the level (stopping a service is high; disabling one, or stopping one Windows cannot do
+without, is critical and needs a single-use grant; running a task is high; a startup item is medium).
+Commands are built from the listed row — the service's display name, the task's name — and the protocol's
+own rules are applied before sending: a service name with no spaces or separators, a rooted task path that
+cannot climb out of itself.
+
+**An empty list and a reason are not an empty list.** Every Windows machine has services and tasks; when
+the privileged helper is not there the agent returns none with `helperAvailable: false` and the reason,
+and the screen shows the reason rather than "nothing". **A refusal WOLF or Windows made on purpose is a
+notice, not an error**, so it does not read as something a retry would fix.
+
 ## Alerts and automations
 
 Account-wide rather than about one PC, so none of it opens a PC session. The PC list shows the unread
@@ -132,10 +161,13 @@ reaches the phone while the app is closed. The app does not poll in the backgrou
 **Automations.** The list shows each one's authorized risk, trigger, actions, targets, conditions and last
 run, with Run now, Turn on/off, History and Delete. The builder on the phone covers schedules, alert
 triggers and manual runs; the PC the alert fired for, or chosen PCs; the nobody-connected, time-window and
-CPU-below conditions; and **notify and power actions**. Service, scheduled-task and startup-item actions
-are shown when an automation has them, and built from the web dashboard — the phone has no way yet to pick
-a service or a task by name from the PC, and typing one blind is how an automation ends up aimed at
-nothing. Every payload is built in `Automations.kt`, which applies the protocol's bounds (1–5 actions,
+CPU-below conditions; and notify, power, **service, scheduled-task and startup-item actions**. The last
+three are never typed: "Choose from a PC" opens a short session with `services` and `configuration` only,
+reads that PC's list (low risk, so nothing to confirm), and ends the session as soon as the list is in. A
+typed name is how an automation ends up aimed at nothing; a chosen one carries the display name the list
+showed, which every PC checks again before it acts, so on a PC without that service the run fails and says
+so. The phone does more than the web dashboard here, where these names are typed. Every payload is built in
+`Automations.kt`, which applies the protocol's bounds (1–5 actions,
 up to 5 conditions, 1–20 distinct PCs, HH:MM times, a power delay of at most a day) and never forces a
 power action.
 
@@ -242,6 +274,11 @@ npm run build:android         # debug APK
   attempt, no request without a password, critical refused rather than asked, never climbing, a stale
   sign-in asking again, turning off free and turning on not. The builders held to the protocol's exact
   JSON and bounds; descriptions, including kinds the app does not know; the alert and inbox paths.
+- **JVM, services, tasks and startup items:** every command's exact protocol JSON; service names, task
+  paths (rooted, no climbing, no wildcards), start types (boot and system refused) and actions held to the
+  protocol; a startup change carrying nothing but on or off; lists decoded as the agent sends them,
+  including the helper-unavailable shape; scheduler times in local time or not at all; the service, task
+  and startup automation actions and their descriptions.
 - **JVM, configuration:** the file checks (too large, not JSON, not WOLF's format, a byte-order mark
   accepted, a newer version left to the server), the file written value for value, names, section order,
   plan wording; backup and restore against a mock API that verifies the file and always asks — medium at
@@ -269,6 +306,13 @@ npm run build:android         # debug APK
   through the app's document store and read back identical, holding none of the strings of credentials;
   a rule deleted and restored from that file — alert rules only — at the medium level the server named,
   coming back with its id; an edited copy refused by the server.
+- **Live services, tasks and startup items** (`LivePcToolsTest`), against a local cloud and the running
+  agent: all three lists read from the PC, or the PC's reason they could not be; six changes classified by
+  the server and **none confirmed**, so nothing reaches the machine (stopping the Print Spooler high,
+  stopping RpcSs critical, disabling a service critical, running a task high, disabling a Windows Update task
+  critical, disabling a startup item medium); a phone-built service action saved into an automation that is
+  off and manual-only, after the password, and deleted. On the development PC the agent runs without the
+  privileged helper, so the lists came back empty with that reason — which is the path this test proves.
 
 ```bash
 npm run test:android:device -- \
@@ -288,9 +332,11 @@ under `org.webrtc`. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
 
 ## Not built yet
 
-- Services, scheduled tasks and the file manager.
-- Push notifications (WOLF sends none yet), and building service, scheduled-task and startup-item
-  automations on the phone.
+- The file manager.
+- Push notifications (WOLF sends none yet).
+- Changing a service, task or startup item from the phone has not run against a machine with the
+  privileged helper installed; the development PC runs the agent interactively without it. The same is
+  true of those changes from the web (see the roadmap's Milestone 4).
 - Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures.
 - Release signing and distribution through CI.
 - Unlocking the vault with the phone's biometric or screen lock.

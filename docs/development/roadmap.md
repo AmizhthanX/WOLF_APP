@@ -875,9 +875,30 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
 - Proven against the real API through the real document store: back up, delete a rule, restore it from
   the file with its id; an edited copy refused
 
+**Done — services, scheduled tasks and startup items**
+
+- Services and Tasks & startup screens off the PC screen: list, filter, start, stop, restart, start type;
+  run, enable and disable tasks; enable and disable startup items. Protected entries and Windows' own
+  refusals shown before anybody tries; refusals made on purpose reported as notices
+- Commands built from the listed rows and held to the protocol's name and path rules before sending,
+  through the server-named confirmation ladder; a PC session that now asks for `services` and
+  `configuration` as well
+- An empty list with the helper's reason shown as that reason, never as "nothing"
+- **Automations choose services, tasks and startup items from a PC's own list** over a short read-only
+  session, instead of typed names — the gap left by the alerts and automations slice
+- Proven live: the lists read from the real agent (reporting, honestly, that its helper is not running),
+  six changes classified by the server and none confirmed, a phone-built service action saved into an
+  automation that cannot run
+- **A finding from the first command the phone sent to a real agent: the local cloud never delivered
+  commands.** Deployed, the API's `pg_notify` wakes the realtime service's Postgres `LISTEN`; the local
+  cloud runs PGlite, which that listener cannot connect to, and nothing else listened. Every command
+  through `npm run dev:cloud` — from the phone or the browser — waited forever. The test database now has an
+  in-process `listen`, and the local cloud subscribes the same channels with the same sweep; the API's
+  path is unchanged
+
 **Still open for Android**
-- Push notifications; building service, task and startup-item automations; services, scheduled tasks
-  and the file manager
+- Push notifications; the file manager
+- Changing services, tasks and startup items against a machine with the privileged helper installed
 - Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet

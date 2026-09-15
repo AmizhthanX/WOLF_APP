@@ -163,7 +163,7 @@ class PcSessionControllerTest {
         assertNull("nothing is confirmed before the server asks", bodies("/api/v1/pcs/$pcId/commands").single()["confirmedRiskLevel"])
 
         val session = bodies("/api/v1/pcs/$pcId/sessions").single()
-        assertEquals("[\"processes\",\"power\"]", session["capabilities"].toString())
+        assertEquals("[\"processes\",\"power\",\"services\",\"configuration\"]", session["capabilities"].toString())
     }
 
     @Test

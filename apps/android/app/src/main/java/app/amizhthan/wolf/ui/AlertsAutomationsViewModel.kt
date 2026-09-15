@@ -7,8 +7,20 @@ import app.amizhthan.wolf.api.AlertRuleView
 import app.amizhthan.wolf.api.AutomationRunView
 import app.amizhthan.wolf.api.AutomationView
 import app.amizhthan.wolf.api.Automations
+import app.amizhthan.wolf.api.CommandView
+import app.amizhthan.wolf.api.Commands
 import app.amizhthan.wolf.api.NotificationView
 import app.amizhthan.wolf.api.PcSummary
+import app.amizhthan.wolf.api.PcTools
+import app.amizhthan.wolf.api.ServiceListResult
+import app.amizhthan.wolf.api.ServiceRow
+import app.amizhthan.wolf.api.StartupListResult
+import app.amizhthan.wolf.api.StartupRow
+import app.amizhthan.wolf.api.TaskListResult
+import app.amizhthan.wolf.api.TaskRow
+import app.amizhthan.wolf.api.WolfJson
+import app.amizhthan.wolf.session.CommandOutcome
+import app.amizhthan.wolf.session.PcSessionController
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.api.WolfProblem
@@ -18,7 +30,10 @@ import app.amizhthan.wolf.session.PendingAuthority
 import app.amizhthan.wolf.session.SessionManager
 import app.amizhthan.wolf.session.SessionState
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,7 +49,23 @@ data class AuthorityRequest(
     val onSaved: (AlertsState) -> AlertsState,
 )
 
+/** A list read from one PC, for choosing what an automation's service, task or startup action acts on. */
+data class PickerState(
+    val pcId: String,
+    /** `service`, `task` or `startup`. */
+    val kind: String,
+    val loading: Boolean = true,
+    val services: List<ServiceRow> = emptyList(),
+    val tasks: List<TaskRow> = emptyList(),
+    val startup: List<StartupRow> = emptyList(),
+    val unavailableReason: String? = null,
+)
+
+/** A picker reads lists and nothing else, so its session asks for no more than listing needs. */
+private val PICKER_CAPABILITIES = listOf("services", "configuration")
+
 data class AlertsState(
+    val picker: PickerState? = null,
     val notifications: List<NotificationView>? = null,
     val unreadCount: Int = 0,
     val rules: List<AlertRuleView>? = null,
@@ -68,12 +99,14 @@ class AlertsAutomationsViewModel(
     private val session: SessionManager,
     private val api: WolfApi,
     private val authority: AccountAuthority = AccountAuthority(api, session),
+    private val pcSessions: (pcId: String) -> PcSessionController = { pcId -> PcSessionController(pcId, api, session, capabilities = PICKER_CAPABILITIES) },
 ) : ViewModel() {
     private val _state = MutableStateFlow(AlertsState())
     val state: StateFlow<AlertsState> = _state.asStateFlow()
 
     private var watchJob: Job? = null
     private var runsJob: Job? = null
+    private var pickerJob: Job? = null
 
     init {
         // Another account's rules must not survive a sign-out on screen.
@@ -82,6 +115,7 @@ class AlertsAutomationsViewModel(
                 if (signed is SessionState.SignedOut) {
                     watchJob?.cancel()
                     runsJob?.cancel()
+                    pickerJob?.cancel()
                     _state.value = AlertsState()
                 }
             }
@@ -103,8 +137,84 @@ class AlertsAutomationsViewModel(
         watchJob = null
         runsJob?.cancel()
         runsJob = null
-        _state.update { it.copy(expanded = null, runs = null, notice = null, problem = null) }
+        pickerJob?.cancel()
+        pickerJob = null
+        _state.update { it.copy(expanded = null, runs = null, picker = null, notice = null, problem = null) }
     }
+
+    /**
+     * Read the services, scheduled tasks or startup items of one PC, to choose an automation's action from.
+     *
+     * Chosen from the PC's own list rather than typed, because a name typed blind is how an automation ends
+     * up aimed at nothing. Listing is low risk and needs no confirmation; the session exists only while the
+     * list is read, and is ended the moment it is in.
+     */
+    fun openPicker(pcId: String, kind: String) {
+        pickerJob?.cancel()
+        _state.update { it.copy(picker = PickerState(pcId, kind)) }
+        pickerJob = viewModelScope.launch {
+            val controller = pcSessions(pcId)
+            try {
+                val list = when (kind) {
+                    "service" -> Commands.serviceList()
+                    "task" -> Commands.taskList()
+                    else -> Commands.startupList()
+                }
+                when (val outcome = controller.run(list, "Read a list to choose from", "Read what an automation can act on from this PC.")) {
+                    is CommandOutcome.Done -> showPicked(pcId, kind, outcome.command)
+                    // A list is low risk. If the server wants more for it, this picker is not where to give it.
+                    is CommandOutcome.NeedsConfirmation -> updatePicker(pcId, kind) {
+                        it.copy(loading = false, unavailableReason = "WOLF asked for a confirmation to read this list. Read it from the PC's own screen instead.")
+                    }
+                }
+            } catch (error: WolfApiException) {
+                updatePicker(pcId, kind) {
+                    it.copy(loading = false, unavailableReason = listOf(error.problem.problem, error.problem.recommendedAction).filter { part -> part.isNotBlank() }.joinToString(" "))
+                }
+            } finally {
+                withContext(NonCancellable) { controller.close() }
+            }
+        }
+    }
+
+    fun closePicker() {
+        pickerJob?.cancel()
+        pickerJob = null
+        _state.update { it.copy(picker = null) }
+    }
+
+    private fun updatePicker(pcId: String, kind: String, change: (PickerState) -> PickerState) = _state.update { current ->
+        val picker = current.picker
+        if (picker != null && picker.pcId == pcId && picker.kind == kind) current.copy(picker = change(picker)) else current
+    }
+
+    private fun showPicked(pcId: String, kind: String, command: CommandView) {
+        val result = command.result
+        if (command.status != "completed" || result == null) {
+            updatePicker(pcId, kind) { it.copy(loading = false, unavailableReason = command.failure?.message ?: "The PC did not return the list (${command.status}).") }
+            return
+        }
+        try {
+            when (kind) {
+                "service" -> WolfJson.decodeFromJsonElement(ServiceListResult.serializer(), result).let { list ->
+                    updatePicker(pcId, kind) { it.copy(loading = false, services = list.services, unavailableReason = unavailable(list.helperAvailable, list.unavailableReason)) }
+                }
+                "task" -> WolfJson.decodeFromJsonElement(TaskListResult.serializer(), result).let { list ->
+                    updatePicker(pcId, kind) { it.copy(loading = false, tasks = list.tasks, unavailableReason = unavailable(list.helperAvailable, list.unavailableReason)) }
+                }
+                else -> WolfJson.decodeFromJsonElement(StartupListResult.serializer(), result).let { list ->
+                    updatePicker(pcId, kind) { it.copy(loading = false, startup = list.entries, unavailableReason = unavailable(list.helperAvailable, list.unavailableReason)) }
+                }
+            }
+        } catch (_: SerializationException) {
+            updatePicker(pcId, kind) { it.copy(loading = false, unavailableReason = "The PC answered in a way this app does not understand.") }
+        } catch (_: IllegalArgumentException) {
+            updatePicker(pcId, kind) { it.copy(loading = false, unavailableReason = "The PC answered in a way this app does not understand.") }
+        }
+    }
+
+    private fun unavailable(helperAvailable: Boolean, reason: String?): String? =
+        if (helperAvailable) null else reason ?: PcTools.HELPER_MISSING
 
     /** The unread count for the PC list. */
     fun refreshUnread() {
@@ -295,6 +405,7 @@ class AlertsAutomationsViewModel(
     override fun onCleared() {
         watchJob?.cancel()
         runsJob?.cancel()
+        pickerJob?.cancel()
     }
 
     private companion object {

@@ -183,6 +183,22 @@ object Automations {
         put("command", Commands.power(action, delaySeconds))
     }
 
+    /** The display name is checked by the PC before it acts, so on a PC without that service the run fails and says so. */
+    fun serviceControl(name: String, action: String, displayName: String): JsonObject = buildJsonObject {
+        put("kind", "command")
+        put("command", Commands.serviceControl(name, action, displayName))
+    }
+
+    fun taskControl(path: String, action: String, name: String): JsonObject = buildJsonObject {
+        put("kind", "command")
+        put("command", Commands.taskControl(path, action, name))
+    }
+
+    fun startupSetEnabled(name: String, scope: String, source: String, enabled: Boolean): JsonObject = buildJsonObject {
+        put("kind", "command")
+        put("command", Commands.startupSetEnabled(name, scope, source, enabled))
+    }
+
     /* Targets */
 
     fun onPcs(pcIds: List<String>): JsonObject {

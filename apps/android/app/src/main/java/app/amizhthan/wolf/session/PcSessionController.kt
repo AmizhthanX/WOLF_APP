@@ -154,8 +154,11 @@ class PcSessionController(
     }
 
     companion object {
-        /** What this app does on a PC today: nothing more is asked for. */
-        val DEFAULT_CAPABILITIES = listOf("processes", "power")
+        /**
+         * What the PC screen does, and nothing more: processes, power, services and scheduled tasks
+         * (`services`), and startup items (`configuration`). Remote desktop opens its own session.
+         */
+        val DEFAULT_CAPABILITIES = listOf("processes", "power", "services", "configuration")
 
         val ESCALATIONS = setOf(
             "command.confirmation_required",
