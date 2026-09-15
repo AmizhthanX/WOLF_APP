@@ -803,6 +803,35 @@ milestone 2 and is never persisted in cloud history.
 **Milestone 5 is complete.** Every item it set out to build is built: rollups, alerts, GPU, process
 and storage intelligence, automations, and configuration backup.
 
+## Web dashboard — device proof-of-possession
+
+**Done**
+
+- At sign-in the browser makes an ECDSA P-256 key with WebCrypto, its private half non-extractable, kept in
+  IndexedDB, and registers the public half. The broker refuses a dashboard sign-in without one; the API refuses any
+  registered key that is not a P-256 SPKI, where before a malformed key would have surfaced as a "stolen token"
+- The page never holds the refresh token, so it signs the token's binding — a labelled SHA-256 the broker hands out
+  and the API recomputes — with its device id and the time (`webRefreshProofPayload`). Which payload a device signs
+  is fixed by its recorded kind: a browser key cannot satisfy the phone rule, nor a phone key the browser's. The
+  Android rule is unchanged
+- Every tab refreshes under one Web Lock. A binding gone stale because another tab rotated the token is a 409 retry
+  at the broker and is never forwarded, so a race is not answered as a theft
+- A lost key — site data cleared, storage evicted — ends the sign-in as a sign-out with reason `device-key-lost` on
+  the audit record, the sign-in page says why, and the next sign-in is a new device. Nothing falls back to an unsigned
+  refresh. A browser that cannot keep a key is refused before the password is sent; a sign-in from before keys is
+  ended at its next refresh
+- A wrong device clock or an unreachable API now leaves the sign-in intact and is shown with a retry; the broker used
+  to clear the cookie on any failed refresh
+- Proven: protocol tests pinning the web payload and binding bytes; the WebCrypto key, DER conversion and storage
+  failures under Node's WebCrypto; the page's session code and the broker end to end against the real API over HTTP —
+  tabs refreshing at once, a rotation racing a signature, a copied cookie with no key and with a foreign key, a lost
+  key, a wrong clock, a pre-key sign-in; the web variant through the API's own e2e suite; every broker route checking
+  CSRF first; `next build`. In a real Chromium, the device-key harness page: one key from five concurrent creations
+  under Web Locks, the key kept across a reload, export refused, the signature accepted by the API's verifier, and the
+  loss noticed after clearing storage
+- **Not driven:** Firefox and Safari, a real private window, Safari's seven-day storage eviction, and the full
+  dashboard signed in to a running API in a browser
+
 ## Android
 
 Kotlin and Jetpack Compose, native WebRTC, platform keystore for tokens and device
@@ -994,7 +1023,8 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   rule; and live, a Keystore signature accepted by the real server's verifier, a wrong clock refused without revoking,
   and an unsigned refresh revoking the device's tokens
 - **Found on the way:** the security model said the web client registers a key. It does not — its login sends
-  none — so its refreshes are not asked for a proof, and the docs now say so rather than implying otherwise
+  none — so its refreshes are not asked for a proof, and the docs now say so rather than implying otherwise. Since
+  closed: see *Web dashboard — device proof-of-possession*
 
 **Still open for Android**
 - Push: an end-to-end delivery through a real Firebase project

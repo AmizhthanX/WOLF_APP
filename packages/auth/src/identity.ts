@@ -131,3 +131,25 @@ export function verifyChallengeResponse(options: VerifyChallengeOptions): Challe
   }
   return { ok: true };
 }
+
+/**
+ * Whether a string is an identity public key this module can verify with: SPKI DER, base64url, on the
+ * P-256 curve.
+ *
+ * Checked when a client registers a key at sign-in. A key that does not parse, or is on another curve,
+ * would bind a device to something no signature can ever satisfy — and the first refresh would then be
+ * answered as a stolen token instead of the sign-in being refused as malformed.
+ */
+export function isIdentityPublicKey(publicKeyBase64Url: string): boolean {
+  if (!/^[A-Za-z0-9_-]+$/.test(publicKeyBase64Url)) return false;
+  try {
+    const key = createPublicKey({
+      key: Buffer.from(publicKeyBase64Url, 'base64url'),
+      format: 'der',
+      type: 'spki',
+    });
+    return key.asymmetricKeyType === 'ec' && key.asymmetricKeyDetails?.namedCurve === IDENTITY_CURVE;
+  } catch {
+    return false;
+  }
+}

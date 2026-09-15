@@ -1,5 +1,23 @@
 'use client';
 
+import {
+  askToKeepStorage,
+  browserLock,
+  createDeviceKeys,
+  indexedDbDeviceKeyStore,
+} from '@/lib/device-key';
+import type { WolfProblem } from '@/lib/problem';
+import {
+  refreshSession,
+  signInWithDeviceKey,
+  signOutSession,
+  type BrokerPath,
+  type SessionDeps,
+  type SessionGrant,
+} from '@/lib/session-refresh';
+
+export type { WolfProblem };
+
 /**
  * Browser API client.
  *
@@ -7,19 +25,11 @@
  * cookie — and is refreshed through the server-side broker, which owns the refresh token.
  * The practical effect is that closing the tab drops the access token, and an XSS bug can
  * only reach a credential that expires in minutes.
+ *
+ * Every refresh is signed with this browser's device key (`lib/device-key.ts`), which the
+ * page can sign with but not read, and runs in turn with every other tab's
+ * (`lib/session-refresh.ts`).
  */
-
-export interface WolfProblem {
-  code: string;
-  problem: string;
-  cause: string;
-  currentState: string;
-  recommendedAction: string;
-  referenceId: string;
-  httpStatus: number;
-  /** Machine-readable, non-secret facts the client needs to react (risk level, retry-after). */
-  context?: Record<string, string | number | boolean>;
-}
 
 /** Error carrying the structured problem the API returned. */
 export class WolfApiError extends Error {
@@ -45,6 +55,9 @@ function fallbackProblem(status: number, cause: string): WolfProblem {
 }
 
 const CSRF_HEADERS = { 'x-wolf-csrf': '1', 'content-type': 'application/json' } as const;
+
+/** A broker call holds the cross-tab session lock, so it must not be able to hold it forever. */
+const BROKER_TIMEOUT_MS = 15_000;
 
 export const API_URL = (process.env.NEXT_PUBLIC_WOLF_API_URL ?? 'http://localhost:8080').replace(
   /\/+$/,
@@ -75,11 +88,54 @@ interface TokenState {
   deviceId: string | null;
 }
 
+/** Why the last refresh did not produce a token, and whether the sign-in survived it. */
+export interface SessionFailure {
+  readonly problem: WolfProblem | null;
+  readonly signedOut: boolean;
+}
+
 let token: TokenState | null = null;
 let refreshInFlight: Promise<TokenState | null> | null = null;
+let lastFailure: SessionFailure | null = null;
+let deps: SessionDeps | null = null;
 
 /** Refresh a little early so a request never leaves with a token about to expire. */
 const REFRESH_MARGIN_MS = 30_000;
+
+/** Built on first use: this module is also evaluated during server rendering, where none of it exists. */
+function session(): SessionDeps {
+  deps ??= {
+    transport: {
+      async post(path: BrokerPath, body?: unknown) {
+        const response = await fetch(path, {
+          method: 'POST',
+          headers: CSRF_HEADERS,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: AbortSignal.timeout(BROKER_TIMEOUT_MS),
+          cache: 'no-store',
+        });
+        return {
+          status: response.status,
+          payload: response.status === 204 ? null : await response.json().catch(() => null),
+        };
+      },
+    },
+    keys: createDeviceKeys(indexedDbDeviceKeyStore(), browserLock('wolf-device-key')),
+    lock: browserLock('wolf-session'),
+  };
+  return deps;
+}
+
+function adoptGrant(grant: SessionGrant): TokenState {
+  token = {
+    accessToken: grant.accessToken,
+    expiresAt: new Date(grant.accessTokenExpiresAt).getTime(),
+    user: grant.user,
+    deviceId: grant.device?.id ?? null,
+  };
+  lastFailure = null;
+  return token;
+}
 
 export function currentUser(): SessionUser | null {
   return token?.user ?? null;
@@ -87,6 +143,19 @@ export function currentUser(): SessionUser | null {
 
 export function forgetSession(): void {
   token = null;
+}
+
+/** The last refresh failure, if the last refresh failed. */
+export function sessionFailure(): SessionFailure | null {
+  return lastFailure;
+}
+
+/** The reason the sign-in ended, once: the sign-in page shows it and it is not shown again. */
+export function takeSignedOutProblem(): WolfProblem | null {
+  if (!lastFailure?.signedOut || !lastFailure.problem) return null;
+  const { problem } = lastFailure;
+  lastFailure = { problem: null, signedOut: true };
+  return problem;
 }
 
 /**
@@ -106,37 +175,26 @@ export function adoptAccessToken(accessToken: string, expiresAt: string): void {
 }
 
 async function refreshToken(): Promise<TokenState | null> {
-  const response = await fetch('/api/auth/refresh', { method: 'POST', headers: CSRF_HEADERS });
-  if (!response.ok) {
-    token = null;
-    return null;
-  }
+  const outcome = await refreshSession(session());
+  if (outcome.kind === 'refreshed') return adoptGrant(outcome.grant);
 
-  const payload = (await response.json()) as {
-    accessToken: string;
-    accessTokenExpiresAt: string;
-    user: SessionUser;
-    device: { id: string } | null;
-  };
+  token = null;
+  lastFailure = { problem: outcome.problem, signedOut: outcome.kind === 'signed-out' };
+  return null;
+}
 
-  token = {
-    accessToken: payload.accessToken,
-    expiresAt: new Date(payload.accessTokenExpiresAt).getTime(),
-    user: payload.user,
-    deviceId: payload.device?.id ?? null,
-  };
-  return token;
+/** One refresh for every caller in this tab; other tabs wait their turn on the shared lock. */
+function sharedRefresh(): Promise<TokenState | null> {
+  refreshInFlight ??= refreshToken().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
 }
 
 /** Get a usable access token, refreshing if needed. Concurrent callers share one refresh. */
 export async function ensureToken(): Promise<TokenState | null> {
   if (token && token.expiresAt - REFRESH_MARGIN_MS > Date.now()) return token;
-
-  refreshInFlight ??= refreshToken().finally(() => {
-    refreshInFlight = null;
-  });
-
-  return refreshInFlight;
+  return sharedRefresh();
 }
 
 export async function signIn(input: {
@@ -144,34 +202,19 @@ export async function signIn(input: {
   password: string;
   deviceName: string;
 }): Promise<SessionUser> {
-  const response = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: CSRF_HEADERS,
-    body: JSON.stringify(input),
-  });
+  const outcome = await signInWithDeviceKey(session(), input);
+  if (outcome.kind === 'refused') throw new WolfApiError(outcome.problem);
 
-  const payload = (await response.json().catch(() => null)) as
-    | { error?: WolfProblem; accessToken?: string; accessTokenExpiresAt?: string; user?: SessionUser; device?: { id: string } }
-    | null;
-
-  if (!response.ok || !payload?.accessToken) {
-    throw new WolfApiError(
-      payload?.error ?? fallbackProblem(response.status, 'The API rejected the sign-in.'),
-    );
-  }
-
-  token = {
-    accessToken: payload.accessToken,
-    expiresAt: new Date(payload.accessTokenExpiresAt!).getTime(),
-    user: payload.user!,
-    deviceId: payload.device?.id ?? null,
-  };
-  return payload.user!;
+  // Ask the browser not to evict the key under storage pressure. A refusal changes nothing: a key
+  // that is later evicted is found missing at the next refresh, and the sign-in ends plainly.
+  void askToKeepStorage();
+  return adoptGrant(outcome.grant).user!;
 }
 
 export async function signOut(): Promise<void> {
   token = null;
-  await fetch('/api/auth/logout', { method: 'POST', headers: CSRF_HEADERS }).catch(() => undefined);
+  lastFailure = null;
+  await signOutSession(session());
 }
 
 export interface ApiOptions {
@@ -191,15 +234,17 @@ export interface ApiOptions {
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const bearer = options.bearer ?? (await ensureToken())?.accessToken;
   if (!bearer) {
-    throw new WolfApiError({
-      code: 'auth.unauthorized',
-      problem: 'You are not signed in.',
-      cause: 'No valid WOLF session is available in this browser.',
-      currentState: 'The request was not performed.',
-      recommendedAction: 'Sign in to continue.',
-      referenceId: 'WOLF-AUTH-NOTOKEN',
-      httpStatus: 401,
-    });
+    throw new WolfApiError(
+      lastFailure?.problem ?? {
+        code: 'auth.unauthorized',
+        problem: 'You are not signed in.',
+        cause: 'No valid WOLF session is available in this browser.',
+        currentState: 'The request was not performed.',
+        recommendedAction: 'Sign in to continue.',
+        referenceId: 'WOLF-AUTH-NOTOKEN',
+        httpStatus: 401,
+      },
+    );
   }
 
   const send = async (authorization: string): Promise<Response> =>
@@ -222,7 +267,7 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
   }
 
   if (response.status === 401 && !options.bearer) {
-    const refreshed = await refreshToken();
+    const refreshed = await sharedRefresh();
     if (refreshed) {
       response = await send(refreshed.accessToken);
     }

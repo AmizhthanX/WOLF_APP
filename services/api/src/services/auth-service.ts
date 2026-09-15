@@ -11,7 +11,16 @@ import {
   verifyPassword,
   verifySignature,
 } from '@wolf/auth';
-import { REFRESH_PROOF_MAX_SKEW_SECONDS, refreshProofPayload, type RefreshProof } from '@wolf/protocol';
+import {
+  REFRESH_PROOF_MAX_SKEW_SECONDS,
+  refreshProofPayload,
+  refreshProofVariant,
+  refreshTokenBinding,
+  webRefreshProofPayload,
+  type RefreshProof,
+  type RefreshProofVariant,
+  type SignOutReason,
+} from '@wolf/protocol';
 import { newId } from '@wolf/shared-types';
 import type { DeviceKind, UserDevice } from '@wolf/shared-types';
 import type { AppContext } from '../http/context.js';
@@ -198,14 +207,14 @@ export class AuthService {
     const user = await repos.users.findById(decision.stored.userId);
     if (!user) throw unauthorized('The account no longer exists.');
 
-    const proven = this.checkDeviceProof(device, input.refreshToken, input.proof);
+    const proven = await this.checkDeviceProof(device, input.refreshToken, input.proof);
     if (proven.outcome === 'clock') {
       await repos.audit.recordSecurityEvent({
         type: 'device-proof-failure',
         userId: user.id,
         deviceId: device.id,
         sourceIp: input.sourceIp,
-        detail: { reason: 'clock-skew', skewSeconds: Math.round(proven.skewSeconds) },
+        detail: { reason: 'clock-skew', variant: proven.variant, skewSeconds: Math.round(proven.skewSeconds) },
       });
       throw deviceClockSkew(proven.skewSeconds, REFRESH_PROOF_MAX_SKEW_SECONDS);
     }
@@ -219,7 +228,7 @@ export class AuthService {
         userId: user.id,
         deviceId: device.id,
         sourceIp: input.sourceIp,
-        detail: { reason: proven.reason, familyId: decision.stored.familyId },
+        detail: { reason: proven.reason, variant: proven.variant, familyId: decision.stored.familyId },
       });
       throw unauthorized(
         "The refresh was not signed with this device's key, so every token for the device was revoked.",
@@ -244,7 +253,11 @@ export class AuthService {
     });
   }
 
-  async logout(refreshToken: string): Promise<void> {
+  /**
+   * End a sign-in. `reason` is the client's own account of why — a person signing out, or a browser
+   * that lost the device key its sign-in was bound to — and is kept as metadata on the audit record.
+   */
+  async logout(refreshToken: string, reason: SignOutReason = 'signed-out'): Promise<void> {
     const parsed = parseRefreshToken(refreshToken);
     if (!parsed) return;
     const stored = await this.context.repos.refreshTokens.findByTokenId(parsed.tokenId);
@@ -261,6 +274,7 @@ export class AuthService {
       riskLevel: 'low',
       userId: stored.userId,
       deviceId: stored.deviceId,
+      target: { reason },
     });
   }
 
@@ -339,27 +353,38 @@ export class AuthService {
   /**
    * Whether a refresh proves it comes from its device.
    *
-   * A device that registered no key at sign-in — the web dashboard, today — is not asked: there is
-   * nothing to prove against. That is a stated limit, not a quiet exception.
+   * A device that registered no key at sign-in is not asked: there is nothing to prove against. The
+   * dashboard always registers one now; a browser signed in before it did, or a client that sends
+   * none, is the stated limit — not a quiet exception.
+   *
+   * What the key signs is fixed by the device's recorded kind, never by the request. A phone signs its
+   * refresh token; a browser, whose page never holds the token, signs the token's binding, which is
+   * recomputed here from the token actually presented. Either way the signature is bound to one
+   * single-use token.
    */
-  private checkDeviceProof(
+  private async checkDeviceProof(
     device: UserDevice,
     refreshToken: string,
     proof: RefreshProof | null,
-  ):
+  ): Promise<
     | { readonly outcome: 'not-required' | 'proven' }
-    | { readonly outcome: 'clock'; readonly skewSeconds: number }
-    | { readonly outcome: 'refused'; readonly reason: 'missing' | 'bad-signature' } {
+    | { readonly outcome: 'clock'; readonly variant: RefreshProofVariant; readonly skewSeconds: number }
+    | { readonly outcome: 'refused'; readonly variant: RefreshProofVariant; readonly reason: 'missing' | 'bad-signature' }
+  > {
     if (!device.publicKey) return { outcome: 'not-required' };
-    if (!proof) return { outcome: 'refused', reason: 'missing' };
+    const variant = refreshProofVariant(device.kind);
+    if (!proof) return { outcome: 'refused', variant, reason: 'missing' };
 
-    const payload = refreshProofPayload(device.id, refreshToken, proof.signedAt);
+    const payload =
+      variant === 'web'
+        ? webRefreshProofPayload(device.id, await refreshTokenBinding(refreshToken), proof.signedAt)
+        : refreshProofPayload(device.id, refreshToken, proof.signedAt);
     if (!verifySignature(device.publicKey, payload, proof.signature)) {
-      return { outcome: 'refused', reason: 'bad-signature' };
+      return { outcome: 'refused', variant, reason: 'bad-signature' };
     }
 
     const skewSeconds = Math.abs(this.context.now().getTime() - new Date(proof.signedAt).getTime()) / 1000;
-    if (!(skewSeconds <= REFRESH_PROOF_MAX_SKEW_SECONDS)) return { outcome: 'clock', skewSeconds };
+    if (!(skewSeconds <= REFRESH_PROOF_MAX_SKEW_SECONDS)) return { outcome: 'clock', variant, skewSeconds };
     return { outcome: 'proven' };
   }
 

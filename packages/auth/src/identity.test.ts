@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createChallenge,
   generateIdentityKeyPair,
+  isIdentityPublicKey,
   signPayload,
   verifyChallengeResponse,
   verifySignature,
@@ -103,4 +104,16 @@ test('an expired challenge is rejected even with a valid signature', () => {
 test('challenge nonces are unique per connection', () => {
   const nonces = new Set(Array.from({ length: 1000 }, () => createChallenge().nonce));
   assert.equal(nonces.size, 1000);
+});
+
+test('only a P-256 SPKI key is accepted for registration', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  assert.equal(isIdentityPublicKey(generateIdentityKeyPair().publicKey), true);
+
+  const spki = (key: import('node:crypto').KeyObject) => key.export({ type: 'spki', format: 'der' }).toString('base64url');
+  assert.equal(isIdentityPublicKey(spki(generateKeyPairSync('ec', { namedCurve: 'secp384r1' }).publicKey)), false, 'another curve');
+  assert.equal(isIdentityPublicKey(spki(generateKeyPairSync('ed25519').publicKey)), false, 'another algorithm');
+  assert.equal(isIdentityPublicKey('cHVibGljLWtleQ'), false, 'not a key');
+  assert.equal(isIdentityPublicKey(`${generateIdentityKeyPair().publicKey}==`), false, 'padded');
+  assert.equal(isIdentityPublicKey(''), false);
 });

@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
-import { currentUser, ensureToken, signOut } from '@/lib/client';
+import { currentUser, ensureToken, sessionFailure, signOut, type WolfProblem } from '@/lib/client';
 import { listNotifications } from '@/lib/wolf';
+import { Problem } from '@/components/ui';
 
 /** How often the unread count is checked. Alerts are evaluated once a minute; this need not be faster. */
 const INBOX_REFRESH_MS = 30_000;
@@ -13,12 +14,16 @@ const INBOX_REFRESH_MS = 30_000;
  * Shell for every authenticated page.
  *
  * It resolves a session before rendering children, so a page never briefly shows an empty
- * dashboard to someone who is not signed in. A failed refresh sends the browser to the
- * sign-in page rather than leaving a shell with nothing in it.
+ * dashboard to someone who is not signed in. A refresh that ended the sign-in sends the
+ * browser to the sign-in page, which says why. A refresh that failed with the sign-in intact —
+ * a wrong device clock, an unreachable API — is shown here with a retry, rather than
+ * pretending the owner was signed out.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const [state, setState] = useState<'checking' | 'ready'>('checking');
+  const [state, setState] = useState<'checking' | 'ready' | 'failed'>('checking');
+  const [failure, setFailure] = useState<WolfProblem | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [email, setEmail] = useState<string | null>(null);
   const [unread, setUnread] = useState<number | null>(null);
 
@@ -28,6 +33,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     void ensureToken().then((token) => {
       if (cancelled) return;
       if (!token) {
+        const last = sessionFailure();
+        if (last && !last.signedOut && last.problem) {
+          setFailure(last.problem);
+          setState('failed');
+          return;
+        }
         router.replace('/login');
         return;
       }
@@ -38,7 +49,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [router, attempt]);
 
   useEffect(() => {
     if (state !== 'ready') return;
@@ -62,6 +73,34 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main className="app-shell">
         <div className="content">
           <p className="muted">Restoring your session…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (state === 'failed' && failure) {
+    return (
+      <main className="app-shell">
+        <div className="content stack">
+          <Problem
+            problem={failure}
+            onRetry={() => {
+              setState('checking');
+              setAttempt((count) => count + 1);
+            }}
+          />
+          <div className="row">
+            <button
+              type="button"
+              className="button-small"
+              onClick={async () => {
+                await signOut();
+                router.replace('/login');
+              }}
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </main>
     );

@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { signIn, WolfApiError, type WolfProblem } from '@/lib/client';
+import { signIn, takeSignedOutProblem, WolfApiError, type WolfProblem } from '@/lib/client';
 import { Problem } from '@/components/ui';
 
 /**
@@ -11,11 +11,20 @@ import { Problem } from '@/components/ui';
  * WOLF has one owner account and no registration path, so this page offers no "create
  * account" or "forgot password" flow — both would be endpoints that do not exist. Recovery
  * is a deliberate, local action performed on the server.
+ *
+ * Signing in makes this browser's device key if it has none (`lib/device-key.ts`). When the
+ * previous sign-in ended because that key was lost or the API refused a refresh, the reason is
+ * shown here rather than a bare form.
  */
 export default function LoginPage() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<WolfProblem | null>(null);
+
+  useEffect(() => {
+    const ended = takeSignedOutProblem();
+    if (ended) setError(ended);
+  }, []);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();

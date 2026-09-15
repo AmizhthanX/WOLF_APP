@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { refreshProof } from '@wolf/protocol';
+import { isIdentityPublicKey } from '@wolf/auth';
+import { refreshProof, signOutReason } from '@wolf/protocol';
 import { DEVICE_KINDS } from '@wolf/shared-types';
 import { displayName, email, parseOrThrow, password } from '@wolf/validation';
 import type { AppContext } from '../http/context.js';
@@ -14,7 +15,13 @@ const deviceDescriptor = z.object({
   kind: z.enum(DEVICE_KINDS),
   name: displayName,
   platform: z.string().max(200).nullable().optional(),
-  publicKey: z.string().max(512).nullable().optional(),
+  /** A key no signature could satisfy is refused here, not discovered as a "stolen token" at the first refresh. */
+  publicKey: z
+    .string()
+    .max(512)
+    .refine(isIdentityPublicKey, 'must be an ECDSA P-256 public key (SPKI DER, base64url)')
+    .nullable()
+    .optional(),
 });
 
 const loginBody = z.object({
@@ -32,6 +39,7 @@ const refreshBody = z.object({
 
 const logoutBody = z.object({
   refreshToken: z.string().min(16).max(512),
+  reason: signOutReason.optional(),
 });
 
 const reauthBody = z.object({
@@ -99,7 +107,7 @@ export async function registerAuthRoutes(app: FastifyInstance, context: AppConte
       area: 'AUTH',
       what: 'The sign-out request',
     });
-    await auth.logout(body.refreshToken);
+    await auth.logout(body.refreshToken, body.reason ?? 'signed-out');
     // Always 204: whether the token existed is not information a caller needs.
     return reply.status(204).send();
   });

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WOLF device-key browser test</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #101014; color: #e6e6ea; font: 13px/1.5 system-ui, sans-serif; }
+      main { max-width: 760px; padding: 16px; }
+      pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 ui-monospace, monospace; }
+      section { border: 1px solid #2a2a33; padding: 8px; margin-bottom: 8px; }
+      h2 { font-size: 11px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; color: #9a9aa8; }
+      a { color: #8ab4ff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section><h2>Result</h2><pre id="result">running…</pre></section>
+      <section><h2>Steps</h2><pre id="steps"></pre></section>
+      <p><a href="#" id="again">Run again</a></p>
+    </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "@wolf/protocol/device-proof": "/packages/protocol/dist/device-proof.js"
+        }
+      }
+    </script>
+
+    <script type="module">
+      // The dashboard's own device-key module, compiled by the web workspace's test build. A second
+      // implementation here would prove nothing about the one that ships.
+      import {
+        DEVICE_KEY_DATABASE,
+        browserLock,
+        createDeviceKeys,
+        indexedDbDeviceKeyStore,
+      } from '/apps/web/dist-test/device-key.js';
+
+      const PHASE = 'wolf-device-key-harness';
+      const DEVICE = '01J9ZQK7T0000000000000000D';
+      const BINDING = 'rT4NFl6b8Vr_lezENu5yr2HFdm9rFz7nvxXk-stlhPc';
+
+      const el = (id) => document.getElementById(id);
+      const saved = JSON.parse(sessionStorage.getItem(PHASE) ?? 'null');
+      const steps = saved?.steps ?? [];
+
+      const render = () => {
+        el('steps').textContent = steps.map((s) => `${s.ok ? 'ok    ' : 'FAILED'} ${s.name}${s.detail ? ` — ${s.detail}` : ''}`).join('\n');
+      };
+      const check = (condition, message) => {
+        if (!condition) throw new Error(message);
+      };
+      const step = async (name, work) => {
+        try {
+          const detail = await work();
+          steps.push({ name, ok: true, detail: detail ?? null });
+        } catch (error) {
+          steps.push({ name, ok: false, detail: String(error?.message ?? error) });
+        }
+        render();
+      };
+      /** A new store and a new lock each time: what a separate tab, or a later page load, would have. */
+      const tab = () => createDeviceKeys(indexedDbDeviceKeyStore(), browserLock('wolf-device-key'));
+      const deleteDatabase = () =>
+        new Promise((resolve, reject) => {
+          const request = indexedDB.deleteDatabase(DEVICE_KEY_DATABASE);
+          request.onsuccess = () => resolve();
+          request.onblocked = () => resolve();
+          request.onerror = () => reject(request.error);
+        });
+      const verify = (body) =>
+        fetch('/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+
+      el('again').addEventListener('click', (event) => {
+        event.preventDefault();
+        sessionStorage.removeItem(PHASE);
+        location.reload();
+      });
+
+      if (!saved) {
+        await step('a browser with no key loads none', async () => {
+          await deleteDatabase();
+          check((await tab().load()) === null, 'a key was already stored');
+        });
+
+        await step('five tabs signing in at once make one key, under Web Locks', async () => {
+          check(Boolean(navigator.locks), 'this browser has no Web Locks');
+          const made = await Promise.all(Array.from({ length: 5 }, () => tab().ensure()));
+          const distinct = new Set(made.map((key) => key.publicKeySpki));
+          check(distinct.size === 1, `${distinct.size} different keys were stored`);
+          return `${made[0].publicKeySpki.slice(0, 20)}…`;
+        });
+
+        const key = await tab().load();
+        sessionStorage.setItem(PHASE, JSON.stringify({ steps, publicKeySpki: key?.publicKeySpki ?? null }));
+        el('result').textContent = 'reloading to check the key was kept…';
+        location.reload();
+      } else {
+        sessionStorage.removeItem(PHASE);
+        let key = null;
+
+        await step('after a reload, the same key is loaded from IndexedDB', async () => {
+          key = await tab().load();
+          check(key !== null, 'no key after reload');
+          check(key.publicKeySpki === saved.publicKeySpki, 'a different key after reload');
+        });
+
+        await step('its private half cannot be exported', async () => {
+          check(key.privateKey.extractable === false, 'marked extractable');
+          for (const format of ['pkcs8', 'jwk']) {
+            let exported = false;
+            try {
+              await crypto.subtle.exportKey(format, key.privateKey);
+              exported = true;
+            } catch {
+              // Refused, as it must be.
+            }
+            check(!exported, `exported as ${format}`);
+          }
+        });
+
+        await step("its web refresh proof verifies with the API's verifier", async () => {
+          const proof = await tab().sign(key, DEVICE, BINDING);
+          const accepted = await verify({ publicKey: key.publicKeySpki, deviceId: DEVICE, binding: BINDING, ...proof });
+          check(accepted.validKey, 'the server refused the public key');
+          check(accepted.verified, 'the server did not verify the signature');
+
+          const tampered = await verify({ publicKey: key.publicKeySpki, deviceId: DEVICE, binding: BINDING.replace('r', 's'), ...proof });
+          check(!tampered.verified, 'a signature verified for a binding it was not made for');
+          return `signature ${proof.signature.length} characters, signed at ${proof.signedAt}`;
+        });
+
+        await step('the device a sign-in bound it to is kept with it', async () => {
+          await tab().bind(key.publicKeySpki, DEVICE);
+          check((await tab().load())?.deviceId === DEVICE, 'the device id was not kept');
+        });
+
+        await step('clearing site storage loses the key, and loading says so', async () => {
+          await deleteDatabase();
+          check((await tab().load()) === null, 'a key was still loaded');
+        });
+
+        const passed = steps.length === 7 && steps.every((s) => s.ok);
+        const report = { done: true, passed, steps, userAgent: navigator.userAgent };
+        window.__wolf = report;
+        el('result').textContent = passed ? `PASSED — ${steps.length} steps` : 'FAILED';
+        await fetch('/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(report) }).catch(() => undefined);
+      }
+    </script>
+  </body>
+</html>

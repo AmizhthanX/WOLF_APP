@@ -20,8 +20,10 @@ scrypt rather than Argon2id: it is memory-hard, it ships with Node, and it there
 no compiled dependency to a build that must run on Windows, Cloud Run, and CI alike.
 
 **Every PC and every client device holds its own key pair** (ECDSA P-256). The private key
-never leaves the machine — DPAPI-protected on Windows, in the platform keystore on Android.
-The cloud stores only public keys, so revoking one machine never touches another.
+never leaves the machine — DPAPI-protected on Windows, in the platform keystore on Android,
+and in a browser a WebCrypto key marked non-extractable and kept in IndexedDB (weaker: see
+[known gaps](#known-gaps)). The cloud stores only public keys, so revoking one machine
+never touches another.
 
 P-256 rather than Ed25519: both Node and .NET implement it natively, which keeps a
 third-party crypto library out of a privileged Windows service. A golden-vector test in
@@ -50,6 +52,26 @@ The web dashboard never sees a refresh token. It posts credentials to a Next.js 
 captures the refresh token into an httpOnly cookie and returns only the access token. An
 XSS bug in the dashboard can therefore reach a credential that expires in minutes, not
 durable access to every PC.
+
+**The dashboard still proves its refreshes with a device key.** At sign-in the page makes a
+non-extractable P-256 key and registers its public half; the broker refuses a dashboard
+sign-in without one. A page that cannot read the token cannot sign over it, so each refresh
+is two calls to the broker, both behind the CSRF header:
+
+1. `/api/auth/refresh/binding` returns the device id, the token's *binding* —
+   `SHA-256("wolf-web-refresh-binding" ‖ v1 ‖ token)`, base64url — and the public key the
+   sign-in registered.
+2. The page checks it still holds that key, signs the device id, the binding and the time
+   (`webRefreshProofPayload`), and posts binding and signature to `/api/auth/refresh`. The
+   broker checks the binding is still the cookie's and forwards the signature with the token;
+   the API recomputes the binding from the token it is presented and verifies.
+
+The signature is bound to one single-use token exactly as a phone's is, and the page only
+ever holds a hash of it. Which payload a device must sign is fixed by the kind recorded at
+sign-in (`web` and `pwa` sign the binding, every other kind the token) — never by the request.
+A stale binding, from a token another tab rotated meanwhile, is a 409 retry at the broker and
+is never forwarded, so a race is not mistaken for theft. Tabs refresh under one Web Lock, so
+they take turns on the rotating token.
 
 ## Brute force
 
@@ -365,10 +387,27 @@ Stated plainly rather than left to be discovered:
   `device-proof-failure` security event is recorded with no token in it. A correct signature by a
   clock more than five minutes off is refused with `auth.device_clock` and revokes nothing. A sign-in
   that names a key-bound device with a different key creates a new device rather than rebinding it.
-  Not covered: access tokens remain bearer tokens for their short lifetime, and sign-in proves the
-  password, not the key. **The web dashboard registers no key** — its login sends none, and its
-  refreshes are brokered server-side from an httpOnly cookie — so it is not asked for a proof;
-  rotation, replay detection and revocation are its protection until it has one.
+  A registered key must parse as a P-256 SPKI, or the sign-in is a 400 and no device is made. Not
+  covered: access tokens remain bearer tokens for their short lifetime, sign-in proves the
+  password, not the key, and a client that registers no key is not asked for a proof.
+- **A browser's device key is not a phone's.** The dashboard's refreshes are proven the same way
+  (see [tokens](#tokens)), but the key is weaker where it lives. It is not hardware-backed: the
+  browser keeps it in the profile on disk, so malware that can read the profile takes the key and
+  the cookie together. Script injected into the dashboard cannot export the key but can have it sign
+  while it runs — a proof it could use for as long as the five-minute clock window allows — though it
+  could already call the broker directly. What it does defeat is the cookie alone: copied from a
+  profile, a backup or a log, it no longer renews anything, and trying revokes the sign-in and records
+  a `device-proof-failure` event with `variant: web`.
+  **When the key is gone** — site data cleared, a private window closed, or Safari's seven-day cap
+  on script-written storage for a site not visited — the page does not send a refresh it cannot
+  prove. It signs out with reason `device-key-lost` (kept on the `auth.logout` audit record), says
+  why, and the next sign-in registers a new key as a new device; the old device stays in the device
+  list, unable to refresh, until revoked. A browser that cannot keep a key at all — storage blocked,
+  or a write that does not read back — is refused before the password is sent. A dashboard sign-in
+  made before keys were registered is ended the same way at its next refresh rather than kept
+  unproven. Without Web Locks (no current browser lacks them) tabs coordinate only within
+  themselves: a stale binding is still caught as a retry, but two refreshes sent from one token at
+  the same instant can revoke it as a replay.
 - **Notifications are not e-mailed or sent to a webhook.** A webhook is a URL the owner supplies
   that the server then requests, which is a server-side request forgery surface into the cloud
   network; it is not built until egress is allow-listed, DNS rebinding is handled and payloads are

@@ -13,3 +13,4 @@ export * from './signaling.js';
 export * from './messages.js';
 export * from './push.js';
 export * from './auth.js';
+export * from './device-proof.js';

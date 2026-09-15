@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { idempotencyKey, isoDateTime, wolfId } from '@wolf/validation';
 import { RISK_LEVELS, CONNECTION_ROUTES, SESSION_CAPABILITIES } from '@wolf/shared-types';
 import { agentCommandBody } from './commands/index.js';
+import { PROTOCOL_VERSION } from './version.js';
 
-export const PROTOCOL_VERSION = 1;
+export { PROTOCOL_VERSION };
 
 /**
  * Proof, recorded at dispatch time, that the API performed the authorization the command's

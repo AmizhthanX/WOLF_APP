@@ -105,6 +105,15 @@ arbitrated independently per PC. Holding a capability does not imply holding the
 a lease has to be taken, only one session can hold each, and an expired lease can be taken
 over so an idle operator cannot hold input forever.
 
+**Dashboard sign-in.** The browser never holds a refresh token: `apps/web/app/api/auth` brokers
+sign-in, refresh and sign-out against the API and keeps the token in an httpOnly cookie. The
+broker's decisions live in `apps/web/lib/refresh-broker.ts` and the page's side in
+`lib/session-refresh.ts`, with the browser's non-extractable device key in `lib/device-key.ts`;
+the route handlers only add the CSRF check and the cookies, so the rest runs under test against
+the real API. Each refresh is proven by that key over the token's binding, defined in the
+protocol's dependency-free `device-proof` module alongside the payload the Android client signs.
+See the [security model](../security/security-model.md#tokens).
+
 ## Telemetry storage
 
 Raw samples land in `telemetry_samples`, partitioned by day. Retention drops whole

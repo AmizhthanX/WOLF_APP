@@ -13,11 +13,16 @@
     "@wolf/shared-types": "0.1.0",
     "next": "^16.3.4",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@wolf/protocol": "0.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",
-    "@types/react-dom": "^19.0.2"
+    "@types/react-dom": "^19.0.2",
+    "@wolf/api": "0.1.0",
+    "@wolf/auth": "0.1.0",
+    "@wolf/server-core": "0.1.0",
+    "pino": "^9.5.0"
   },
   "type": "module"
 }

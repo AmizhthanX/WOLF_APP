@@ -8,7 +8,8 @@
     "typecheck": "tsc -b",
     "test": "tsc -b && node --test \"dist/**/*.test.js\"",
     "cloud": "tsc -b && node dist/local-cloud.js",
-    "browser": "tsc -b && node dist/browser-harness.js"
+    "browser": "tsc -b && node dist/browser-harness.js",
+    "browser:device-key": "tsc -b && node dist/device-key-harness.js"
   },
   "dependencies": {
     "@wolf/api": "0.1.0",

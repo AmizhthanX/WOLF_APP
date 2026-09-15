@@ -1,5 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { pino } from 'pino';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '@wolf/api/app';
@@ -14,7 +15,7 @@ import {
   signPayload,
   type IdentityKeyPair,
 } from '@wolf/auth';
-import { refreshProofPayload } from '@wolf/protocol';
+import { refreshProofPayload, refreshTokenBinding, webRefreshProofPayload } from '@wolf/protocol';
 import { newId } from '@wolf/shared-types';
 
 /**
@@ -24,6 +25,9 @@ import { newId } from '@wolf/shared-types';
  * someone else's — the refresh token is treated as copied: every token for the device is revoked and the
  * event is recorded. A correct signature from a wrong clock is refused without revoking anything. A device
  * that registered no key is not asked.
+ *
+ * A phone signs its refresh token. A browser signs the token's binding, because its page never holds the
+ * token; which of the two a device must sign is fixed by its kind, never by the request.
  */
 
 const OWNER_EMAIL = 'proof-owner@example.com';
@@ -38,14 +42,19 @@ interface Grant {
   readonly device: { readonly id: string };
 }
 
-async function login(name: string, key: IdentityKeyPair | null, deviceId?: string): Promise<Grant> {
+async function login(
+  name: string,
+  key: IdentityKeyPair | null,
+  deviceId?: string,
+  kind: 'android' | 'web' = 'android',
+): Promise<Grant> {
   const response = await app.inject({
     method: 'POST',
     url: '/api/v1/auth/login',
     payload: {
       email: OWNER_EMAIL,
       password: OWNER_PASSWORD,
-      device: { kind: 'android', name, ...(key ? { publicKey: key.publicKey } : {}), ...(deviceId ? { id: deviceId } : {}) },
+      device: { kind, name, ...(key ? { publicKey: key.publicKey } : {}), ...(deviceId ? { id: deviceId } : {}) },
     },
   });
   assert.equal(response.statusCode, 200, response.payload);
@@ -55,6 +64,13 @@ async function login(name: string, key: IdentityKeyPair | null, deviceId?: strin
 function proof(key: IdentityKeyPair, deviceId: string, token: string, at: Date = now) {
   const signedAt = at.toISOString();
   return { signedAt, signature: signPayload(key.privateKey, refreshProofPayload(deviceId, token, signedAt)) };
+}
+
+/** What the dashboard sends: a signature over the token's binding, which the broker computes from the cookie. */
+async function webProof(key: IdentityKeyPair, deviceId: string, token: string, at: Date = now) {
+  const signedAt = at.toISOString();
+  const binding = await refreshTokenBinding(token);
+  return { signedAt, signature: signPayload(key.privateKey, webRefreshProofPayload(deviceId, binding, signedAt)) };
 }
 
 async function refresh(deviceId: string, refreshToken: string, signed?: ReturnType<typeof proof>) {
@@ -189,4 +205,105 @@ test("signing in with a device's id but another key makes a new device rather th
 
   const same = await login('Bound phone again', key, original.device.id);
   assert.equal(same.device.id, original.device.id);
+});
+
+test("a browser signs its refresh token's binding, and each rotated token needs a new signature", async () => {
+  now = new Date();
+  const key = generateIdentityKeyPair();
+  const grant = await login('Signed browser', key, undefined, 'web');
+
+  const first = await refresh(grant.device.id, grant.refreshToken, await webProof(key, grant.device.id, grant.refreshToken));
+  assert.equal(first.statusCode, 200, first.payload);
+  const rotated = JSON.parse(first.payload) as Grant;
+
+  const reused = await refresh(grant.device.id, rotated.refreshToken, await webProof(key, grant.device.id, grant.refreshToken));
+  assert.equal(reused.statusCode, 401);
+});
+
+test("a browser's key cannot prove a phone's payload, and a phone's cannot prove a browser's", async () => {
+  now = new Date();
+  const browserKey = generateIdentityKeyPair();
+  const browser = await login('Browser signing like a phone', browserKey, undefined, 'web');
+  const asPhone = await refresh(browser.device.id, browser.refreshToken, proof(browserKey, browser.device.id, browser.refreshToken));
+  assert.equal(asPhone.statusCode, 401);
+  const browserEvents = await proofEvents(browser.device.id);
+  assert.equal(browserEvents[0]?.detail['reason'], 'bad-signature');
+  assert.equal(browserEvents[0]?.detail['variant'], 'web');
+
+  const phoneKey = generateIdentityKeyPair();
+  const phone = await login('Phone signing like a browser', phoneKey);
+  const asBrowser = await refresh(phone.device.id, phone.refreshToken, await webProof(phoneKey, phone.device.id, phone.refreshToken));
+  assert.equal(asBrowser.statusCode, 401);
+  const phoneEvents = await proofEvents(phone.device.id);
+  assert.equal(phoneEvents[0]?.detail['reason'], 'bad-signature');
+  assert.equal(phoneEvents[0]?.detail['variant'], 'device');
+});
+
+test('an unsigned refresh from a browser with a key revokes its tokens', async () => {
+  now = new Date();
+  const key = generateIdentityKeyPair();
+  const grant = await login('Copied cookie', key, undefined, 'web');
+
+  assert.equal((await refresh(grant.device.id, grant.refreshToken)).statusCode, 401);
+  const events = await proofEvents(grant.device.id);
+  assert.equal(events[0]?.detail['reason'], 'missing');
+  assert.equal(events[0]?.detail['variant'], 'web');
+  assert.equal((await refresh(grant.device.id, grant.refreshToken, await webProof(key, grant.device.id, grant.refreshToken))).statusCode, 401);
+});
+
+test("a browser's correct signature by a wrong clock is refused without revoking anything", async () => {
+  now = new Date();
+  const key = generateIdentityKeyPair();
+  const grant = await login('Browser with a wrong clock', key, undefined, 'web');
+
+  const skewed = await refresh(
+    grant.device.id,
+    grant.refreshToken,
+    await webProof(key, grant.device.id, grant.refreshToken, new Date(now.getTime() + 10 * 60 * 1000)),
+  );
+  assert.equal(skewed.statusCode, 400, skewed.payload);
+  assert.equal(JSON.parse(skewed.payload).error.code, 'auth.device_clock');
+
+  const corrected = await refresh(grant.device.id, grant.refreshToken, await webProof(key, grant.device.id, grant.refreshToken));
+  assert.equal(corrected.statusCode, 200, corrected.payload);
+});
+
+test('a sign-in with something other than a P-256 public key is refused and creates no device', async () => {
+  const count = async () => Number((await db.query<{ count: string }>('SELECT count(*) AS count FROM user_devices')).rows[0]?.count);
+  const before = await count();
+
+  const secp384 = generateKeyPairSync('ec', { namedCurve: 'secp384r1' }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  for (const publicKey of ['cHVibGljLWtleQ', secp384, 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE' + 'A'.repeat(86)]) {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: OWNER_EMAIL, password: OWNER_PASSWORD, device: { kind: 'web', name: 'Bad key', publicKey } },
+    });
+    assert.equal(response.statusCode, 400, response.payload);
+    assert.equal(JSON.parse(response.payload).error.code, 'validation.failed');
+  }
+  assert.equal(await count(), before);
+});
+
+test('a sign-out records why it happened, and nothing more', async () => {
+  now = new Date();
+  const key = generateIdentityKeyPair();
+  const grant = await login('Browser that lost its key', key, undefined, 'web');
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/v1/auth/logout',
+    payload: { refreshToken: grant.refreshToken, reason: 'device-key-lost' },
+  });
+  assert.equal(response.statusCode, 204);
+
+  const { rows } = await db.query<{ target: Record<string, unknown> }>(
+    `SELECT target FROM audit_logs WHERE action = 'auth.logout' AND device_id = $1`,
+    [grant.device.id],
+  );
+  assert.deepEqual(rows[0]?.target, { reason: 'device-key-lost' });
+  assert.ok(!JSON.stringify(rows).includes(grant.refreshToken));
+
+  const unknown = await app.inject({ method: 'POST', url: '/api/v1/auth/logout', payload: { refreshToken: grant.refreshToken, reason: 'because' } });
+  assert.equal(unknown.statusCode, 400);
 });

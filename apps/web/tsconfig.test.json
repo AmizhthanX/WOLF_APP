@@ -1,8 +1,8 @@
 {
   // The dashboard is a Next application and is type-checked, not compiled, by `typecheck`.
-  // The streaming state machine is ordinary TypeScript with no JSX and no React, so it is
-  // compiled separately here and run under Node's test runner — the same way every other
-  // workspace in this repository is tested.
+  // The streaming state machine and the session and device-key code are ordinary TypeScript
+  // with no JSX and no React, so they are compiled separately here and run under Node's test
+  // runner — the same way every other workspace in this repository is tested.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
@@ -19,6 +19,12 @@
     "lib/input-capture.ts",
     "lib/input-capture.test.ts",
     "lib/terminal-render.ts",
-    "lib/terminal-render.test.ts"
+    "lib/terminal-render.test.ts",
+    "lib/device-key.ts",
+    "lib/device-key.test.ts",
+    "lib/refresh-broker.ts",
+    "lib/session-refresh.ts",
+    "lib/session.e2e.test.ts",
+    "lib/broker-routes.test.ts"
   ]
 }

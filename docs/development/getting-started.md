@@ -118,6 +118,26 @@ It serves `http://127.0.0.1:3100/`, which drives the dashboard's own streaming s
 from its own WebRTC statistics rather than from what the page was told. `window.__wolf`
 holds the same figures for a test driver to read back.
 
+The dashboard's device key depends on things Node's test runner does not have — IndexedDB
+keeping a non-extractable key across page loads, and Web Locks across tabs. To check them in a
+real browser, build the web workspace's test output:
+
+```bash
+npm test -w @wolf/web
+```
+
+then serve the device-key page:
+
+```bash
+npm run browser:device-key -w @wolf/e2e
+```
+
+It serves `http://127.0.0.1:3110/`, which runs the dashboard's own `lib/device-key.ts`: five
+concurrent key creations under Web Locks yielding one key, the key surviving a reload, its
+private half refusing export, its web refresh proof verified by the API's verifier on the
+harness side, and a cleared database noticed. Results appear on the page, in `window.__wolf`,
+and in the harness's console.
+
 ## Enrolling a Windows PC
 
 1. Sign in to the dashboard and choose **Add a PC**. The enrollment token is shown once —

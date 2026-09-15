@@ -1,5 +1,6 @@
 import 'server-only';
 import { cookies } from 'next/headers';
+import type { BrokerResult, BrokerSession } from '@/lib/refresh-broker';
 
 /**
  * Server-side session brokering.
@@ -14,6 +15,11 @@ import { cookies } from 'next/headers';
 
 export const REFRESH_COOKIE = 'wolf_refresh';
 export const DEVICE_COOKIE = 'wolf_device';
+/**
+ * The public key this sign-in registered. Public, but kept beside the token so the broker can tell the
+ * page which key a refresh must be signed with — and the page can tell that it no longer holds it.
+ */
+export const DEVICE_KEY_COOKIE = 'wolf_device_key';
 
 /**
  * Custom header every state-changing route requires.
@@ -39,6 +45,7 @@ export async function storeSession(input: {
   refreshToken: string;
   refreshExpiresAt: string;
   deviceId: string;
+  devicePublicKey: string | null;
 }): Promise<void> {
   const store = await cookies();
   const maxAge = Math.max(
@@ -48,20 +55,33 @@ export async function storeSession(input: {
 
   store.set(REFRESH_COOKIE, input.refreshToken, cookieOptions(maxAge));
   store.set(DEVICE_COOKIE, input.deviceId, cookieOptions(maxAge));
+  if (input.devicePublicKey) store.set(DEVICE_KEY_COOKIE, input.devicePublicKey, cookieOptions(maxAge));
+  else store.delete(DEVICE_KEY_COOKIE);
 }
 
-export async function readSession(): Promise<{ refreshToken: string; deviceId: string } | null> {
+export async function readSession(): Promise<BrokerSession | null> {
   const store = await cookies();
   const refreshToken = store.get(REFRESH_COOKIE)?.value;
   const deviceId = store.get(DEVICE_COOKIE)?.value;
   if (!refreshToken || !deviceId) return null;
-  return { refreshToken, deviceId };
+  return { refreshToken, deviceId, devicePublicKey: store.get(DEVICE_KEY_COOKIE)?.value ?? null };
 }
 
 export async function clearSession(): Promise<void> {
   const store = await cookies();
   store.delete(REFRESH_COOKIE);
   store.delete(DEVICE_COOKIE);
+  store.delete(DEVICE_KEY_COOKIE);
+}
+
+/** Apply what the broker decided to the cookies, and answer the page. */
+export async function brokerResponse(result: BrokerResult): Promise<Response> {
+  if (result.session.kind === 'store') await storeSession(result.session);
+  if (result.session.kind === 'clear') await clearSession();
+  const headers = { 'cache-control': 'no-store' };
+  return result.status === 204
+    ? new Response(null, { status: 204, headers })
+    : Response.json(result.body, { status: result.status, headers });
 }
 
 /** Reject a state-changing request that did not come from the dashboard itself. */

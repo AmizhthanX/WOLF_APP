@@ -1,11 +1,13 @@
-import { API_BASE_URL, csrfGuard, storeSession } from '@/lib/session';
+import { brokerLogin } from '@/lib/refresh-broker';
+import { API_BASE_URL, brokerResponse, csrfGuard } from '@/lib/session';
 
 /**
  * Sign in.
  *
- * The browser posts credentials here rather than to the API directly, so the refresh token
- * in the API's response can be captured into an httpOnly cookie and never handed to
- * JavaScript. Only the short-lived access token is returned to the page.
+ * The browser posts credentials and its device key's public half here rather than to the API
+ * directly, so the refresh token in the API's response can be captured into an httpOnly cookie
+ * and never handed to JavaScript. Only the short-lived access token is returned to the page. A
+ * sign-in without a device key is refused before it reaches the API (see `brokerLogin`).
  */
 export async function POST(request: Request): Promise<Response> {
   const rejected = csrfGuard(request);
@@ -31,44 +33,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const { email, password, deviceName, deviceId } = (body ?? {}) as Record<string, unknown>;
-
-  const upstream = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      email,
-      password,
-      device: {
-        ...(typeof deviceId === 'string' && deviceId.length === 26 ? { id: deviceId } : {}),
-        kind: 'web',
-        name: typeof deviceName === 'string' && deviceName.trim() ? deviceName : 'Web browser',
-        platform: request.headers.get('sec-ch-ua-platform') ?? null,
-      },
-    }),
-    cache: 'no-store',
-  });
-
-  const payload = (await upstream.json().catch(() => null)) as Record<string, unknown> | null;
-
-  if (!upstream.ok || !payload) {
-    return Response.json(payload ?? { error: { problem: 'Sign-in failed.' } }, {
-      status: upstream.status,
-    });
-  }
-
-  const device = payload['device'] as { id?: string } | undefined;
-  await storeSession({
-    refreshToken: String(payload['refreshToken']),
-    refreshExpiresAt: String(payload['refreshTokenExpiresAt']),
-    deviceId: String(device?.id ?? ''),
-  });
-
-  // Deliberately omits refreshToken: the page never sees it.
-  return Response.json({
-    accessToken: payload['accessToken'],
-    accessTokenExpiresAt: payload['accessTokenExpiresAt'],
-    user: payload['user'],
-    device: payload['device'],
-  });
+  return brokerResponse(
+    await brokerLogin(body, request.headers.get('sec-ch-ua-platform'), { apiBaseUrl: API_BASE_URL }),
+  );
 }
