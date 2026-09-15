@@ -124,7 +124,8 @@ class PcSessionController(
         }
     }
 
-    private suspend fun sessionToken(): String = mutex.withLock {
+    /** The session token, opening or renewing the session as needed. Remote desktop authenticates its socket with it. */
+    suspend fun sessionToken(): String = mutex.withLock {
         val current = token
         if (current != null && tokenExpiresAt.isAfter(clock().plusSeconds(30))) return@withLock current
         if (grant == null) openLocked() else refreshTokenLocked()

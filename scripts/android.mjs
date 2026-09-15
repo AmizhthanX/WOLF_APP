@@ -17,7 +17,10 @@ const directory = fileURLToPath(new URL('../apps/android/', import.meta.url));
 const windows = process.platform === 'win32';
 const tasks = process.argv.slice(2);
 
-const result = spawnSync(windows ? 'gradlew.bat' : './gradlew', tasks.length > 0 ? tasks : [':app:testDebugUnitTest'], {
+// By absolute path: a shell with NoDefaultCurrentDirectoryInExePath set does not look in the working directory.
+const wrapper = fileURLToPath(new URL(windows ? 'gradlew.bat' : 'gradlew', new URL('../apps/android/', import.meta.url)));
+
+const result = spawnSync(windows ? `"${wrapper}"` : wrapper, tasks.length > 0 ? tasks : [':app:testDebugUnitTest'], {
   cwd: directory,
   stdio: 'inherit',
   shell: windows,

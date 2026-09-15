@@ -835,9 +835,26 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   lockout; re-authentication bypasses it, and a test holds that
 - Power actions never forced; process termination carries the expected name
 
+**Done — remote desktop on the phone**
+
+- libwebrtc on Android (the WebRTC SDK build, BSD-3-Clause) against the same relay and session host as
+  the browser: a separate PC session with `screen` and `input` only, the session token in the first
+  message rather than the URL, the PC offering and the phone answering
+- Viewing by default; control requested from the relay and renewed while held. Tap, long press and drag
+  become left click, right click and left drag; a text field and a row of keys become keyboard input
+- Touch normalised against the letterboxed picture, and a touch on the bars dropped rather than clamped
+- The phone claims only the codecs its decoders report — no H.264 floor, since libwebrtc on Android has
+  no software H.264 decoder
+- **A finding from the first real stream:** the emulator decodes Constrained Baseline only, the PC sent
+  High 5.1, and libwebrtc rejected the video. Clients now state their H.264 profiles
+  (`h264Profiles`, protocol), the session host encodes the best one listed, and a rejected video answer
+  fails as `codec-unsupported` rather than connecting to a black screen
+- Proven live: the development PC streamed to the emulator at 2560×1440, control was granted, and a
+  pointer move landed at exactly (0.25, 0.25) of the PC's screen, read back on the PC
+
 **Still open for Android**
 - Alerts, automations and configuration backup
-- Remote desktop over WebRTC, with touch mapped to WOLF input
+- Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
 

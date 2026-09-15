@@ -6,3 +6,7 @@
 -keepclasseswithmembers class app.amizhthan.wolf.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# libwebrtc is reached from native code by name.
+-keep class org.webrtc.** { *; }
+-keep class livekit.org.webrtc.** { *; }

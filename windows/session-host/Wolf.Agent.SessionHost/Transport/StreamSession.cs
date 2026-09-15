@@ -271,6 +271,22 @@ public sealed class StreamSession : IDisposable
             return false;
         }
 
+        // The H.264 profile: High unless the client said it cannot decode High. A phone whose only
+        // H.264 decoder takes Constrained Baseline rejects a High offer inside its own WebRTC stack,
+        // which reaches the owner as nothing on screen.
+        uint? h264Profile = H264ProfileChoice.Choose(_request.H264Profiles);
+        if (h264Profile is null)
+        {
+            await SendErrorAsync(
+                "codec-mismatch",
+                "This PC encodes H.264 in High, Main or Constrained Baseline profile, and the client decodes: " +
+                string.Join(", ", _request.H264Profiles ?? Array.Empty<string>()) + ".",
+                limitation: false,
+                "Use a client that decodes one of those H.264 profiles.")
+                .ConfigureAwait(false);
+            return false;
+        }
+
         if (_request.CodecPreferenceIsUnmet())
         {
             adjustments.Add(new SignalAdjustment(
@@ -320,7 +336,8 @@ public sealed class StreamSession : IDisposable
             _loggers,
             _request.Profile.MaxWidthPixels ?? 0,
             _request.Profile.MaxHeightPixels ?? 0,
-            _preferDuplication);
+            _preferDuplication,
+            h264Profile.Value);
 
         if (_pipeline is null)
         {

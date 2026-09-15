@@ -22,7 +22,12 @@ public sealed record EncoderSettings(
     int FrameRate,
     int BitrateBitsPerSecond,
     /// <summary>Seconds between forced key frames. Shorter costs bitrate; longer costs recovery time.</summary>
-    int KeyFrameIntervalSeconds = 2);
+    int KeyFrameIntervalSeconds = 2,
+    /// <summary>
+    /// The H.264 profile to produce, as an MF_MT_MPEG2_PROFILE value. High unless the client said it cannot
+    /// decode High — see <see cref="H264ProfileChoice"/>.
+    /// </summary>
+    uint Profile = MfGuids.H264ProfileHigh);
 
 /// <summary>
 /// The H.264 encoder.
@@ -326,7 +331,7 @@ public sealed class H264Encoder : IDisposable
         outputType.Set(MfGuids.MtFrameRate, MfGuids.PackRatio(settings.FrameRate, 1));
         outputType.Set(MfGuids.MtPixelAspectRatio, MfGuids.PackRatio(1, 1));
         outputType.Set(MfGuids.MtInterlaceMode, 2u); // Progressive.
-        outputType.Set(MfGuids.MtMpeg2Profile, MfGuids.H264ProfileHigh);
+        outputType.Set(MfGuids.MtMpeg2Profile, settings.Profile);
         transform.SetOutputType(0, outputType, 0);
 
         using IMFMediaType inputType = MediaFactory.MFCreateMediaType();

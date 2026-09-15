@@ -83,6 +83,10 @@ class WolfApi(
             GrantResponse.serializer(),
         )
 
+    /** ICE servers for a stream, minted for a session that holds `screen`. TURN credentials expire on their own. */
+    suspend fun iceServers(pcId: String, sessionToken: String): IceServersResponse =
+        send<Unit, IceServersResponse>("GET", listOf("pcs", pcId, "ice-servers"), sessionToken, null, null, IceServersResponse.serializer())
+
     suspend fun me(bearer: String): MeView =
         send<Unit, MeView>("GET", listOf("users", "me"), bearer, null, null, MeView.serializer())
 

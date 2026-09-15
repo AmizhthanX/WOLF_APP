@@ -58,6 +58,23 @@ data class GrantInfo(val id: String, val expiresAt: String)
 data class GrantResponse(val grant: GrantInfo)
 
 @Serializable
+data class IceServerView(val urls: List<String>, val username: String? = null, val credential: String? = null)
+
+@Serializable
+data class IceConfigurationView(
+    val iceServers: List<IceServerView> = emptyList(),
+    val expiresAt: String,
+    val iceTransportPolicy: String = "all",
+)
+
+@Serializable
+data class IceServersResponse(
+    val configuration: IceConfigurationView,
+    val reachability: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
 data class ProcessRow(
     val pid: Int,
     val name: String,

@@ -119,7 +119,8 @@ public sealed class StreamSessionTests : IClassFixture<ScreenActivity>
     private static string StreamRequest(
         string clientCodecs = "[\"h264\"]",
         int targetFps = 30,
-        string overrides = "null") => $$"""
+        string overrides = "null",
+        string h264Profiles = "[]") => $$"""
         {
           "type": "stream.request",
           "request": {
@@ -138,7 +139,8 @@ public sealed class StreamSessionTests : IClassFixture<ScreenActivity>
               "overrides": {{overrides}}
             },
             "clientCodecs": {{clientCodecs}},
-            "requestAudio": false
+            "requestAudio": false,
+            "h264Profiles": {{h264Profiles}}
           }
         }
         """;
@@ -435,6 +437,58 @@ public sealed class StreamSessionTests : IClassFixture<ScreenActivity>
         Assert.Equal(0, coordinator.ActiveStreams);
 
         _output.WriteLine(error.Payload.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task A_client_that_decodes_only_constrained_baseline_is_offered_baseline()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        var displays = new DisplayEnumerator(loggers.CreateLogger<DisplayEnumerator>());
+        var relay = new Relay(_output);
+        using var coordinator = new StreamCoordinator(displays, relay.AcceptAsync, loggers);
+
+        // What the Android emulator reports, and some phones: one H.264 decoder, Constrained Baseline.
+        try
+        {
+            await coordinator.HandleAsync(
+                Signal(StreamRequest(h264Profiles: """["constrained-baseline"]""")),
+                CancellationToken.None);
+
+            Outbound? offer = relay.FirstOf("sdp.offer");
+            Assert.NotNull(offer);
+            string profileLevelId = ProfileLevelIdOf(offer!.Payload.GetProperty("sdp").GetString()!);
+            _output.WriteLine("offer profile-level-id: " + profileLevelId);
+
+            // profile_idc 66, read from the encoder's own sequence parameter set rather than asserted.
+            Assert.StartsWith("42", profileLevelId, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            coordinator.Stop(null, "test-finished");
+        }
+    }
+
+    [Fact]
+    public async Task A_client_listing_no_h264_profile_this_pc_produces_is_told_so()
+    {
+        if (!CanRun()) return;
+
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        var displays = new DisplayEnumerator(loggers.CreateLogger<DisplayEnumerator>());
+        var relay = new Relay(_output);
+        using var coordinator = new StreamCoordinator(displays, relay.AcceptAsync, loggers);
+
+        await coordinator.HandleAsync(
+            Signal(StreamRequest(h264Profiles: """["high-10"]""")),
+            CancellationToken.None);
+
+        Outbound? error = relay.FirstOf("stream.error");
+        Assert.NotNull(error);
+        Assert.Equal("codec-mismatch", error!.Payload.GetProperty("code").GetString());
+        Assert.Null(relay.FirstOf("sdp.offer"));
+        Assert.Equal(0, coordinator.ActiveStreams);
     }
 
     [Fact]

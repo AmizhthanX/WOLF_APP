@@ -43,6 +43,7 @@ import app.amizhthan.wolf.api.LatestTelemetry
 import app.amizhthan.wolf.api.PcSummary
 import app.amizhthan.wolf.api.ProcessRow
 import app.amizhthan.wolf.api.WolfProblem
+import app.amizhthan.wolf.remote.StreamProfile
 import java.time.Duration
 import java.time.Instant
 import java.util.Locale
@@ -89,7 +90,12 @@ fun WolfApp(viewModel: AppViewModel) {
                             onPower = viewModel::power,
                             onLoadProcesses = viewModel::loadProcesses,
                             onTerminate = viewModel::terminate,
+                            onRemoteDesktop = viewModel::openRemoteDesktop,
                         )
+                    }
+                    is Screen.RemoteDesktop -> {
+                        BackHandler(onBack = viewModel::closeRemoteDesktop)
+                        viewModel.remoteDesktop()?.let { RemoteDesktopScreen(it, onClose = viewModel::closeRemoteDesktop) }
                     }
                 }
             }
@@ -283,6 +289,7 @@ private fun PcScreen(
     onPower: (String, String, String) -> Unit,
     onLoadProcesses: () -> Unit,
     onTerminate: (ProcessRow) -> Unit,
+    onRemoteDesktop: (StreamProfile) -> Unit,
 ) {
     val online = pc?.status == "online" && pc.remoteAccessEnabled
 
@@ -300,6 +307,25 @@ private fun PcScreen(
         }
 
         item { Metrics(state.telemetry) }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Remote desktop", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StreamProfile.entries.forEach { profile ->
+                            OutlinedButton(onClick = { onRemoteDesktop(profile) }, enabled = online, modifier = Modifier.weight(1f)) {
+                                Text(profile.label)
+                            }
+                        }
+                    }
+                    Text(
+                        "Opens view-only. Take control to touch, type and scroll on the PC. The picture never passes through the WOLF cloud.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
 
         item {
             Card(modifier = Modifier.fillMaxWidth()) {

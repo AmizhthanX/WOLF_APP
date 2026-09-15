@@ -438,6 +438,31 @@ H.264 is the default rather than the fallback of last resort because every brows
 every Windows GPU of the last decade handles it in hardware, and a remote desktop that is
 merely *good* everywhere beats one that is excellent on one machine and broken on the next.
 
+### H.264 profile
+
+"Decodes H.264" is not one capability. A decoder takes profiles up to some ceiling, and a
+WebRTC stack that is offered a profile above it rejects the video section outright
+(`m=video 0`) — the Android emulator, whose only H.264 decoder is Constrained Baseline, did
+exactly that to a High 5.1 offer.
+
+So `stream.request` carries `h264Profiles`: the profiles the client's decoders take, from
+`high`, `main` and `constrained-baseline`. The session host encodes:
+
+| Client says | Encoded |
+| --- | --- |
+| nothing (`[]`) — every browser | High, as before the field existed |
+| includes `high` | High |
+| `main` without `high` | Main |
+| only `constrained-baseline` | Baseline |
+| none of these | nothing: `codec-mismatch`, with the list it was sent |
+
+The profile holds for every encoder the stream builds, including one rebuilt when adaptation
+changes the resolution. The offer still reads `profile-level-id` from the encoder's SPS: Media
+Foundation's Baseline sets constraint flags 0 and 1 (`42c033` on the development machine), which
+is what libwebrtc means by Constrained Baseline. A hardware encoder that ignored the requested
+profile would therefore show up as an offer the client rejects — a named failure — not a black
+picture.
+
 ## Transport
 
 The session host runs a real WebRTC peer connection (SIPSorcery), and the host is the

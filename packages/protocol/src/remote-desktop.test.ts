@@ -736,3 +736,15 @@ test('a refusal separates what WOLF will not do from what Windows cannot', () =>
     false,
   );
 });
+
+test('a stream request that states no H.264 profiles is read as High, as before the field existed', async () => {
+  const { streamRequest, BUILT_IN_PROFILES } = await import('./remote-desktop.js');
+  const base = { profile: BUILT_IN_PROFILES['internet-balanced'], clientCodecs: ['h264'] };
+
+  assert.deepEqual(streamRequest.parse(base).h264Profiles, []);
+  assert.deepEqual(
+    streamRequest.parse({ ...base, h264Profiles: ['constrained-baseline'] }).h264Profiles,
+    ['constrained-baseline'],
+  );
+  assert.equal(streamRequest.safeParse({ ...base, h264Profiles: ['high-10'] }).success, false);
+});

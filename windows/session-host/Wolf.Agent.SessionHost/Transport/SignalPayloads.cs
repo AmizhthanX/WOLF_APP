@@ -90,7 +90,12 @@ public sealed record SignalStreamRequest(
     [property: JsonPropertyName("displayId")] string? DisplayId,
     [property: JsonPropertyName("profile")] SignalProfile Profile,
     [property: JsonPropertyName("clientCodecs")] IReadOnlyList<string> ClientCodecs,
-    [property: JsonPropertyName("requestAudio")] bool RequestAudio);
+    [property: JsonPropertyName("requestAudio")] bool RequestAudio,
+    /// <summary>
+    /// H.264 profiles the client can decode. Null or empty from a client that does not say — every
+    /// browser, and every client before the field existed — which is read as High.
+    /// </summary>
+    [property: JsonPropertyName("h264Profiles")] IReadOnlyList<string>? H264Profiles = null);
 
 /// <summary>
 /// A setting the agent could not honour, and why.

@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
+    implementation(libs.webrtc)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

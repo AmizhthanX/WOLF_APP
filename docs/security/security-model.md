@@ -176,6 +176,14 @@ Windows boundaries are reported, not worked around. Input to a window running at
 integrity level is refused by the OS and reported as a limitation; Ctrl+Alt+Delete and Win+L
 are refused with the reason rather than sent as keystrokes that do nothing.
 
+The Android viewer is held to the same rules and gets no shortcuts for being a first-party
+app. It opens its own PC session with `screen` and `input` only — never the command session's
+`power` — and sends the session token inside the socket's first message, not in the URL. Touch
+produces nothing until the relay's `input.control` grants control, and the session host
+re-validates every event the phone sends exactly as it does the browser's. The phone's window is
+`FLAG_SECURE`, so another PC's desktop cannot be captured by a screenshot, a screen recording or
+the recent-apps thumbnail.
+
 ## Signaling
 
 The relay standing between an authenticated user and a live desktop enforces, on every

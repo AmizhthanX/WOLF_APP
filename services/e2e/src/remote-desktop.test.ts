@@ -353,6 +353,7 @@ test('a stream request reaches the agent and its offer comes back', async () => 
       profile: PROFILE,
       clientCodecs: ['h264', 'vp8'],
       requestAudio: false,
+      h264Profiles: [],
     },
   });
 
@@ -606,6 +607,7 @@ test('a stream request carries the ICE servers the agent is to use', async () =>
       profile: PROFILE,
       clientCodecs: ['h264'],
       requestAudio: false,
+      h264Profiles: [],
     },
   });
 
@@ -633,6 +635,7 @@ test('a client cannot choose the relay the agent will use', async () => {
       profile: PROFILE,
       clientCodecs: ['h264'],
       requestAudio: false,
+      h264Profiles: [],
     },
     // A client trying to point this PC's media at a server of its choosing. Relay
     // credentials are minted server-side, and the payload is validated against a schema
@@ -663,6 +666,7 @@ test('a session without the audio capability is not offered the sound', async ()
       clientCodecs: ['h264'],
       // Asking is allowed; being given it is not the same thing.
       requestAudio: true,
+      h264Profiles: [],
     },
   });
 
@@ -687,6 +691,7 @@ test('a session granted audio is allowed to hear the PC', async () => {
       profile: PROFILE,
       clientCodecs: ['h264'],
       requestAudio: true,
+      h264Profiles: [],
     },
   });
 
@@ -745,6 +750,7 @@ async function openControlledStream(sessionToken: string): Promise<{
       profile: PROFILE,
       clientCodecs: ['h264'],
       requestAudio: false,
+      h264Profiles: [],
     },
   });
 

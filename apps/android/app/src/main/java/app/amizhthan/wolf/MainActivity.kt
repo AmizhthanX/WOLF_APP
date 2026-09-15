@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.amizhthan.wolf.api.WolfApi
+import app.amizhthan.wolf.remote.RemoteDesktopController
 import app.amizhthan.wolf.security.KeystoreDeviceIdentity
 import app.amizhthan.wolf.security.KeystoreSecretCipher
 import app.amizhthan.wolf.security.TokenVault
@@ -29,14 +30,20 @@ class MainActivity : ComponentActivity() {
 
         val graph = AppGraph.get(applicationContext)
         setContent {
-            WolfApp(viewModel = viewModel { AppViewModel(graph.session, graph.api) })
+            WolfApp(
+                viewModel = viewModel {
+                    AppViewModel(graph.session, graph.api) { pcId ->
+                        RemoteDesktopController(applicationContext, pcId, graph.api, graph.session, graph.http)
+                    }
+                },
+            )
         }
     }
 }
 
 /** The app's long-lived objects, created once per process. */
 class AppGraph private constructor(context: Context) {
-    private val http = OkHttpClient.Builder()
+    val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .callTimeout(30, TimeUnit.SECONDS)
         .build()

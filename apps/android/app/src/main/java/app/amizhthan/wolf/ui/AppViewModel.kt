@@ -12,6 +12,8 @@ import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.api.WolfJson
 import app.amizhthan.wolf.api.WolfProblem
+import app.amizhthan.wolf.remote.RemoteDesktopController
+import app.amizhthan.wolf.remote.StreamProfile
 import app.amizhthan.wolf.session.CommandOutcome
 import app.amizhthan.wolf.session.PcSessionController
 import app.amizhthan.wolf.session.PendingCommand
@@ -26,12 +28,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonObject
 
 sealed interface Screen {
     data object Starting : Screen
     data object SignIn : Screen
     data object Pcs : Screen
     data class Pc(val id: String) : Screen
+    data class RemoteDesktop(val pcId: String) : Screen
 }
 
 /** What to do with a command's result once it has one. Kept with a pending command across its confirmation. */
@@ -60,12 +64,14 @@ data class UiState(
 class AppViewModel(
     private val session: SessionManager,
     private val api: WolfApi,
+    private val remoteDesktops: (pcId: String) -> RemoteDesktopController,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var telemetryJob: Job? = null
     private var controller: PcSessionController? = null
+    private var remote: RemoteDesktopController? = null
 
     init {
         viewModelScope.launch {
@@ -78,6 +84,7 @@ class AppViewModel(
         viewModelScope.launch {
             session.state.collect { state ->
                 if (state is SessionState.SignedOut && _state.value.screen !is Screen.SignIn && _state.value.screen !is Screen.Starting) {
+                    stopRemote()
                     leavePc()
                     _state.update { UiState(screen = Screen.SignIn, problem = it.problem) }
                 }
@@ -100,17 +107,7 @@ class AppViewModel(
         leavePc()
         controller = PcSessionController(id, api, session)
         _state.update { it.copy(screen = Screen.Pc(id), telemetry = null, processes = null, problem = null, notice = null) }
-        telemetryJob = viewModelScope.launch {
-            while (isActive) {
-                try {
-                    val latest = session.authorized { api.latestTelemetry(id, it) }
-                    _state.update { it.copy(telemetry = latest) }
-                } catch (error: WolfApiException) {
-                    _state.update { it.copy(problem = error.problem) }
-                }
-                delay(TELEMETRY_REFRESH_MS)
-            }
-        }
+        watchTelemetry(id)
     }
 
     fun back() {
@@ -120,9 +117,40 @@ class AppViewModel(
     }
 
     fun signOut() = launchBusy {
+        stopRemote()
         leavePc()
         session.signOut()
         _state.value = UiState(screen = Screen.SignIn)
+    }
+
+    /** The controller for the open remote desktop, if one is open. */
+    fun remoteDesktop(): RemoteDesktopController? = remote
+
+    fun openRemoteDesktop(profile: StreamProfile) {
+        val pcId = (_state.value.screen as? Screen.Pc)?.id ?: return
+        telemetryJob?.cancel()
+        stopRemote()
+
+        val opened = remoteDesktops(pcId)
+        remote = opened
+        _state.update { it.copy(screen = Screen.RemoteDesktop(pcId), problem = null, notice = null) }
+
+        viewModelScope.launch {
+            try {
+                opened.start(profile)
+            } catch (error: WolfApiException) {
+                // No stream to show: back to the PC with the reason.
+                if (remote === opened) closeRemoteDesktop()
+                _state.update { it.copy(problem = error.problem) }
+            }
+        }
+    }
+
+    fun closeRemoteDesktop() {
+        val pcId = (_state.value.screen as? Screen.RemoteDesktop)?.pcId ?: return
+        stopRemote()
+        _state.update { it.copy(screen = Screen.Pc(pcId)) }
+        watchTelemetry(pcId)
     }
 
     fun power(action: String, label: String, description: String) =
@@ -160,7 +188,22 @@ class AppViewModel(
 
     fun dismissProblem() = _state.update { it.copy(problem = null, notice = null) }
 
-    private fun send(command: kotlinx.serialization.json.JsonObject, title: String, description: String, purpose: CommandPurpose) {
+    private fun watchTelemetry(id: String) {
+        telemetryJob?.cancel()
+        telemetryJob = viewModelScope.launch {
+            while (isActive) {
+                try {
+                    val latest = session.authorized { api.latestTelemetry(id, it) }
+                    _state.update { it.copy(telemetry = latest) }
+                } catch (error: WolfApiException) {
+                    _state.update { it.copy(problem = error.problem) }
+                }
+                delay(TELEMETRY_REFRESH_MS)
+            }
+        }
+    }
+
+    private fun send(command: JsonObject, title: String, description: String, purpose: CommandPurpose) {
         val active = controller ?: return
         launchBusy {
             _state.update { it.copy(notice = null) }
@@ -222,6 +265,11 @@ class AppViewModel(
         }
     }
 
+    private fun stopRemote() {
+        remote?.let { closing -> viewModelScope.launch { closing.stop() } }
+        remote = null
+    }
+
     private fun leavePc() {
         telemetryJob?.cancel()
         telemetryJob = null
@@ -251,6 +299,7 @@ class AppViewModel(
     )
 
     override fun onCleared() {
+        stopRemote()
         leavePc()
     }
 

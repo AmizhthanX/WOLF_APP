@@ -130,7 +130,8 @@ public sealed class CapturePipeline : IDisposable
         Action<EncodedVideoFrame> onFrame,
         ILoggerFactory loggers,
         ILogger<CapturePipeline> logger,
-        bool preferDuplication)
+        bool preferDuplication,
+        uint h264Profile)
     {
         _device = device;
         _capture = capture;
@@ -149,7 +150,13 @@ public sealed class CapturePipeline : IDisposable
         // changed from duplication to Graphics Capture halfway through would also silently
         // gain a cursor and a border, which is not a thing to do without saying so.
         _preferDuplication = preferDuplication;
+
+        // Kept for every encoder this pipeline builds, including one a resize rebuilds: a client
+        // that decodes only Constrained Baseline cannot decode High because the size changed.
+        _h264Profile = h264Profile;
     }
+
+    private readonly uint _h264Profile;
 
     /// <summary>The monitor currently being captured.</summary>
     public IntPtr MonitorHandle => _monitorHandle;
@@ -227,7 +234,8 @@ public sealed class CapturePipeline : IDisposable
         ILoggerFactory loggers,
         int maxWidthPixels = 0,
         int maxHeightPixels = 0,
-        bool preferDuplication = false)
+        bool preferDuplication = false,
+        uint h264Profile = MfGuids.H264ProfileHigh)
     {
         IDisplayCapture? capture = DisplayCaptureFactory.TryStart(
             device,
@@ -258,7 +266,7 @@ public sealed class CapturePipeline : IDisposable
 
         H264Encoder? encoder = H264Encoder.TryCreate(
             device,
-            new EncoderSettings(encoded.Width, encoded.Height, targetFrameRate, bitrateBitsPerSecond),
+            new EncoderSettings(encoded.Width, encoded.Height, targetFrameRate, bitrateBitsPerSecond, Profile: h264Profile),
             loggers.CreateLogger<H264Encoder>());
         if (encoder is null)
         {
@@ -280,7 +288,8 @@ public sealed class CapturePipeline : IDisposable
             onFrame,
             loggers,
             loggers.CreateLogger<CapturePipeline>(),
-            preferDuplication);
+            preferDuplication,
+            h264Profile);
     }
 
     public void Start()
@@ -702,7 +711,7 @@ public sealed class CapturePipeline : IDisposable
 
         H264Encoder? encoder = H264Encoder.TryCreate(
             _device,
-            new EncoderSettings(target.Width, target.Height, _targetFrameRate, _bitrateBitsPerSecond),
+            new EncoderSettings(target.Width, target.Height, _targetFrameRate, _bitrateBitsPerSecond, Profile: _h264Profile),
             _loggers.CreateLogger<H264Encoder>());
 
         if (encoder is null)

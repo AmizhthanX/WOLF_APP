@@ -184,6 +184,20 @@ export const BUILT_IN_PROFILES: Readonly<Record<string, RemoteDesktopProfile>> =
   }),
 });
 
+/**
+ * H.264 profiles a client can decode.
+ *
+ * The reason this exists is a real stream that failed: every browser decodes High, but a phone's
+ * decoder may accept only Constrained Baseline — an Android emulator's does, and so do some low-end
+ * phones — and a High-profile offer is then one the phone's own WebRTC stack rejects outright.
+ *
+ * Empty means "not stated", which the agent reads as High: what every client received before this
+ * field existed, so older clients see no change.
+ */
+export const H264_PROFILES = ['high', 'main', 'constrained-baseline'] as const;
+export const h264Profile = z.enum(H264_PROFILES);
+export type H264Profile = z.infer<typeof h264Profile>;
+
 /** What the client asks for when starting a stream. */
 export const streamRequest = z.object({
   /** Display to capture. Null means the primary display. */
@@ -193,6 +207,8 @@ export const streamRequest = z.object({
   clientCodecs: z.array(videoCodec).min(1).max(VIDEO_CODECS.length),
   /** Client asks for audio; the agent still refuses if it cannot capture any. */
   requestAudio: z.boolean().default(true),
+  /** H.264 profiles the client can decode. Empty: not stated, read as High. */
+  h264Profiles: z.array(h264Profile).max(H264_PROFILES.length).default([]),
 });
 export type StreamRequest = z.infer<typeof streamRequest>;
 

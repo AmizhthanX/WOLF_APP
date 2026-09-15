@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- WebRTC watches for network changes so a stream can move from Wi-Fi to mobile data. Reading
+         network state only; no microphone, camera or location permission is asked for. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
         allowBackup is off and every domain is excluded from extraction: the refresh token blob
