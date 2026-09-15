@@ -43,6 +43,46 @@ class WolfApi(
             AccessGrant.serializer(),
         )
 
+    /** Opened with the account token; the session token it returns is what commands are sent with. */
+    suspend fun openSession(pcId: String, capabilities: List<String>, bearer: String): SessionGrant =
+        send(
+            "POST",
+            listOf("pcs", pcId, "sessions"),
+            bearer,
+            SessionRequest(capabilities = capabilities),
+            SessionRequest.serializer(),
+            SessionGrant.serializer(),
+        )
+
+    /** Re-issued with the account token, so a fresh password re-entry is carried into the session token. */
+    suspend fun refreshSessionToken(pcId: String, sessionId: String, bearer: String): SessionToken =
+        send<Unit, SessionToken>("POST", listOf("pcs", pcId, "sessions", sessionId, "token"), bearer, null, null, SessionToken.serializer())
+
+    suspend fun endSession(pcId: String, sessionId: String, bearer: String) {
+        send<Unit, Unit>("DELETE", listOf("pcs", pcId, "sessions", sessionId), bearer, null, null, null)
+    }
+
+    suspend fun dispatch(pcId: String, request: DispatchRequest, sessionToken: String): DispatchResponse =
+        send(
+            "POST",
+            listOf("pcs", pcId, "commands"),
+            sessionToken,
+            request,
+            DispatchRequest.serializer(),
+            DispatchResponse.serializer(),
+        )
+
+    /** Requested with the session token, within two minutes of a password re-entry. Single use. */
+    suspend fun requestPrivilegedGrant(pcId: String, purpose: String, sessionToken: String): GrantResponse =
+        send(
+            "POST",
+            listOf("pcs", pcId, "privileged-grants"),
+            sessionToken,
+            GrantRequest(purpose = purpose.take(120)),
+            GrantRequest.serializer(),
+            GrantResponse.serializer(),
+        )
+
     suspend fun me(bearer: String): MeView =
         send<Unit, MeView>("GET", listOf("users", "me"), bearer, null, null, MeView.serializer())
 

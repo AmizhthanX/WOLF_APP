@@ -6,7 +6,6 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,10 +13,13 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,6 +29,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,12 +41,25 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.amizhthan.wolf.api.LatestTelemetry
 import app.amizhthan.wolf.api.PcSummary
+import app.amizhthan.wolf.api.ProcessRow
 import app.amizhthan.wolf.api.WolfProblem
 import java.time.Duration
 import java.time.Instant
 import java.util.Locale
 
 private const val UNAVAILABLE = "—"
+
+/** The web dashboard's power actions, with the same words. */
+private data class PowerAction(val action: String, val label: String, val description: String, val danger: Boolean = false)
+
+private val POWER_ACTIONS = listOf(
+    PowerAction("lock", "Lock", "Lock the Windows session on this PC."),
+    PowerAction("sign-out", "Sign out", "Sign the current user out of Windows."),
+    PowerAction("sleep", "Sleep", "Put this PC to sleep."),
+    PowerAction("hibernate", "Hibernate", "Hibernate this PC."),
+    PowerAction("restart", "Restart", "Restart Windows on this PC.", danger = true),
+    PowerAction("shutdown", "Shut down", "Shut this PC down.", danger = true),
+)
 
 @Composable
 fun WolfApp(viewModel: AppViewModel) {
@@ -68,11 +84,27 @@ fun WolfApp(viewModel: AppViewModel) {
                         BackHandler(onBack = viewModel::back)
                         PcScreen(
                             pc = state.pcs?.firstOrNull { it.id == screen.id },
-                            telemetry = state.telemetry,
+                            state = state,
                             onBack = viewModel::back,
+                            onPower = viewModel::power,
+                            onLoadProcesses = viewModel::loadProcesses,
+                            onTerminate = viewModel::terminate,
                         )
                     }
                 }
+            }
+
+            state.confirmation?.let { confirmation ->
+                ConfirmDialog(
+                    title = confirmation.pending.title,
+                    description = confirmation.pending.description,
+                    riskLevel = confirmation.pending.riskLevel,
+                    requiresPassword = confirmation.pending.requiresPassword,
+                    busy = state.confirming,
+                    problem = state.confirmationProblem,
+                    onCancel = viewModel::cancelConfirmation,
+                    onConfirm = viewModel::confirm,
+                )
             }
         }
     }
@@ -101,11 +133,70 @@ private fun ProblemCard(problem: WolfProblem, onDismiss: () -> Unit) {
     }
 }
 
+/** What the risk level asks of the owner, in the web dashboard's words. */
+internal fun riskWords(level: String): String = when (level) {
+    "low" -> "Low risk"
+    "medium" -> "Medium risk — confirmation required"
+    "high" -> "High risk — password required"
+    "critical" -> "Critical — password and a single-use privileged grant required"
+    else -> "Risk level $level"
+}
+
+@Composable
+private fun ConfirmDialog(
+    title: String,
+    description: String,
+    riskLevel: String,
+    requiresPassword: Boolean,
+    busy: Boolean,
+    problem: WolfProblem?,
+    onCancel: () -> Unit,
+    onConfirm: (String?) -> Unit,
+) {
+    // Never saveable: the password is not written into saved state, and is gone with the dialog.
+    var password by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onCancel() },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(description)
+                Text(riskWords(riskLevel), fontWeight = FontWeight.SemiBold)
+                if (requiresPassword) {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Your WOLF password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                problem?.let {
+                    Text(it.problem, color = MaterialTheme.colorScheme.error)
+                    if (it.recommendedAction.isNotBlank()) Text(it.recommendedAction, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(if (requiresPassword) password else null) },
+                enabled = !busy && (!requiresPassword || password.isNotEmpty()),
+            ) {
+                Text(if (busy) "Confirming…" else "Confirm")
+            }
+        },
+        dismissButton = { TextButton(onClick = onCancel, enabled = !busy) { Text("Cancel") } },
+    )
+}
+
 @Composable
 private fun SignInScreen(busy: Boolean, onSignIn: (String, String) -> Unit) {
     var email by rememberSaveable { mutableStateOf("") }
     // Deliberately not saveable: a password is not written into the saved instance state bundle.
-    var password by androidx.compose.runtime.remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("WOLF", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
@@ -185,37 +276,112 @@ private fun PcListScreen(
 }
 
 @Composable
-private fun PcScreen(pc: PcSummary?, telemetry: LatestTelemetry?, onBack: () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Back") }
-            Spacer(Modifier.weight(1f))
-        }
-        Text(pc?.name ?: "PC", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(listOfNotNull(pc?.status, pc?.lastSeenAt?.let { "seen ${relative(it)}" }).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+private fun PcScreen(
+    pc: PcSummary?,
+    state: UiState,
+    onBack: () -> Unit,
+    onPower: (String, String, String) -> Unit,
+    onLoadProcesses: () -> Unit,
+    onTerminate: (ProcessRow) -> Unit,
+) {
+    val online = pc?.status == "online" && pc.remoteAccessEnabled
 
-        val sample = telemetry?.sample
-        when {
-            telemetry == null -> Text("Loading live metrics…")
-            sample == null && telemetry.pcStatus == "online" -> Text("No telemetry has arrived from this PC yet.")
-            sample == null -> Text("This PC is offline, so no live metrics are available.")
-            else -> Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Metric("CPU", percent(sample.cpu.usagePercent))
-                    Metric(
-                        "Memory",
-                        "${percent(ratio(sample.memory.usedBytes, sample.memory.totalBytes))} · ${bytes(sample.memory.usedBytes)} of ${bytes(sample.memory.totalBytes)}",
-                    )
-                    Metric("Uptime", duration(sample.uptimeSeconds))
-                    sample.gpus.forEach { gpu ->
-                        Metric(gpu.name, "${percent(gpu.usagePercent)} · ${bytes(gpu.vramUsedBytes)} of ${bytes(gpu.vramTotalBytes)}")
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("Back") }
+            }
+            Text(pc?.name ?: "PC", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(
+                listOfNotNull(pc?.status, pc?.lastSeenAt?.let { "seen ${relative(it)}" }).joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            state.notice?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        }
+
+        item { Metrics(state.telemetry) }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Power", fontWeight = FontWeight.SemiBold)
+                    POWER_ACTIONS.chunked(3).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            row.forEach { entry ->
+                                OutlinedButton(
+                                    onClick = { onPower(entry.action, entry.label, entry.description) },
+                                    enabled = online && !state.busy,
+                                    colors = if (entry.danger) {
+                                        ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                    } else {
+                                        ButtonDefaults.outlinedButtonColors()
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(entry.label) }
+                            }
+                        }
                     }
-                    sample.disks.forEach { disk ->
-                        val used = if (disk.totalBytes != null && disk.freeBytes != null) disk.totalBytes - disk.freeBytes else null
-                        Metric("Disk ${disk.volume}", "${percent(ratio(used, disk.totalBytes))} used · ${disk.healthStatus}")
-                    }
-                    Text("Sampled ${relative(sample.sampledAt)}", style = MaterialTheme.typography.labelSmall)
+                    if (!online) Text("Power actions need the PC to be online with remote access on.", style = MaterialTheme.typography.bodySmall)
                 }
+            }
+        }
+
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Processes", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onLoadProcesses, enabled = online && !state.busy) {
+                    Text(if (state.processes == null) "Load" else "Refresh")
+                }
+            }
+            if (state.processesTruncated) Text("Only part of the list was returned.", style = MaterialTheme.typography.bodySmall)
+        }
+
+        items(state.processes.orEmpty().take(60), key = { it.pid }) { row ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(row.name, fontWeight = FontWeight.Medium)
+                        Text(
+                            "PID ${row.pid} · CPU ${percent(row.cpuPercent)} · ${bytes(row.workingSetBytes)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (row.protectedProcess) {
+                        Text("protected", style = MaterialTheme.typography.labelSmall)
+                    } else {
+                        TextButton(onClick = { onTerminate(row) }, enabled = !state.busy) {
+                            Text("End", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Metrics(telemetry: LatestTelemetry?) {
+    val sample = telemetry?.sample
+    when {
+        telemetry == null -> Text("Loading live metrics…")
+        sample == null && telemetry.pcStatus == "online" -> Text("No telemetry has arrived from this PC yet.")
+        sample == null -> Text("This PC is offline, so no live metrics are available.")
+        else -> Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Metric("CPU", percent(sample.cpu.usagePercent))
+                Metric(
+                    "Memory",
+                    "${percent(ratio(sample.memory.usedBytes, sample.memory.totalBytes))} · ${bytes(sample.memory.usedBytes)} of ${bytes(sample.memory.totalBytes)}",
+                )
+                Metric("Uptime", duration(sample.uptimeSeconds))
+                sample.gpus.forEach { gpu ->
+                    Metric(gpu.name, "${percent(gpu.usagePercent)} · ${bytes(gpu.vramUsedBytes)} of ${bytes(gpu.vramTotalBytes)}")
+                }
+                sample.disks.forEach { disk ->
+                    val used = if (disk.totalBytes != null && disk.freeBytes != null) disk.totalBytes - disk.freeBytes else null
+                    Metric("Disk ${disk.volume}", "${percent(ratio(used, disk.totalBytes))} used · ${disk.healthStatus}")
+                }
+                Text("Sampled ${relative(sample.sampledAt)}", style = MaterialTheme.typography.labelSmall)
             }
         }
     }

@@ -101,6 +101,15 @@ class SessionManager(
         }
     }
 
+    /**
+     * Run a call with a valid access token, and no retry.
+     *
+     * For calls where a 401 does not mean "the token expired": re-entering a password answers a wrong
+     * password with 401, and retrying it would count one mistake twice against the account's lockout.
+     * The token is refreshed before the call if it is near expiry, so a 401 here is the call's answer.
+     */
+    suspend fun <T> withAccessToken(call: suspend (bearer: String) -> T): T = call(token(rejected = null))
+
     /** Replace the access token with one from a password re-entry, which carries a fresh auth time. */
     suspend fun adoptAccessToken(token: String, expiresAt: String) = mutex.withLock {
         access = AccessToken(token, Instant.parse(expiresAt))

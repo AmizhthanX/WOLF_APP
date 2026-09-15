@@ -1,14 +1,16 @@
 # Android client
 
-Kotlin and Jetpack Compose, in `apps/android`. The first slice is sign-in, the PC list and live
-metrics; commands, alerts, automations and remote desktop follow.
+Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics, and
+commands — power actions and the process list — with the same confirmation ladder as the web client.
+Remote desktop, alerts and automations follow.
 
 ## Pieces
 
 | Piece | Where | Does |
 | --- | --- | --- |
 | API client | `api/WolfApi.kt`, `api/Models.kt` | Typed calls; the WOLF error envelope; no token state |
-| Session | `session/SessionManager.kt` | The only code that touches tokens: sign-in, refresh, sign-out |
+| Session | `session/SessionManager.kt` | The only code that touches account tokens: sign-in, refresh, sign-out |
+| PC session | `session/PcSessionController.kt` | A remote session on one PC; commands and their confirmation |
 | Token vault | `security/TokenVault.kt` | The refresh token at rest, AES-GCM under a Keystore key |
 | Device identity | `security/DeviceIdentity.kt` | ECDSA P-256 key in the Android Keystore |
 | UI | `ui/`, `MainActivity.kt` | Sign-in, PCs, live metrics |
@@ -31,6 +33,34 @@ metrics; commands, alerts, automations and remote desktop follow.
 - Backups are off (`allowBackup=false`, every domain excluded from cloud backup and device transfer),
   and the vault is in the no-backup directory besides. A restored copy would only be a broken sign-in
   that looked like a working one, since the Keystore key does not travel.
+
+## Commands
+
+A command is sent with a **session token** — scoped to one PC and to the capabilities the session was
+granted — never with the account token. The session is opened the first time a command needs one
+rather than when a PC is looked at, because reading metrics does not need a session and every session
+is audited. It asks for `processes` and `power` and nothing else.
+
+The confirmation ladder is the web client's, rule for rule:
+
+1. Send with no confirmation. Accepted means low risk.
+2. Refused for confirmation: the **server** names the risk level, and that level is what the owner is
+   asked about. Nothing on the phone guesses it.
+3. Medium: an explicit yes. High: the password as well; the session token is then re-issued so it
+   carries the fresh sign-in time. Critical: both, plus a single-use privileged grant requested with
+   that session token.
+4. Resent at the named level with the **same idempotency key**, so a retried request cannot run the
+   command twice. If the server now names a higher level, the owner is asked again; the phone never
+   climbs the ladder by itself.
+
+**A wrong password is tried once.** Re-authentication answers a wrong password with 401, and the
+session manager's usual "401 means refresh and retry" would count one typo twice against the account
+lockout — so password re-entry goes through a call with no retry. A test asserts one attempt, no refresh
+and no command.
+
+Power actions are never sent forced (forcing is critical and closes unsaved work). Terminating a process
+carries the name as well as the PID, so a recycled PID is refused by the agent. Protected system
+processes show no terminate button, and the server would classify them critical if asked.
 
 ## Device identity
 
@@ -79,6 +109,9 @@ npm run build:android         # debug APK
 
 ## Tests
 
+- **JVM, commands:** the confirmation ladder against a mock API enforcing the real rules — medium,
+  high with a re-issued session token, critical with a grant, the phone never escalating on its own, one
+  password attempt, a lapsed session token renewed once, sessions ended on close.
 - **JVM:** the API client against a mock server (paths, the error envelope, ids that cannot add path
   segments, unknown metrics staying unknown); the session against a mock server that rotates refresh
   tokens and treats reuse as theft (single shared refresh, sign-out on refusal, offline launch); the
@@ -97,7 +130,7 @@ kotlinx-coroutines (Apache-2.0), OkHttp (Apache-2.0). Tests: JUnit 4 (EPL-1.0), 
 
 ## Not built yet
 
-- Commands with the confirm-and-password flow, alerts, automations, configuration backup.
+- Alerts, automations, configuration backup, services, scheduled tasks and the file manager.
 - Remote desktop: the WebRTC library, capture of touch into WOLF input, and the viewer.
 - Release signing and distribution through CI.
 - Unlocking the vault with the phone's biometric or screen lock.

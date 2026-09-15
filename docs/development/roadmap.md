@@ -825,8 +825,18 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   app's only Java was generated `BuildConfig`, so it is gone — per-build-type values are Kotlin — and the
   build runs on any JDK 21–25 runtime
 
+**Done — commands: power and processes, with the confirmation ladder**
+
+- A PC session opened only when a command needs one, asking for `processes` and `power` alone
+- The web client's escalation rules exactly: the server names the risk, medium confirms, high re-enters
+  the password and re-issues the session token, critical adds a single-use grant, the same idempotency
+  key throughout, and the phone never escalating by itself
+- **A wrong password counts once.** The generic 401-refresh-retry would have sent it twice against the
+  lockout; re-authentication bypasses it, and a test holds that
+- Power actions never forced; process termination carries the expected name
+
 **Still open for Android**
-- Commands with the confirm-and-password flow; alerts, automations and configuration backup
+- Alerts, automations and configuration backup
 - Remote desktop over WebRTC, with touch mapped to WOLF input
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
