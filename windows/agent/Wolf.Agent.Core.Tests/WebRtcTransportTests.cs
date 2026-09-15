@@ -63,7 +63,7 @@ public sealed class WebRtcTransportTests
     }
 
     /// <summary>Drive both ends of the negotiation the way the cloud relay would.</summary>
-    private static async Task<RTCPeerConnection> ConnectClientAsync(WebRtcTransport host, string offerSdp)
+    private static async Task<RTCPeerConnection> ConnectClientAsync(WebRtcTransport host, string offerSdp, bool withAudio = false)
     {
         var client = new RTCPeerConnection(new RTCConfiguration
         {
@@ -73,6 +73,13 @@ public sealed class WebRtcTransportTests
         client.addTrack(new MediaStreamTrack(
             new VideoFormat(VideoCodecsEnum.H264, 96, 90_000, "packetization-mode=1"),
             MediaStreamStatusEnum.RecvOnly));
+
+        if (withAudio)
+        {
+            client.addTrack(new MediaStreamTrack(
+                new AudioFormat(AudioCodecsEnum.OPUS, 111, 48_000, 2, "minptime=10;useinbandfec=1"),
+                MediaStreamStatusEnum.RecvOnly));
+        }
 
         // Candidates are relayed in both directions as they are gathered, exactly as the
         // signaling relay does it.
@@ -345,6 +352,56 @@ public sealed class WebRtcTransportTests
             // picture until the encoder's own interval comes round.
             Assert.True(asked, "the host never noticed the client asking for a picture");
             Assert.Equal(Volatile.Read(ref requests), (int)host.KeyFrameRequests);
+        }
+        finally
+        {
+            client.close();
+        }
+    }
+
+    [Fact]
+    public async Task A_picture_loss_is_heard_when_the_stream_also_carries_sound()
+    {
+        using var loggers = new XunitLoggerFactory(_output, LogLevel.Warning);
+        using WebRtcTransport host = WebRtcTransport.Create(
+            Array.Empty<IceServerSetting>(),
+            H264ProfileLevel.Fallback,
+            loggers.CreateLogger<WebRtcTransport>(),
+            withAudio: true);
+
+        var requests = 0;
+        host.KeyFrameRequested += () => Interlocked.Increment(ref requests);
+
+        string offer = await host.CreateOfferAsync();
+        RTCPeerConnection client = await ConnectClientAsync(host, offer, withAudio: true);
+
+        try
+        {
+            bool connected = await WaitForAsync(
+                () => host.ConnectionState == RTCPeerConnectionState.connected &&
+                      client.connectionState == RTCPeerConnectionState.connected,
+                ConnectTimeout);
+            Assert.True(connected, "the peers never connected");
+
+            // Sound and a picture, so both media sections have flowed and carry RTCP.
+            const uint duration = WebRtcTransport.AudioClockRate / 50;
+            Assert.True(host.SendAudio(new byte[] { 0xFC, 0x01, 0x02, 0x03 }, duration));
+            Assert.True(host.SendFrame(SyntheticAccessUnit(600, 0x65, seed: 11), 3000));
+            await Task.Delay(300);
+
+            client.SendRtcpFeedback(
+                SDPMediaTypesEnum.video,
+                new RTCPFeedback(
+                    client.VideoStream.LocalTrack?.Ssrc ?? 1,
+                    client.VideoStream.RemoteTrack?.Ssrc ?? 0,
+                    PSFBFeedbackTypesEnum.PLI));
+
+            bool asked = await WaitForAsync(() => Volatile.Read(ref requests) > 0, TimeSpan.FromSeconds(5));
+            _output.WriteLine($"key frame requests observed with sound on: {Volatile.Read(ref requests)}");
+
+            // With sound, the offer bundles audio into the first media section. A client whose
+            // decoder is stuck must still be heard, whichever section its feedback travels in.
+            Assert.True(asked, "the host ignored a picture loss indication because the stream also carries sound");
         }
         finally
         {

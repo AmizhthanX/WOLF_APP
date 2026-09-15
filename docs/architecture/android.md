@@ -2,7 +2,7 @@
 
 Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics,
 commands — power actions and the process list — with the same confirmation ladder as the web client, and
-remote desktop over WebRTC with touch mapped to WOLF input, the file manager, services, scheduled tasks and startup items,
+remote desktop over WebRTC — touch, scroll and zoom, sound, the clipboard and display choice — the file manager, services, scheduled tasks and startup items,
 alert rules, the notification inbox and automations, configuration backup and restore, and push
 notifications that carry nothing through Google.
 
@@ -18,6 +18,8 @@ notifications that carry nothing through Google.
 | Stream session | `remote/StreamSession.kt` | Signaling and the stream's state machine; no Android types, so JVM-tested |
 | WebRTC | `remote/WebRtcAndroid.kt` | libwebrtc peer connection, decoders, the signaling socket |
 | Input | `remote/InputEvents.kt` | Touch to normalised coordinates; WOLF input events |
+| Zoom and gestures | `remote/Viewport.kt`, `ui/RemoteDesktopExtras.kt` | Pinch zoom, pan and two-finger scroll, taken back through the zoom to the PC's coordinates |
+| Displays, clipboard | `remote/Displays.kt`, `storage/PhoneClipboard.kt` | The PC's display list; the phone's clipboard, touched only on a tap |
 | Remote desktop | `remote/RemoteDesktopController.kt`, `ui/RemoteDesktopScreen.kt` | Its own PC session, renderer and gestures |
 | Alerts, automations | `api/AlertModels.kt`, `api/Automations.kt` | Rule and automation shapes, built within the protocol's bounds, and described |
 | Account authority | `session/AccountAuthority.kt` | Confirmation and password re-entry for decisions saved rather than sent |
@@ -81,8 +83,9 @@ processes show no terminate button, and the server would classify them critical 
 The web client's protocol, spoken by a second implementation — which is the point of building it: the
 relay and the session host are held to the protocol rather than to one client's habits.
 
-1. A **separate PC session** asking for `screen`, `input` and `file-transfer`, and nothing else. Commands keep their own session; a
-   viewer does not carry `power`.
+1. A **separate PC session** asking for `screen`, `audio`, `input`, `clipboard` and `file-transfer`, and nothing
+   else. Commands keep their own session; a viewer does not carry `power`. Holding a capability is not using
+   it, as on the web: sound only when asked for, clipboard text only on a tap, control and files each a lease.
 2. The relay socket (`/client`), authenticated with that session token in the first message. The token
    never goes in the URL, where proxies log it.
 3. `stream.request` with the Wi-Fi or mobile-data profile, the codecs the phone's decoders **report** and
@@ -94,11 +97,40 @@ relay and the session host are held to the protocol rather than to one client's 
    relay's `input.control` grants it, and the grant is renewed every 45 seconds while held. Touch does
    nothing until then.
 
-Gestures, once in control: a tap is a left click, a long press a right click, a drag a left-button drag.
-A text field sends `keyboard.text` (split under the protocol's limit without cutting a character in
-two), with buttons for Enter, Backspace, Escape, Tab and arrows. Coordinates are normalised against the
-**picture**, not the view — the picture is letterboxed to fit, and a touch on the black bars is dropped
-rather than moved to the nearest edge, where it would click something the owner did not touch.
+Gestures, once in control: a tap is a left click, a long press a right click, a drag a left-button drag,
+**two fingers moving together scroll the PC** — fingers up scroll down, as a phone does — and a **pinch zooms
+the picture on the phone**, up to four times, around the fingers. Without control a pinch still zooms and a
+drag moves around the zoomed picture, and nothing reaches the PC. Whether two fingers are a pinch or a scroll
+is decided once, as they pass the touch slop, and kept until they lift. All of it is one gesture handler
+(`ui/RemoteDesktopExtras.kt`), so no two detectors fight over a finger; the geometry (`remote/Viewport.kt`) has
+no Android types and is tested on the JVM. Zoom is the phone's own view: the PC keeps sending the same frames,
+and a picture of a new size — another display — goes back to fitting.
+
+A text field sends `text` events (split under the protocol's limit without cutting a character in two), with
+buttons for Enter, Backspace, Escape and Tab and one-notch scroll buttons. Coordinates are normalised against
+the **picture**, not the view, and taken back through the zoom first — the picture is letterboxed to fit, and a
+touch on the black bars is dropped rather than moved to the nearest edge, where it would click something the
+owner did not touch.
+
+**Sound.** "Play the PC's sound" on the PC screen, off by default, sends `requestAudio`; the session holds
+`audio`, and the PC decides. The screen offers Mute only when the negotiation carries an audio codec — never a
+speaker button over silence — and shows the PC's adjustment when it gave none ("not granted", "no audio
+output"). Playback is as media, not as a voice call, through libwebrtc's audio device module; the app has no
+microphone permission and never creates a local audio track.
+
+**Displays.** `remote-desktop.list-displays` (low risk, under `screen`) is sent when the stream starts; with
+more than one display, a picker switches with `stream.set-display`, in place. The PC answers a switch with a
+fresh `stream.ready`, which updates the labels and the picture's size without leaving the streaming phase —
+going back to "preparing" would take control away from a stream that has it. Asking for the display already
+shown is not a switch, and the PC answers nothing.
+
+**Clipboard.** Text only, both ways on the data channel, never through the cloud. "Send this phone's clipboard
+to the PC" reads the phone's clipboard on that tap — Android shows the owner that it happened — and text past
+the protocol's 256 KB is refused whole, not cut. What the PC copies while the stream runs is offered as a
+length ("The PC copied 42 characters") with Copy and Dismiss; it reaches the phone's clipboard only on Copy,
+marked sensitive so Android 13 and later keep it out of the copy preview. Held text is dropped when the stream
+ends, and its `toString` prints a length, so a stray log line cannot carry it. Images and files on either
+clipboard are named, not carried.
 
 **The H.264 profile is negotiated, because the first real stream failed.** The Android emulator's only
 H.264 decoder takes Constrained Baseline (`42e01f`); the PC encoded High 5.1 (`640033`). libwebrtc
@@ -115,9 +147,15 @@ Proven against the real thing: the live test below streamed the development PC t
 2560×1440 (252 frames decoded in about 35 seconds on the emulator), took control, and
 moved the PC's pointer to exactly (0.25, 0.25) of the screen, read back on the PC.
 
-**Not yet:** audio (profiles ask for none), clipboard, multiple displays and profile
-changes mid-stream from the phone, a hardware keyboard's shortcuts, pinch-zoom and scroll gestures.
-These exist in the protocol and the web client.
+**A still desktop can leave the first picture missing.** Found by the extras live test, and on the PC's side:
+on a desktop where nothing changes, the session host sends no frame for many seconds (about 18 in those runs),
+and a key frame it is asked for is only encoded with the next captured frame. On the emulator's lossy network a
+2560×1440 key frame lost about a fifth of its packets, the phone asked for another 24 to 39 times, and none
+came until the screen changed. The mobile-data profile's smaller key frame usually arrives whole. This is a
+session host fix (re-encode the last picture on request), tracked separately; it affects the web client too.
+
+**Not yet:** profile changes mid-stream from the phone, and a hardware keyboard's shortcuts. These exist in
+the protocol and the web client.
 
 ## Files
 
@@ -312,6 +350,13 @@ npm run build:android         # debug APK
   rejects video failing as `codec-unsupported`, an agent that is away, a dropped connection reported as
   reconnecting, errors from the PC carrying their own advice; touch normalisation against a
   letterboxed picture; input event bounds; decoder profile-level-ids to H.264 profiles.
+- **JVM, remote desktop extras:** sound asked for only when wanted; the negotiation's display id, audio codec
+  and adjustments; a display switch sent in place, answered without leaving streaming, and null for the primary;
+  clipboard text in the protocol's exact shape on the data channel and never through the relay, refused whole
+  past 256 KB and before the channel opens; the PC's text, refusals and unsupported formats handed over, other
+  formats ignored, held text never printed. Zoom around the fingers, panning bounded by the picture, a touch
+  through the zoom and on the bars, pinch versus scroll decided once, scroll direction and accumulation; the
+  display list read from the agent's result with unusable entries left out.
 - **JVM, automations:** authority against a mock API enforcing `authorizeSave` — nothing confirmed
   before the server asks, medium at the named level, high with the re-authenticated token, one password
   attempt, no request without a password, critical refused rather than asked, never climbing, a stale
@@ -370,6 +415,13 @@ npm run build:android         # debug APK
   overwritten; the file fetched back into memory and through the document store into a real file, identical
   byte for byte; a stopped upload leaving neither a file nor a part file. WOLF cannot delete, so the runner
   removes the one file the test writes.
+- **Live remote desktop extras** (`LiveRemoteDesktopExtrasTest`), against a local cloud and the running agent,
+  holding no `input` at all, on the mobile-data profile (see the still-desktop finding above): the displays listed
+  by the real command; a stream asking for sound, negotiated as Opus, with audio packets arriving (about 270 in
+  five seconds); on the development PC's single display, asking for the display shown changes nothing and the
+  stream keeps streaming — a real switch needs a second monitor and is not proven live; and the clipboard both
+  ways — the phone's marker reached the PC's clipboard, and the PC's reply reached the phone. The runner saves
+  the PC's clipboard (text and HTML) first, never prints it, and restores both afterwards.
 - **JVM, push:** registration sent only when WOLF does not hold this token (a rotated token, another
   device's sign-in, a server that lost it), a marker that holds a hash and never the token, the server's
   "not configured" reported as such, sign-out clearing the server before the token; a wake-up showing only
@@ -408,7 +460,8 @@ AndroidX Test (Apache-2.0).
 - Changing a service, task or startup item from the phone has not run against a machine with the
   privileged helper installed; the development PC runs the agent interactively without it. The same is
   true of those changes from the web (see the roadmap's Milestone 4).
-- Remote desktop: audio, clipboard, display switching, scroll and zoom gestures.
+- Remote desktop: a display switch proven live on a PC with two monitors; profile changes mid-stream; a
+  hardware keyboard's shortcuts. A first picture on a still desktop waits on a session host fix (above).
 - Release signing and distribution through CI.
 - Unlocking the vault with the phone's biometric or screen lock.
 - Device proof-of-possession, above.

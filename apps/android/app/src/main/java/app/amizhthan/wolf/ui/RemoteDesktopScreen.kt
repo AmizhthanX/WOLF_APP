@@ -1,8 +1,7 @@
 package app.amizhthan.wolf.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,29 +9,32 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.amizhthan.wolf.remote.InputEvents
 import app.amizhthan.wolf.remote.NormalizedPoint
-import app.amizhthan.wolf.remote.Picture
 import app.amizhthan.wolf.remote.RemoteDesktopController
 import app.amizhthan.wolf.remote.StreamPhase
+import app.amizhthan.wolf.remote.Viewport
 import app.amizhthan.wolf.remote.VirtualKey
 import org.webrtc.SurfaceViewRenderer
 
@@ -60,13 +62,21 @@ internal fun controlWords(reason: String?): String = when (reason) {
     else -> "View only."
 }
 
+private enum class Panel { NONE, FILES, CLIPBOARD }
+
 @Composable
 fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit) {
     val state by controller.state.collectAsStateWithLifecycle()
     val controlling = state.control?.granted == true
-    var dragAt by remember { mutableStateOf<NormalizedPoint?>(null) }
+    val streaming = state.phase == StreamPhase.STREAMING
     var typed by remember { mutableStateOf("") }
-    var showFiles by remember { mutableStateOf(false) }
+    var panel by remember { mutableStateOf(Panel.NONE) }
+    var viewport by remember { mutableStateOf(Viewport.FIT) }
+    val currentViewport = rememberUpdatedState(viewport)
+
+    // A picture of a different size is a different picture — another display, usually. A zoom into the old one
+    // would leave the owner looking at, and touching, somewhere they did not choose.
+    LaunchedEffect(state.frameWidth, state.frameHeight) { viewport = Viewport.FIT }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row {
@@ -76,17 +86,27 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
                 val negotiation = state.negotiation
                 if (negotiation != null) {
                     Text(
-                        "${negotiation.displayName} · ${negotiation.widthPixels}×${negotiation.heightPixels} · ${negotiation.videoCodec}${if (negotiation.hardwareEncoded) " (hardware)" else ""}",
+                        "${negotiation.displayName} · ${negotiation.widthPixels}×${negotiation.heightPixels} · ${negotiation.videoCodec}${if (negotiation.hardwareEncoded) " (hardware)" else ""}${if (negotiation.audioCodec != null) " · sound" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
             }
-            TextButton(onClick = { showFiles = !showFiles }) { Text(if (showFiles) "Hide files" else "Files") }
             if (controlling) {
                 TextButton(onClick = controller::releaseControl) { Text("Release") }
             } else {
-                TextButton(onClick = controller::requestControl, enabled = state.phase == StreamPhase.STREAMING) { Text("Take control") }
+                TextButton(onClick = controller::requestControl, enabled = streaming) { Text("Take control") }
             }
+        }
+
+        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            PanelToggle("Files", panel == Panel.FILES) { panel = if (panel == Panel.FILES) Panel.NONE else Panel.FILES }
+            PanelToggle("Clipboard", panel == Panel.CLIPBOARD) { panel = if (panel == Panel.CLIPBOARD) Panel.NONE else Panel.CLIPBOARD }
+            DisplayPicker(state, enabled = streaming, onSelect = controller::setDisplay)
+            // Only what the PC actually settled on: a stream with no audio track gets no sound button over silence.
+            if (state.negotiation?.audioCodec != null) {
+                TextButton(onClick = { controller.setSoundOn(!state.soundOn) }) { Text(if (state.soundOn) "Mute" else "Unmute") }
+            }
+            if (viewport.zoomed) TextButton(onClick = { viewport = Viewport.FIT }) { Text("Fit") }
         }
 
         state.failure?.let {
@@ -97,85 +117,77 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
             if (remote.unavailableReason != null) Text("The PC reports: ${remote.detail ?: remote.unavailableReason}", style = MaterialTheme.typography.bodySmall)
             if (remote.showing == "secure-desktop") Text("Showing the Windows lock or sign-in screen.", style = MaterialTheme.typography.bodySmall)
         }
-        if (state.phase == StreamPhase.STREAMING) {
+        state.negotiation?.adjustments?.forEach { Text("The PC adjusted this stream: ${it.reason}", style = MaterialTheme.typography.bodySmall) }
+        state.displaysNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        if (streaming) {
             // Connected is not the same as seeing the PC: the first decoded frame is what says so.
-            Text(if (state.pictureShown) "Picture received" else "Waiting for the first picture…", style = MaterialTheme.typography.bodySmall)
+            Text(
+                when {
+                    !state.pictureShown -> "Waiting for the first picture…"
+                    controlling -> "Tap to click, hold to right-click, drag to drag. Two fingers scroll; pinch to zoom."
+                    else -> "Picture received. Pinch to zoom."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         if (!controlling && state.control != null) Text(controlWords(state.control?.reason), style = MaterialTheme.typography.bodySmall)
         state.inputRefusal?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
 
-        Box(modifier = Modifier.weight(if (showFiles) 0.35f else 1f).fillMaxWidth().background(Color.Black)) {
+        Box(modifier = Modifier.weight(if (panel == Panel.NONE) 1f else 0.35f).fillMaxWidth().clipToBounds().background(Color.Black)) {
             AndroidView(
                 factory = { context -> SurfaceViewRenderer(context).also(controller::attachRenderer) },
+                // Zoom moves the picture view itself. Since Android 7 a SurfaceView scales and moves with its view.
+                update = { view ->
+                    view.pivotX = 0f
+                    view.pivotY = 0f
+                    view.scaleX = viewport.scale
+                    view.scaleY = viewport.scale
+                    view.translationX = viewport.offsetX
+                    view.translationY = viewport.offsetY
+                },
                 onRelease = controller::detachRenderer,
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // Touch is read only while this session holds control; otherwise the picture is only a picture.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(controlling, state.frameWidth, state.frameHeight) {
-                        if (!controlling) return@pointerInput
-                        fun at(offset: Offset) = Picture.normalize(size.width.toFloat(), size.height.toFloat(), state.frameWidth, state.frameHeight, offset.x, offset.y)
-                        detectTapGestures(
-                            onTap = { offset -> at(offset)?.let { controller.send(InputEvents.tap(it)) } },
-                            onLongPress = { offset -> at(offset)?.let { controller.send(InputEvents.longPress(it)) } },
-                        )
-                    }
-                    .pointerInput(controlling, state.frameWidth, state.frameHeight) {
-                        if (!controlling) return@pointerInput
-                        fun at(offset: Offset) = Picture.normalize(size.width.toFloat(), size.height.toFloat(), state.frameWidth, state.frameHeight, offset.x, offset.y)
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                at(offset)?.let { point ->
-                                    dragAt = point
-                                    controller.send(listOf(InputEvents.move(point), InputEvents.button("left", "down", point)))
-                                }
-                            },
-                            onDrag = { change, _ ->
-                                at(change.position)?.let { point ->
-                                    dragAt = point
-                                    controller.send(listOf(InputEvents.move(point)))
-                                }
-                            },
-                            onDragEnd = {
-                                // Always released, wherever the finger ended: a button left down is a stuck drag.
-                                dragAt?.let { controller.send(listOf(InputEvents.button("left", "up", it))) }
-                                dragAt = null
-                            },
-                            onDragCancel = {
-                                dragAt?.let { controller.send(listOf(InputEvents.button("left", "up", it))) }
-                                dragAt = null
-                            },
-                        )
-                    },
+                    .remoteGestures(controlling, state.frameWidth, state.frameHeight, currentViewport, onViewport = { viewport = it }, send = controller::send),
             )
         }
 
-        if (showFiles) {
-            FilesPanel(controller, streaming = state.phase == StreamPhase.STREAMING, modifier = Modifier.weight(0.65f).fillMaxWidth())
-        } else if (controlling) {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(
-                    value = typed,
-                    onValueChange = { typed = it },
-                    label = { Text("Type on the PC") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = {
-                    if (typed.isNotEmpty()) controller.send(InputEvents.text(typed))
-                    typed = ""
-                }) { Text("Send") }
-            }
-            val centre = NormalizedPoint(0.5, 0.5)
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("Enter" to VirtualKey.ENTER, "⌫" to VirtualKey.BACKSPACE, "Esc" to VirtualKey.ESCAPE, "Tab" to VirtualKey.TAB).forEach { (label, key) ->
-                    OutlinedButton(onClick = { controller.send(InputEvents.keyPress(key)) }, modifier = Modifier.weight(1f)) { Text(label) }
+        when (panel) {
+            Panel.FILES -> FilesPanel(controller, streaming = streaming, modifier = Modifier.weight(0.65f).fillMaxWidth())
+            Panel.CLIPBOARD -> ClipboardPanel(
+                state,
+                streaming = streaming,
+                onSend = controller::sendPhoneClipboard,
+                onCopy = controller::copyPcClipboardToPhone,
+                onDismiss = controller::dismissPcClipboard,
+                modifier = Modifier.weight(0.65f).fillMaxWidth().padding(horizontal = 8.dp),
+            )
+            Panel.NONE -> if (controlling) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = typed,
+                        onValueChange = { typed = it },
+                        label = { Text("Type on the PC") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        if (typed.isNotEmpty()) controller.send(InputEvents.text(typed))
+                        typed = ""
+                    }) { Text("Send") }
                 }
-                OutlinedButton(onClick = { controller.send(listOf(InputEvents.scroll(centre, 3.0))) }, modifier = Modifier.weight(1f)) { Text("▲") }
-                OutlinedButton(onClick = { controller.send(listOf(InputEvents.scroll(centre, -3.0))) }, modifier = Modifier.weight(1f)) { Text("▼") }
+                val centre = NormalizedPoint(0.5, 0.5)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("Enter" to VirtualKey.ENTER, "⌫" to VirtualKey.BACKSPACE, "Esc" to VirtualKey.ESCAPE, "Tab" to VirtualKey.TAB).forEach { (label, key) ->
+                        OutlinedButton(onClick = { controller.send(InputEvents.keyPress(key)) }, modifier = Modifier.weight(1f)) { Text(label) }
+                    }
+                    OutlinedButton(onClick = { controller.send(listOf(InputEvents.scroll(centre, 3.0))) }, modifier = Modifier.weight(1f)) { Text("▲") }
+                    OutlinedButton(onClick = { controller.send(listOf(InputEvents.scroll(centre, -3.0))) }, modifier = Modifier.weight(1f)) { Text("▼") }
+                }
             }
         }
     }

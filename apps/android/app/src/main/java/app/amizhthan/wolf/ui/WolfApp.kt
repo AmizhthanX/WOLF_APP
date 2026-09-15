@@ -426,11 +426,13 @@ private fun PcScreen(
     onPower: (String, String, String) -> Unit,
     onLoadProcesses: () -> Unit,
     onTerminate: (ProcessRow) -> Unit,
-    onRemoteDesktop: (StreamProfile) -> Unit,
+    onRemoteDesktop: (StreamProfile, Boolean) -> Unit,
     onServices: () -> Unit,
     onAutorun: () -> Unit,
 ) {
     val online = pc?.status == "online" && pc.remoteAccessEnabled
+    // Off unless the owner turns it on: starting to watch a PC is not a decision to start listening to it.
+    var sound by rememberSaveable { mutableStateOf(false) }
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -451,15 +453,16 @@ private fun PcScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Remote desktop", fontWeight = FontWeight.SemiBold)
+                    CheckRow("Play the PC's sound", checked = sound, enabled = online) { sound = it }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StreamProfile.entries.forEach { profile ->
-                            OutlinedButton(onClick = { onRemoteDesktop(profile) }, enabled = online, modifier = Modifier.weight(1f)) {
+                            OutlinedButton(onClick = { onRemoteDesktop(profile, sound) }, enabled = online, modifier = Modifier.weight(1f)) {
                                 Text(profile.label)
                             }
                         }
                     }
                     Text(
-                        "Opens view-only. Take control to touch, type and scroll on the PC. The picture never passes through the WOLF cloud.",
+                        "Opens view-only. Take control to touch, type and scroll on the PC. The picture, sound and clipboard never pass through the WOLF cloud. Sound is what the PC plays, never its microphone.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

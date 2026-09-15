@@ -3,10 +3,14 @@ package app.amizhthan.wolf.remote
 import android.content.Context
 import android.net.Uri
 import app.amizhthan.wolf.ApiEndpoint
+import app.amizhthan.wolf.api.Commands
 import app.amizhthan.wolf.api.WolfApi
+import app.amizhthan.wolf.api.WolfApiException
+import app.amizhthan.wolf.session.CommandOutcome
 import app.amizhthan.wolf.session.PcSessionController
 import app.amizhthan.wolf.session.SessionManager
 import app.amizhthan.wolf.storage.DocumentStore
+import app.amizhthan.wolf.storage.PhoneClipboard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -21,6 +25,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
+import org.webrtc.AudioTrack
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
@@ -43,6 +48,16 @@ data class RemoteDesktopUiState(
     /** True once a decoded frame has actually been drawn, not when the connection came up. */
     val pictureShown: Boolean = false,
     val profile: StreamProfile = StreamProfile.MOBILE_DATA,
+    /** Whether the owner asked to hear the PC. Whether it can be heard is the negotiation's audio codec. */
+    val soundRequested: Boolean = false,
+    /** Muted on this phone only; the PC keeps sending. */
+    val soundOn: Boolean = true,
+    /** The PC's displays; null until listed. */
+    val displays: List<RemoteDisplay>? = null,
+    val displaysNotice: String? = null,
+    /** Text the PC copied, held until the owner copies or dismisses it. Its `toString` never shows the text. */
+    val clipboardFromPc: ClipboardEvent.Content? = null,
+    val clipboardNotice: String? = null,
 )
 
 data class TransferProgress(val name: String, val downloading: Boolean, val done: Long, val total: Long)
@@ -59,11 +74,13 @@ data class FilesUiState(
 )
 
 /**
- * Remote desktop on the phone: its own PC session, the stream, the picture, and the PC's files.
+ * Remote desktop on the phone: its own PC session, the stream, the picture and sound, the clipboard, and the
+ * PC's files.
  *
- * The session asks for `screen`, `input` and `file-transfer` — separate from the session commands use,
- * because watching a machine and restarting it are different things to have been granted. Control and
- * files are each a lease on top, asked for when wanted and decided by the cloud.
+ * The session asks for `screen`, `audio`, `input`, `clipboard` and `file-transfer` — separate from the session
+ * commands use, because watching a machine and restarting it are different things to have been granted. Holding
+ * a capability is not using it, the way the web dashboard holds them: sound only when the owner asks for it,
+ * clipboard text only on a tap, and control and files each a lease on top, decided by the cloud.
  *
  * Everything the stream does happens on one thread, which the socket, the peer connection and the
  * renewal timer all post to. File transfers run on their own coroutines and reach the stream through it.
@@ -75,11 +92,12 @@ class RemoteDesktopController(
     session: SessionManager,
     private val http: OkHttpClient,
     private val documents: DocumentStore,
+    private val clipboard: PhoneClipboard = PhoneClipboard(context),
 ) {
     private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadScheduledExecutor { runnable -> Thread(runnable, "wolf-remote-desktop") }
     private val post: (() -> Unit) -> Unit = { task -> if (!executor.isShutdown) executor.execute(task) }
-    private val pcSession = PcSessionController(pcId, api, session, capabilities = listOf("screen", "input", "file-transfer"))
+    private val pcSession = PcSessionController(pcId, api, session, capabilities = CAPABILITIES)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _state = MutableStateFlow(RemoteDesktopUiState())
@@ -97,10 +115,12 @@ class RemoteDesktopController(
 
     private var stream: StreamSession? = null
     private var track: VideoTrack? = null
+    private var audioTrack: AudioTrack? = null
     private var renderer: SurfaceViewRenderer? = null
 
-    suspend fun start(profile: StreamProfile) {
-        _state.update { RemoteDesktopUiState(phase = StreamPhase.AUTHENTICATING, profile = profile) }
+    /** Start streaming. Sound is asked for only when [sound] is true; the PC says what it settled on. */
+    suspend fun start(profile: StreamProfile, sound: Boolean = false) {
+        _state.update { RemoteDesktopUiState(phase = StreamPhase.AUTHENTICATING, profile = profile, soundRequested = sound) }
 
         val token = pcSession.sessionToken()
         val ice = api.iceServers(pcId, token).configuration.iceServers.map { IceServerConfig(it.urls, it.username, it.credential) }
@@ -122,16 +142,19 @@ class RemoteDesktopController(
                 profile = profile.json,
                 clientCodecs = codecs,
                 socket = socket,
-                peers = WebRtcPeerFactory(rtc, post) { attachTrack(it) },
+                peers = WebRtcPeerFactory(rtc, post, onAudioTrack = { attachAudio(it) }) { attachTrack(it) },
                 scheduler = { period, task ->
                     val future = executor.scheduleWithFixedDelay(task, period, period, TimeUnit.MILLISECONDS)
                     Cancellable { future.cancel(false) }
                 },
                 listener = listener,
                 h264Profiles = DecoderCodecs.h264Profiles(rtc.h264ProfileLevelIds),
+                requestAudio = sound,
             )
             stream = created
         }
+
+        loadDisplays()
     }
 
     fun requestControl() = post { stream?.requestControl() }
@@ -139,6 +162,71 @@ class RemoteDesktopController(
     fun releaseControl() = post { stream?.releaseControl() }
 
     fun send(events: List<JsonObject>) = post { stream?.sendInput(events) }
+
+    /* Displays and sound. */
+
+    /** Look at another of the PC's displays, switched in place; the negotiation follows what the PC switched to. */
+    fun setDisplay(displayId: String?) = post { stream?.setDisplay(displayId) }
+
+    fun setSoundOn(on: Boolean) {
+        _state.update { it.copy(soundOn = on) }
+        post { audioTrack?.setEnabled(on) }
+    }
+
+    /**
+     * Read the PC's displays, so another can be chosen. Low risk and read-only, under `screen`; a failure only
+     * leaves the choice out, with the reason.
+     */
+    private fun loadDisplays() {
+        scope.launch {
+            val notice = try {
+                when (val outcome = pcSession.run(Commands.listDisplays(), "List displays", "Read the display layout from this PC.")) {
+                    is CommandOutcome.Done -> if (outcome.command.status == "completed") {
+                        _state.update { it.copy(displays = Displays.parse(outcome.command.result)) }
+                        null
+                    } else {
+                        outcome.command.failure?.message ?: "The PC did not list its displays (${outcome.command.status})."
+                    }
+                    // Listing displays is low risk. Should the server ever ask, the answer is not given from here.
+                    is CommandOutcome.NeedsConfirmation -> "WOLF asked for a confirmation before listing this PC's displays, so they were not listed."
+                }
+            } catch (error: WolfApiException) {
+                error.problem.problem
+            } catch (error: IOException) {
+                "This PC's displays could not be read: ${error.message ?: "the connection failed"}."
+            }
+            if (notice != null) _state.update { it.copy(displaysNotice = notice) }
+        }
+    }
+
+    /* Clipboard. Text only, both ways on the data channel, and only when the owner taps. */
+
+    /** Send the text on this phone's clipboard to the PC's clipboard. */
+    fun sendPhoneClipboard() {
+        val text = clipboard.readText()
+        when {
+            text == null -> _state.update { it.copy(clipboardNotice = "This phone's clipboard has no text to send.") }
+            // Refused whole rather than cut: a paste that arrives shortened is worse than one that did not happen.
+            text.length > StreamSession.MAX_CLIPBOARD_TEXT -> _state.update { it.copy(clipboardNotice = TOO_LARGE) }
+            else -> post {
+                val words = when (stream?.sendClipboard(text) ?: ClipboardSend.NOT_READY) {
+                    ClipboardSend.SENT -> "Sent ${text.length} characters to the PC's clipboard. If the PC refuses them, it says so here."
+                    ClipboardSend.TOO_LARGE -> TOO_LARGE
+                    ClipboardSend.NOT_READY -> "The connection to this PC is not ready for clipboard text."
+                }
+                _state.update { it.copy(clipboardNotice = words) }
+            }
+        }
+    }
+
+    /** Put what the PC copied on this phone's clipboard — the owner's tap, never the PC's. */
+    fun copyPcClipboardToPhone() {
+        val offered = _state.value.clipboardFromPc ?: return
+        clipboard.writeText(offered.text)
+        _state.update { it.copy(clipboardFromPc = null, clipboardNotice = "Copied to this phone's clipboard, marked as sensitive.") }
+    }
+
+    fun dismissPcClipboard() = _state.update { it.copy(clipboardFromPc = null, clipboardNotice = null) }
 
     /* Files. Names and bytes go between this phone and the PC on the data channel, and nowhere else. */
 
@@ -268,19 +356,21 @@ class RemoteDesktopController(
         view.release()
     }
 
-    /** Stop the stream and end its session on the server. Transfers in flight end with it. */
+    /** Stop the stream and end its session on the server. Transfers in flight end with it; clipboard text is dropped. */
     suspend fun stop() {
         transferStopped = true
         scope.cancel()
         post {
             renderer?.let { track?.removeSink(it) }
             track = null
+            audioTrack = null
             stream?.stop()
             stream = null
         }
         pcSession.close()
         executor.shutdown()
         _files.value = FilesUiState()
+        _state.update { it.copy(clipboardFromPc = null) }
     }
 
     private suspend fun askOnStream(message: JsonObject): JsonObject = suspendCancellableCoroutine { continuation ->
@@ -304,6 +394,11 @@ class RemoteDesktopController(
         renderer?.let { videoTrack.addSink(it) }
     }
 
+    private fun attachAudio(track: AudioTrack) {
+        audioTrack = track
+        track.setEnabled(_state.value.soundOn)
+    }
+
     private val listener = object : StreamListener {
         override fun onPhase(phase: StreamPhase, detail: String?) = _state.update { it.copy(phase = phase, detail = detail) }
         override fun onFailure(failure: StreamFailure) = _state.update { it.copy(failure = failure, control = null) }
@@ -312,6 +407,10 @@ class RemoteDesktopController(
         override fun onRemoteState(state: RemoteState) = _state.update { it.copy(remoteState = state) }
         override fun onInputRefused(reason: String, limitation: Boolean) = _state.update {
             it.copy(inputRefusal = if (limitation) "$reason (a Windows limitation)" else reason)
+        }
+        override fun onClipboard(event: ClipboardEvent) = when (event) {
+            is ClipboardEvent.Content -> _state.update { it.copy(clipboardFromPc = event, clipboardNotice = null) }
+            is ClipboardEvent.Notice -> _state.update { it.copy(clipboardNotice = event.detail) }
         }
         override fun onFileControl(control: InputControl) {
             if (control.granted) {
@@ -323,5 +422,11 @@ class RemoteDesktopController(
                 _files.update { FilesUiState(control = control) }
             }
         }
+    }
+
+    private companion object {
+        val CAPABILITIES = listOf("screen", "audio", "input", "clipboard", "file-transfer")
+
+        const val TOO_LARGE = "That is more than 256 KB of text. WOLF refuses it whole rather than sending part of it."
     }
 }

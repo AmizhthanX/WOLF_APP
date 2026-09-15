@@ -79,6 +79,8 @@ class StreamSessionTest {
         val states = mutableListOf<RemoteState>()
         val refusals = mutableListOf<String>()
         val fileControls = mutableListOf<InputControl>()
+        val clipboard = mutableListOf<ClipboardEvent>()
+        override fun onClipboard(event: ClipboardEvent) { clipboard += event }
         override fun onFileControl(control: InputControl) { fileControls += control }
         override fun onPhase(phase: StreamPhase, detail: String?) { phases += phase }
         override fun onFailure(failure: StreamFailure) { failures += failure }
@@ -136,6 +138,111 @@ class StreamSessionTest {
     private fun grantFiles() = stream.onSocketMessage(
         signal("""{"type":"file.control","granted":true,"holderSessionId":"$sessionId","expiresAt":"2026-09-15T10:10:00Z","reason":"granted"}"""),
     )
+
+    /* Sound, displays and the clipboard. */
+
+    @Test
+    fun sound_is_asked_for_only_when_the_owner_wants_it() {
+        connect()
+        val quiet = payloads().single { it["type"]!!.jsonPrimitive.content == "stream.request" }["request"]!!.jsonObject
+        assertEquals("false", quiet["requestAudio"].toString())
+
+        val listening = StreamSession(
+            "session-token", emptyList(), StreamProfile.WIFI.json, listOf("h264"), socket,
+            { _, events -> peerEvents = events; FakePeer().also { peers += it } }, scheduler, recorder,
+            requestAudio = true,
+        )
+        listening.onSocketOpen()
+        listening.onSocketMessage(accepted())
+        val asked = payloads().last { it["type"]!!.jsonPrimitive.content == "stream.request" }["request"]!!.jsonObject
+        assertEquals("true", asked["requestAudio"].toString())
+    }
+
+    @Test
+    fun the_negotiation_says_which_display_whether_there_is_sound_and_what_the_pc_could_not_do() {
+        stream.onSocketOpen()
+        stream.onSocketMessage(accepted())
+        stream.onSocketMessage(signal("""{"type":"stream.ready","negotiation":{"streamId":"${stream.streamId}","display":{"id":"d2","name":"LG","widthPixels":1920,"heightPixels":1080,"refreshHz":60,"primary":false,"scaleFactor":1,"hdr":false,"originX":2560,"originY":0},"videoCodec":"h264","hardwareEncoded":true,"audioCodec":null,"effectiveProfile":{},"adjustments":[{"setting":"audioEnabled","requested":"true","applied":"false","reason":"This session was not granted permission to hear this PC."}],"startedAt":"2026-09-15T10:00:00Z"}}"""))
+
+        val negotiation = recorder.negotiations.single()
+        assertEquals("d2", negotiation.displayId)
+        assertNull("no sound, and not pretended", negotiation.audioCodec)
+        assertEquals(listOf(Adjustment("audioEnabled", "true", "false", "This session was not granted permission to hear this PC.")), negotiation.adjustments)
+    }
+
+    @Test
+    fun switching_display_asks_the_pc_and_its_answer_leaves_the_stream_running() {
+        connect()
+        val phasesBefore = recorder.phases.size
+
+        stream.setDisplay("\\\\.\\DISPLAY2")
+        val change = payloads().single { it["type"]!!.jsonPrimitive.content == "stream.set-display" }
+        assertEquals("\\\\.\\DISPLAY2", change["displayId"]!!.jsonPrimitive.content)
+        assertFalse("no restart to look at another monitor", types().contains("stream.stop"))
+
+        stream.onSocketMessage(signal("""{"type":"stream.ready","negotiation":{"streamId":"${stream.streamId}","display":{"id":"\\\\.\\DISPLAY2","name":"LG","widthPixels":1920,"heightPixels":1080},"videoCodec":"h264","hardwareEncoded":true,"audioCodec":"opus","adjustments":[]}}"""))
+
+        assertEquals(StreamPhase.STREAMING, stream.phase)
+        assertEquals(phasesBefore, recorder.phases.size)
+        assertEquals("LG", recorder.negotiations.last().displayName)
+        assertEquals("\\\\.\\DISPLAY2", recorder.negotiations.last().displayId)
+        assertEquals("opus", recorder.negotiations.last().audioCodec)
+
+        stream.setDisplay(null)
+        assertEquals(JsonNull, payloads().last { it["type"]!!.jsonPrimitive.content == "stream.set-display" }["displayId"])
+    }
+
+    @Test
+    fun clipboard_text_goes_to_the_pc_on_the_data_channel_in_the_protocols_shape() {
+        connect()
+
+        assertEquals(ClipboardSend.SENT, stream.sendClipboard("copied on the phone"))
+
+        val message = peers.single().control.single { it["kind"]!!.jsonPrimitive.content == "clipboard.content" }
+        assertEquals(setOf("kind", "streamId", "format", "text", "origin", "at"), message.keys)
+        assertEquals(stream.streamId, message["streamId"]!!.jsonPrimitive.content)
+        assertEquals("text", message["format"]!!.jsonPrimitive.content)
+        assertEquals("copied on the phone", message["text"]!!.jsonPrimitive.content)
+        assertEquals("client", message["origin"]!!.jsonPrimitive.content)
+        assertEquals("2026-09-15T10:00:00.123Z", message["at"]!!.jsonPrimitive.content)
+        assertTrue("nothing about the clipboard goes through the relay", socket.sent.none { it.toString().contains("copied on the phone") })
+    }
+
+    @Test
+    fun clipboard_text_over_the_limit_is_refused_whole_and_nothing_is_sent_before_the_channel_opens() {
+        stream.onSocketOpen()
+        stream.onSocketMessage(accepted())
+        stream.onSocketMessage(signal("""{"type":"sdp.offer","sdp":"v=0 OFFER"}"""))
+        assertEquals(ClipboardSend.NOT_READY, stream.sendClipboard("too early"))
+
+        peerEvents.onControlChannelOpen()
+        assertEquals(ClipboardSend.TOO_LARGE, stream.sendClipboard("x".repeat(StreamSession.MAX_CLIPBOARD_TEXT + 1)))
+        assertEquals(ClipboardSend.SENT, stream.sendClipboard("x".repeat(StreamSession.MAX_CLIPBOARD_TEXT)))
+        assertEquals(1, peers.single().control.size)
+
+        stream.stop()
+        assertEquals(ClipboardSend.NOT_READY, stream.sendClipboard("after the end"))
+    }
+
+    @Test
+    fun what_the_pc_copies_is_handed_over_and_every_refusal_is_said() {
+        connect()
+
+        peerEvents.onControlMessage("""{"kind":"clipboard.content","streamId":"${stream.streamId}","format":"text","text":"copied on the PC","origin":"pc","at":"2026-09-15T10:00:01Z"}""")
+        peerEvents.onControlMessage("""{"kind":"clipboard.refused","streamId":"${stream.streamId}","reason":"too-large","detail":"Clipboard content is limited to 256 KB of text."}""")
+        peerEvents.onControlMessage("""{"kind":"clipboard.unsupported","streamId":"${stream.streamId}","describes":"image"}""")
+        peerEvents.onControlMessage("""{"kind":"clipboard.content","streamId":"${stream.streamId}","format":"image","text":"not text","origin":"pc","at":"2026-09-15T10:00:01Z"}""")
+
+        assertEquals(
+            listOf(
+                ClipboardEvent.Content("copied on the PC"),
+                ClipboardEvent.Notice("Clipboard content is limited to 256 KB of text."),
+                ClipboardEvent.Notice("The PC's clipboard holds image, which WOLF does not carry."),
+            ),
+            recorder.clipboard,
+        )
+        assertFalse("held text never reaches a log line by way of toString", ClipboardEvent.Content("a secret").toString().contains("secret"))
+    }
 
     @Test
     fun a_file_request_made_before_the_data_channel_opens_is_sent_when_it_does() {
@@ -343,7 +450,7 @@ class StreamSessionTest {
         stream.onSocketMessage(signal("""{"type":"sdp.offer","sdp":"v=0 OFFER"}"""))
         stream.onSocketMessage(signal("""{"type":"ice.candidate","candidate":"candidate:1 1 udp 2122260223 192.168.1.20 50000 typ host","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":null}"""))
 
-        assertEquals(Negotiation("DELL U2723QE", 2560, 1440, "h264", true), recorder.negotiations.single())
+        assertEquals(Negotiation("DELL U2723QE", 2560, 1440, "h264", true, displayId = "d1"), recorder.negotiations.single())
         assertEquals(listOf("v=0 OFFER"), peers.single().offers)
         assertEquals(1, peers.single().remoteCandidates.size)
 

@@ -1,11 +1,13 @@
 package app.amizhthan.wolf.remote
 
 import android.content.Context
+import android.media.AudioAttributes
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -19,19 +21,36 @@ import org.webrtc.RtpReceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.VideoTrack
+import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 
 /**
  * libwebrtc, created once per process.
  *
  * Decoding is hardware where the phone's MediaCodec offers it. There is no microphone and no camera: the
- * phone receives a PC's screen and sends nothing but input on the data channel.
+ * phone receives a PC's screen and sound, and sends nothing but input and clipboard text on the data channel.
+ * The app holds no microphone permission and never creates a local audio track, so nothing is recorded.
  */
 class WebRtc private constructor(context: Context) {
     val egl: EglBase = EglBase.create()
     private val decoders = DefaultVideoDecoderFactory(egl.eglBaseContext)
 
+    /**
+     * Playback, as media. libwebrtc's default plays sound as a voice call — at call volume, and routed like
+     * one — which is wrong for what a PC is playing.
+     */
+    private val audio = JavaAudioDeviceModule.builder(context)
+        .setUseStereoOutput(true)
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                .build(),
+        )
+        .createAudioDeviceModule()
+
     val factory: PeerConnectionFactory = PeerConnectionFactory.builder()
+        .setAudioDeviceModule(audio)
         .setVideoDecoderFactory(decoders)
         .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl.eglBaseContext, true, true))
         .createPeerConnectionFactory()
@@ -65,6 +84,7 @@ class WebRtc private constructor(context: Context) {
 class WebRtcPeerFactory(
     private val rtc: WebRtc,
     private val post: (() -> Unit) -> Unit,
+    private val onAudioTrack: (AudioTrack) -> Unit = {},
     private val onVideoTrack: (VideoTrack) -> Unit,
 ) : PeerFactory {
 
@@ -101,7 +121,12 @@ class WebRtcPeerFactory(
             }
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {
-                (receiver.track() as? VideoTrack)?.let { track -> post { onVideoTrack(track) } }
+                when (val track = receiver.track()) {
+                    is VideoTrack -> post { onVideoTrack(track) }
+                    // Sound the PC settled on sending; the phone only ever receives it.
+                    is AudioTrack -> post { onAudioTrack(track) }
+                    else -> Unit
+                }
             }
             override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
                 post {
@@ -168,7 +193,19 @@ class WebRtcPeerFactory(
             return open.send(DataChannel.Buffer(ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)), false))
         }
 
+        @Volatile
+        private var disposed = false
+
+        override fun inboundRtp(kind: String, reply: (Map<String, Any>?) -> Unit) {
+            if (disposed) return reply(null)
+            connection.getStats { report ->
+                val members = report.statsMap.values.firstOrNull { it.type == "inbound-rtp" && it.members["kind"] == kind }?.members
+                post { reply(members) }
+            }
+        }
+
         override fun close() {
+            disposed = true
             channel?.let {
                 it.unregisterObserver()
                 it.close()

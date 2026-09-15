@@ -51,6 +51,9 @@ interface PeerLink {
     /** False when the data channel is not open. */
     fun sendControl(text: String): Boolean
     fun close()
+
+    /** The connection's own `inbound-rtp` statistics for [kind], "audio" or "video"; null when it cannot say. */
+    fun inboundRtp(kind: String, reply: (Map<String, Any>?) -> Unit) = reply(null)
 }
 
 fun interface PeerFactory {
@@ -61,11 +64,37 @@ enum class StreamPhase { IDLE, AUTHENTICATING, REQUESTING, NEGOTIATING, CONNECTI
 
 data class StreamFailure(val code: String, val message: String, val retryable: Boolean, val recommendedAction: String)
 
-data class Negotiation(val displayName: String, val widthPixels: Int, val heightPixels: Int, val videoCodec: String, val hardwareEncoded: Boolean)
+/** Something the PC could not do as asked, and why — a resolution cap, or sound it could not provide. */
+data class Adjustment(val setting: String, val requested: String, val applied: String, val reason: String)
+
+data class Negotiation(
+    val displayName: String,
+    val widthPixels: Int,
+    val heightPixels: Int,
+    val videoCodec: String,
+    val hardwareEncoded: Boolean,
+    /** The display being sent, by the id `remote-desktop.list-displays` gives it. */
+    val displayId: String? = null,
+    /** Null when the stream carries no sound: not asked for, not permitted, or nothing on the PC to capture. */
+    val audioCodec: String? = null,
+    val adjustments: List<Adjustment> = emptyList(),
+)
 
 data class InputControl(val granted: Boolean, val reason: String?, val expiresAt: String?)
 
 data class RemoteState(val state: String, val unavailableReason: String?, val detail: String?, val showing: String)
+
+/** From the PC's clipboard: text it offers, or why an exchange did not happen. */
+sealed interface ClipboardEvent {
+    data class Content(val text: String) : ClipboardEvent {
+        /** A clipboard routinely holds a password; a log line that prints this shows a length, not the text. */
+        override fun toString(): String = "Content(${text.length} characters)"
+    }
+
+    data class Notice(val detail: String) : ClipboardEvent
+}
+
+enum class ClipboardSend { SENT, TOO_LARGE, NOT_READY }
 
 interface StreamListener {
     fun onPhase(phase: StreamPhase, detail: String?)
@@ -77,6 +106,9 @@ interface StreamListener {
 
     /** Who holds this PC's files, as the cloud last decided. */
     fun onFileControl(control: InputControl) {}
+
+    /** Text the PC copied, or why clipboard text did not cross. Handed over, never kept here. */
+    fun onClipboard(event: ClipboardEvent) {}
 }
 
 /**
@@ -97,6 +129,8 @@ interface StreamListener {
  * - Input goes on that channel, straight to the PC, and only while the cloud says this session holds
  *   control. The request is renewed on a timer, because the grant expires: a phone put in a pocket stops
  *   holding somebody's keyboard.
+ * - Clipboard text goes on the same channel, only when the owner taps; what the PC copies is handed to the
+ *   listener and kept nowhere. Sound is asked for only when wanted, and the negotiation says what the PC gave.
  */
 class StreamSession(
     private val sessionToken: String,
@@ -109,6 +143,8 @@ class StreamSession(
     private val listener: StreamListener,
     /** H.264 profiles the phone's decoders accept; empty means not stated. */
     private val h264Profiles: List<String> = emptyList(),
+    /** Ask for the PC's sound. The session must hold `audio` as well; the PC decides and says. */
+    private val requestAudio: Boolean = false,
     val streamId: String = Ulid.next(),
     private val clock: () -> Instant = Instant::now,
 ) : PeerEvents {
@@ -240,7 +276,7 @@ class StreamSession(
                             put("displayId", JsonNull)
                             put("profile", profile)
                             put("clientCodecs", JsonArray(clientCodecs.map(::JsonPrimitive)))
-                            put("requestAudio", false)
+                            put("requestAudio", requestAudio)
                             put("h264Profiles", JsonArray(h264Profiles.map(::JsonPrimitive)))
                         }
                     },
@@ -318,6 +354,48 @@ class StreamSession(
         return true
     }
 
+    /**
+     * Look at another of the PC's displays, in place rather than by restarting. The PC answers with a fresh
+     * `stream.ready` describing what it switched to; null means the primary display.
+     */
+    fun setDisplay(displayId: String?) {
+        if (closed) return
+        require(displayId == null || displayId.length in 1..MAX_DISPLAY_ID) { "Not a display id." }
+        signal(
+            buildJsonObject {
+                put("type", "stream.set-display")
+                put("displayId", displayId?.let(::JsonPrimitive) ?: JsonNull)
+            },
+        )
+    }
+
+    /**
+     * Put text on the PC's clipboard, on the data channel and never through the cloud.
+     *
+     * Over the protocol's limit it is refused here, whole: a paste that arrives shortened is worse than one that
+     * did not happen. The PC answers only when it refuses.
+     */
+    fun sendClipboard(text: String): ClipboardSend {
+        if (text.length > MAX_CLIPBOARD_TEXT) return ClipboardSend.TOO_LARGE
+        val link = peer
+        if (closed || link == null || !channelOpen) return ClipboardSend.NOT_READY
+        val message = buildJsonObject {
+            put("kind", "clipboard.content")
+            put("streamId", streamId)
+            put("format", "text")
+            put("text", text)
+            put("origin", "client")
+            put("at", timestamp())
+        }
+        return if (link.sendControl(message.toString())) ClipboardSend.SENT else ClipboardSend.NOT_READY
+    }
+
+    /** What the connection says it has received of [kind], "audio" or "video"; null with no connection or nothing received. */
+    fun inboundRtp(kind: String, reply: (Map<String, Any>?) -> Unit) {
+        val link = peer
+        if (closed || link == null) reply(null) else link.inboundRtp(kind, reply)
+    }
+
     fun stop() {
         if (closed) return
         signal(
@@ -345,10 +423,15 @@ class StreamSession(
                             heightPixels = display.int("heightPixels"),
                             videoCodec = negotiation.str("videoCodec") ?: "unknown",
                             hardwareEncoded = negotiation["hardwareEncoded"].bool() ?: false,
+                            displayId = display.str("id"),
+                            audioCodec = negotiation.str("audioCodec"),
+                            adjustments = adjustmentsOf(negotiation),
                         ),
                     )
                 }
-                setPhase(StreamPhase.NEGOTIATING, null)
+                // A display switch is answered with a fresh `stream.ready` and no new offer: the stream stays up.
+                // Going back to "preparing" would take control and the file manager away from a running stream.
+                if (phase != StreamPhase.STREAMING && phase != StreamPhase.RECONNECTING) setPhase(StreamPhase.NEGOTIATING, null)
             }
 
             "sdp.offer" -> answer(payload.str("sdp") ?: return)
@@ -456,8 +539,8 @@ class StreamSession(
     /**
      * Whatever the PC sent back on the data channel, discriminated on `kind`.
      *
-     * Clipboard content from the PC is ignored: the phone does not offer clipboard sync, so it neither
-     * shows nor keeps what was copied there.
+     * Clipboard text from the PC is handed to the listener and nowhere else: not kept here, not logged, and not
+     * put on this phone's clipboard unless the owner asks.
      */
     override fun onControlMessage(text: String) {
         if (closed) return
@@ -470,6 +553,22 @@ class StreamSession(
             // Handed to whoever asked and nowhere else; nothing here keeps a listing or a chunk.
             "file.listing", "file.info", "file.chunk", "file.written" -> settleFile(message.str("requestId"), Result.success(message))
             "file.refused" -> settleFile(message.str("requestId"), Result.failure(FileRefusalException(FileMessages.refusal(message))))
+            "clipboard.content" -> {
+                val text = message.str("text") ?: return
+                // Text only, as the protocol says. Anything claiming another format is not read as text.
+                if (message.str("format") != "text") return
+                listener.onClipboard(
+                    if (text.length > MAX_CLIPBOARD_TEXT) {
+                        ClipboardEvent.Notice("The PC offered more than 256 KB of text, which WOLF does not carry.")
+                    } else {
+                        ClipboardEvent.Content(text)
+                    },
+                )
+            }
+            "clipboard.refused" -> listener.onClipboard(ClipboardEvent.Notice(message.str("detail") ?: "The PC would not take that clipboard text."))
+            "clipboard.unsupported" -> listener.onClipboard(
+                ClipboardEvent.Notice("The PC's clipboard holds ${message.str("describes") ?: "something"}, which WOLF does not carry."),
+            )
         }
     }
 
@@ -569,6 +668,11 @@ class StreamSession(
 
         /** A file answer is one chunk read or written; far longer than that means the PC is not answering. */
         const val FILE_REPLY_TIMEOUT_MS = 30_000L
+
+        /** The protocol's clipboard limit, in UTF-16 units — what the relay's schema and the PC both count. */
+        const val MAX_CLIPBOARD_TEXT = 256 * 1024
+
+        const val MAX_DISPLAY_ID = 256
     }
 }
 
@@ -611,5 +715,11 @@ private fun JsonObject?.str(key: String): String? = (this?.get(key) as? JsonPrim
 private fun JsonObject?.int(key: String): Int = (this?.get(key) as? JsonPrimitive)?.intOrNull ?: 0
 
 private fun JsonObject?.obj(key: String): JsonObject? = this?.get(key) as? JsonObject
+
+private fun adjustmentsOf(negotiation: JsonObject): List<Adjustment> =
+    (negotiation["adjustments"] as? JsonArray).orEmpty().mapNotNull { element ->
+        val item = element as? JsonObject ?: return@mapNotNull null
+        Adjustment(item.str("setting") ?: return@mapNotNull null, item.str("requested").orEmpty(), item.str("applied").orEmpty(), item.str("reason").orEmpty())
+    }
 
 private fun kotlinx.serialization.json.JsonElement?.bool(): Boolean? = (this as? JsonPrimitive)?.booleanOrNull

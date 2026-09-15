@@ -141,7 +141,10 @@ Clipboard content moves on the same direct channel and is **never stored anywher
 the cloud, which never receives it, and not in a log, which never records it. It is gated on
 the `clipboard` capability, and without that grant the PC's clipboard is not read at all. The
 host keeps only a hash of the last content that crossed, to stop the two machines trading the
-same string forever, and forgets even that when the stream ends.
+same string forever, and forgets even that when the stream ends. Neither client writes to the
+operator's own clipboard without a click: the Android app reads the phone's clipboard only on
+a tap, which Android shows the owner, and puts PC text on it only on Copy, marked sensitive so
+the system's copy preview does not display it.
 
 Audio is **loopback only** — the sound the PC is producing, never a microphone. Nothing in
 the agent can hear the room a machine is sitting in. It is gated on the `audio` capability,

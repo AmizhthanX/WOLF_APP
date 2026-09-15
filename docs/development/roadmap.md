@@ -926,11 +926,31 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   Postgres engine, the routes; live, a real notification fetched on a wake-up and posted privately on the
   emulator. **Not proven: Google's delivery**, which needs a Firebase project this repository does not have
 
+**Done — remote desktop: sound, clipboard, displays, scroll and zoom**
+
+- Sound when the owner asks for it, played as media, with Mute only when the PC actually sent audio and the
+  PC's reason shown when it did not; no microphone permission, no local audio track
+- The clipboard both ways on the data channel, text only, one tap each way: the phone's clipboard read only
+  when the owner sends it, the PC's text offered as a length and copied to the phone marked sensitive, 256 KB
+  refused whole
+- The PC's displays from `remote-desktop.list-displays`, and a switch in place that keeps the stream — and
+  control — running
+- Two-finger scroll and pinch zoom in one gesture handler, every touch taken back through the zoom
+- Proven live: Opus from the development PC (about 270 packets in five seconds), the display list, the
+  clipboard round trip with the PC's own clipboard saved and restored, and asking for the shown display
+  changing nothing. **Not proven: a real display switch** — that PC has one monitor
+- **A finding from the first live run, on the PC's side:** on a still desktop the session host sends no frame
+  for many seconds, and a requested key frame is only encoded with the next captured frame, so a first key
+  frame the network damages is not replaced until the screen changes. On the emulator that lost the 2560×1440
+  picture every time; the live test uses the mobile-data profile, and the session host fix is tracked
+  separately. It was chased first as a sound bug: a loopback test of picture loss with sound on — which passes,
+  and stays — ruled that out, and the same failure without sound confirmed it
+
 **Still open for Android**
 - Push: an end-to-end delivery through a real Firebase project
 - Files: resuming an interrupted transfer; browsing without a stream (as on the web)
 - Changing services, tasks and startup items against a machine with the privileged helper installed
-- Remote desktop: audio, clipboard, display switching, scroll and zoom gestures
+- Remote desktop: a display switch on a two-monitor PC; the first picture on a still desktop (a session host fix)
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
 

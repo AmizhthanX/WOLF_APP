@@ -34,6 +34,12 @@ object Picture {
         if (nx < 0f || nx > 1f || ny < 0f || ny > 1f) return null
         return NormalizedPoint(nx.toDouble(), ny.toDouble())
     }
+
+    /** The same, on a picture the owner has zoomed and panned: the touch is taken back through the zoom first. */
+    fun normalize(viewWidth: Float, viewHeight: Float, frameWidth: Int, frameHeight: Int, x: Float, y: Float, viewport: Viewport): NormalizedPoint? {
+        val (viewX, viewY) = viewport.toView(x, y)
+        return normalize(viewWidth, viewHeight, frameWidth, frameHeight, viewX, viewY)
+    }
 }
 
 /** Windows virtual-key codes the phone sends by name. Codes, not strings: nothing to parse differently. */
@@ -63,7 +69,7 @@ object VirtualKey {
  * Input events in the shape `packages/protocol/src/input.ts` validates.
  *
  * Touch becomes pointer events at the touched point: a tap is a left click, a long press a right click,
- * a drag a left-button drag. Text from the phone keyboard is sent as text — autocorrect and IMEs produce
+ * a drag a left-button drag, two fingers a scroll. Text from the phone keyboard is sent as text — autocorrect and IMEs produce
  * characters with no honest key sequence — and the handful of keys a phone keyboard cannot type are sent
  * as virtual keys.
  */
@@ -71,7 +77,7 @@ object InputEvents {
     const val MAX_EVENTS_PER_BATCH = 128
     const val MAX_TEXT = 512
 
-    /** Pixels of finger travel per wheel notch, for the scroll buttons' sense of scale. */
+    /** Pixels of two-finger travel per wheel notch. */
     const val PIXELS_PER_NOTCH = 60f
 
     fun move(point: NormalizedPoint): JsonObject = buildJsonObject {
@@ -96,11 +102,12 @@ object InputEvents {
         put("offsetMs", 0)
     }
 
-    fun scroll(point: NormalizedPoint, deltaY: Double): JsonObject = buildJsonObject {
+    /** Wheel notches in Windows' sense: positive [deltaY] scrolls up, positive [deltaX] scrolls right. */
+    fun scroll(point: NormalizedPoint, deltaY: Double, deltaX: Double = 0.0): JsonObject = buildJsonObject {
         put("type", "pointer.scroll")
         put("x", point.x)
         put("y", point.y)
-        put("deltaX", 0)
+        put("deltaX", deltaX.coerceIn(-100.0, 100.0))
         put("deltaY", deltaY.coerceIn(-100.0, 100.0))
         putJsonObject("modifiers") {
             put("shift", false)
@@ -214,7 +221,7 @@ private fun profile(name: String, maxWidth: Int?, maxHeight: Int?, fps: Int, min
     put("minBitrateBps", minBps)
     put("maxBitrateBps", maxBps)
     put("codecPreference", JsonArray(emptyList()))
-    // The phone does not ask for sound: listening to a machine is its own capability, not asked for here.
+    // Sound is asked for in the stream request, when the owner wants it; the PC fills this in with what it gave.
     put("audioEnabled", false)
     put("qualityBias", bias)
     put("adaptive", true)

@@ -204,7 +204,7 @@ class AppViewModel(
     /** The controller for the open remote desktop, if one is open. */
     fun remoteDesktop(): RemoteDesktopController? = remote
 
-    fun openRemoteDesktop(profile: StreamProfile) {
+    fun openRemoteDesktop(profile: StreamProfile, sound: Boolean) {
         val pcId = (_state.value.screen as? Screen.Pc)?.id ?: return
         telemetryJob?.cancel()
         stopRemote()
@@ -215,7 +215,7 @@ class AppViewModel(
 
         viewModelScope.launch {
             try {
-                opened.start(profile)
+                opened.start(profile, sound)
             } catch (error: WolfApiException) {
                 // No stream to show: back to the PC with the reason.
                 if (remote === opened) closeRemoteDesktop()

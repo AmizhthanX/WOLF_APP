@@ -104,6 +104,12 @@ data class ProcessListResult(
 object Commands {
     val POWER_ACTIONS = listOf("lock", "sign-out", "sleep", "hibernate", "restart", "shutdown")
 
+    /** The PC's displays, for choosing one to watch. Low risk and read-only, under `screen`. */
+    fun listDisplays(refresh: Boolean = true): JsonObject = buildJsonObject {
+        put("type", "remote-desktop.list-displays")
+        putJsonObject("payload") { put("refresh", refresh) }
+    }
+
     fun power(action: String, delaySeconds: Int = 0): JsonObject {
         require(action in POWER_ACTIONS) { "Unknown power action $action" }
         require(delaySeconds in 0..86_400) { "A power action's delay is between 0 seconds and a day." }
