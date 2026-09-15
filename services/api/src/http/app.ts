@@ -19,6 +19,7 @@ import { registerRemoteDesktopRoutes } from '../routes/remote-desktop.js';
 import { registerAlertRoutes } from '../routes/alerts.js';
 import { registerAutomationRoutes } from '../routes/automations.js';
 import { registerConfigurationRoutes } from '../routes/configuration.js';
+import { registerPushRoutes } from '../routes/push.js';
 
 export async function buildApp(context: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -137,6 +138,7 @@ export async function buildApp(context: AppContext): Promise<FastifyInstance> {
       await registerAlertRoutes(api, context);
       await registerAutomationRoutes(api, context);
       await registerConfigurationRoutes(api, context);
+      await registerPushRoutes(api, context);
     },
     { prefix: '/api/v1' },
   );

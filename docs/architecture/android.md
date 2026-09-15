@@ -3,7 +3,8 @@
 Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics,
 commands — power actions and the process list — with the same confirmation ladder as the web client, and
 remote desktop over WebRTC with touch mapped to WOLF input, the file manager, services, scheduled tasks and startup items,
-alert rules, the notification inbox and automations, and configuration backup and restore.
+alert rules, the notification inbox and automations, configuration backup and restore, and push
+notifications that carry nothing through Google.
 
 ## Pieces
 
@@ -24,6 +25,7 @@ alert rules, the notification inbox and automations, and configuration backup an
 | Configuration backup | `api/ConfigurationBackup.kt`, `storage/Documents.kt`, `ui/ConfigurationViewModel.kt`, `ui/ConfigurationScreen.kt` | The backup file, the system document picker, restore |
 | What runs on a PC | `api/CommandModels.kt` (`Commands`, `PcTools`), `ui/PcToolsScreens.kt` | Services, scheduled tasks and startup items |
 | Files | `remote/FileTransfer.kt`, `ui/FilesPanel.kt`, `storage/Documents.kt` | Browse, fetch and send over the stream's data channel |
+| Push | `push/PushRegistrar.kt`, `push/WakeHandler.kt`, `push/AndroidPush.kt`, `push/WolfMessagingService.kt` | Registration, a wake-up turned into notifications fetched from WOLF |
 | UI | `ui/`, `MainActivity.kt` | Sign-in, PCs, live metrics |
 | Endpoint | `src/debug/…/ApiEndpoint.kt`, `src/release/…/ApiEndpoint.kt` | API and relay addresses per build type |
 
@@ -190,8 +192,14 @@ quiet period after notifying, severity. The metrics offered are the web dashboar
 server's rollup computes, and a device ("C:") is kept only for metrics that have devices — on CPU usage it
 would match nothing, silently. Nulls are left out of what is sent, so the server applies its own defaults.
 
-**No push notifications.** WOLF does not send any yet, and the app says so on the Alerts screen: nothing
-reaches the phone while the app is closed. The app does not poll in the background to imitate them.
+**Push notifications, with nothing in them** ([push](push.md)). What arrives through Firebase is a wake-up
+that names nothing; the phone fetches its inbox from WOLF over its own sign-in and posts what is new —
+private on the lock screen, where only "Something needs your attention" shows, and critical alerts on their
+own channel. The Alerts screen says which of three states the phone is in and never implies more: this
+build has no push service; WOLF's server has none (news shows only while the app is open); or wake-ups are
+on, with the notification permission asked for there. The app never polls in the background to imitate
+push. Signing out clears the phone's registration on the server first; revoking the device clears it too.
+Tapping a notification opens the Alerts screen, after sign-in if needed.
 
 **Automations.** The list shows each one's authorized risk, trigger, actions, targets, conditions and last
 run, with Run now, Turn on/off, History and Delete. The builder on the phone covers schedules, alert
@@ -362,6 +370,16 @@ npm run build:android         # debug APK
   overwritten; the file fetched back into memory and through the document store into a real file, identical
   byte for byte; a stopped upload leaving neither a file nor a part file. WOLF cannot delete, so the runner
   removes the one file the test writes.
+- **JVM, push:** registration sent only when WOLF does not hold this token (a rotated token, another
+  device's sign-in, a server that lost it), a marker that holds a hash and never the token, the server's
+  "not configured" reported as such, sign-out clearing the server before the token; a wake-up showing only
+  unread news not shown before, oldest first, the latest four and a count, nothing without credentials, and
+  a failed fetch remembering nothing so the news is not lost.
+- **Live push** (`LivePushTest`), against a local cloud and the running agent: a synthetic token registered
+  and reported back; a notify automation run on the PC; a wake-up, as the messaging service calls it,
+  fetching that notification and posting it through the phone's real notification manager, private with a
+  generic lock-screen version; a second wake-up showing nothing; sign-out clearing the registration. **Not
+  proven: that Google delivers** — that needs a Firebase project this repository does not have.
 
 ```bash
 npm run test:android:device -- \
@@ -376,17 +394,21 @@ npm run test:android:device -- \
 AndroidX Activity, Lifecycle and Jetpack Compose (Apache-2.0), kotlinx-serialization and
 kotlinx-coroutines (Apache-2.0), OkHttp (Apache-2.0), the WebRTC SDK for Android
 `io.github.webrtc-sdk:android` 137.7151.05 — a build of Google's libwebrtc (BSD-3-Clause), kept by R8
-under `org.webrtc`. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0), AndroidX Test
-(Apache-2.0).
+under `org.webrtc`. Firebase Cloud Messaging `com.google.firebase:firebase-messaging` 24.1.0 from
+Google's Maven repository (Apache-2.0), which brings Google Play services libraries under the Android
+Software Development Kit License; it is started by the app only when the build has a Firebase project, and
+its automatic start-up provider is removed. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
+AndroidX Test (Apache-2.0).
 
 ## Not built yet
 
 - Files: resuming an interrupted transfer, and browsing without a running stream (as on the web).
-- Push notifications (WOLF sends none yet).
+- Push: a delivery through Google proven end to end, which needs a Firebase project; phones without
+  Google Play services receive no wake-ups.
 - Changing a service, task or startup item from the phone has not run against a machine with the
   privileged helper installed; the development PC runs the agent interactively without it. The same is
   true of those changes from the web (see the roadmap's Milestone 4).
-- Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures.
+- Remote desktop: audio, clipboard, display switching, scroll and zoom gestures.
 - Release signing and distribution through CI.
 - Unlocking the vault with the phone's biometric or screen lock.
 - Device proof-of-possession, above.

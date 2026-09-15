@@ -52,6 +52,8 @@ export async function registerDeviceRoutes(
       if (ok) {
         await context.repos.refreshTokens.revokeForDevice(params.deviceId, client);
         await context.repos.sessions.endAllForDevice(params.deviceId, 'device-revoked', client);
+        // A revoked phone is not woken again: its push token goes with its access.
+        await context.repos.push.clearToken(params.deviceId, caller.userId, client);
 
         // An automation acts on the authority of the device it was saved from. That authority ends
         // with the device, in the same transaction, rather than at each automation's next run.

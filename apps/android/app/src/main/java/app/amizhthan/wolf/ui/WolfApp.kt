@@ -151,6 +151,7 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configu
                             onDeleteRule = alerts::deleteRule,
                             onCreateRule = alerts::createRule,
                             onDismissProblem = alerts::dismissProblem,
+                            onPushChanged = alerts::refreshPush,
                         )
                     }
                     Screen.Automations -> {

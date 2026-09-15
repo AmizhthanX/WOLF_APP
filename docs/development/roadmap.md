@@ -720,7 +720,8 @@ milestone 2 and is never persisted in cloud history.
 - Rule changes are audited under `automation`; editing a rule clears its state, because the old
   answers were to a different question
 - **In-app only.** Webhooks are an SSRF surface that needs egress controls first, e-mail needs a
-  provider and its secrets, push needs the Android client. None is implied to exist
+  provider and its secrets, push needs the Android client. None is implied to exist (push has since
+  arrived with Android, content-free)
 
 **A real bug found on the way, in the previous slice**
 
@@ -909,8 +910,24 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
 - Proven live: 200 KB sent to the development PC and fetched back identical, refusals with reasons, a stopped
   upload leaving nothing
 
+**Done — push notifications, with nothing in them**
+
+- A content-free wake-up through Firebase Cloud Messaging — no PC name, alert or count reaches Google; the
+  phone fetches the news from WOLF over its own sign-in and posts it private on the lock screen
+  ([push](../architecture/push.md))
+- Behind the cloud-provider interface: an FCM adapter with a service-account JWT signed by Node's own
+  crypto, no Google client library; `WOLF_PUSH_PROVIDER=none` by default, and "not set up" said as such
+  on the phone rather than pretended
+- A push job decoupled from alerting: notifications claimed at most once across instances, nothing sent
+  for news older than fifteen minutes or for history, dead tokens forgotten unless replaced
+- One token per device, registered only by that device, cleared at sign-out and in the revocation
+  transaction, never returned or audited
+- Proven: the adapter against a local stand-in for Google's token endpoint and FCM, the job against a real
+  Postgres engine, the routes; live, a real notification fetched on a wake-up and posted privately on the
+  emulator. **Not proven: Google's delivery**, which needs a Firebase project this repository does not have
+
 **Still open for Android**
-- Push notifications
+- Push: an end-to-end delivery through a real Firebase project
 - Files: resuming an interrupted transfer; browsing without a stream (as on the web)
 - Changing services, tasks and startup items against a machine with the privileged helper installed
 - Remote desktop: audio, clipboard, display switching, scroll and zoom gestures

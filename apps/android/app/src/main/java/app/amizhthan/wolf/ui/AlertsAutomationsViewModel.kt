@@ -19,6 +19,8 @@ import app.amizhthan.wolf.api.StartupRow
 import app.amizhthan.wolf.api.TaskListResult
 import app.amizhthan.wolf.api.TaskRow
 import app.amizhthan.wolf.api.WolfJson
+import app.amizhthan.wolf.push.PushRegistrar
+import app.amizhthan.wolf.push.PushState
 import app.amizhthan.wolf.session.CommandOutcome
 import app.amizhthan.wolf.session.PcSessionController
 import app.amizhthan.wolf.api.WolfApi
@@ -65,6 +67,8 @@ data class PickerState(
 private val PICKER_CAPABILITIES = listOf("services", "configuration")
 
 data class AlertsState(
+    /** Whether this phone is woken for news, and if not, why not. Null until asked. */
+    val push: PushState? = null,
     val picker: PickerState? = null,
     val notifications: List<NotificationView>? = null,
     val unreadCount: Int = 0,
@@ -100,6 +104,7 @@ class AlertsAutomationsViewModel(
     private val api: WolfApi,
     private val authority: AccountAuthority = AccountAuthority(api, session),
     private val pcSessions: (pcId: String) -> PcSessionController = { pcId -> PcSessionController(pcId, api, session, capabilities = PICKER_CAPABILITIES) },
+    private val pushRegistrar: PushRegistrar? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(AlertsState())
     val state: StateFlow<AlertsState> = _state.asStateFlow()
@@ -122,7 +127,16 @@ class AlertsAutomationsViewModel(
         }
     }
 
+    /** Ask again whether this phone is woken for news: after the owner allows notifications, or opens Alerts. */
+    fun refreshPush() {
+        viewModelScope.launch {
+            val push = pushRegistrar?.sync() ?: PushState(buildConfigured = false, serverConfigured = null, registered = false)
+            _state.update { it.copy(push = push) }
+        }
+    }
+
     fun watch() {
+        refreshPush()
         watchJob?.cancel()
         watchJob = viewModelScope.launch {
             while (isActive) {

@@ -20,6 +20,7 @@ import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
 import app.amizhthan.wolf.api.WolfJson
 import app.amizhthan.wolf.api.WolfProblem
+import app.amizhthan.wolf.push.PushRegistrar
 import app.amizhthan.wolf.remote.RemoteDesktopController
 import app.amizhthan.wolf.remote.StreamProfile
 import app.amizhthan.wolf.session.CommandOutcome
@@ -86,6 +87,7 @@ data class UiState(
 class AppViewModel(
     private val session: SessionManager,
     private val api: WolfApi,
+    private val push: PushRegistrar?,
     private val remoteDesktops: (pcId: String) -> RemoteDesktopController,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
@@ -95,11 +97,23 @@ class AppViewModel(
     private var controller: PcSessionController? = null
     private var remote: RemoteDesktopController? = null
 
+    /** A notification was tapped before the app knew whether it was signed in. */
+    private var alertsRequested = false
+
     init {
         viewModelScope.launch {
             val restored = session.restore()
-            _state.update { it.copy(screen = if (restored) Screen.Pcs else Screen.SignIn) }
-            if (restored) loadPcs()
+            val screen = when {
+                !restored -> Screen.SignIn
+                alertsRequested -> Screen.Alerts
+                else -> Screen.Pcs
+            }
+            if (restored) alertsRequested = false
+            _state.update { it.copy(screen = screen) }
+            if (restored) {
+                loadPcs()
+                registerPush()
+            }
         }
 
         // A refresh that the server refuses signs the phone out wherever it happens.
@@ -118,6 +132,25 @@ class AppViewModel(
         session.signIn(email, password)
         _state.update { it.copy(screen = Screen.Pcs, problem = null) }
         loadPcs()
+        registerPush()
+        if (alertsRequested) {
+            alertsRequested = false
+            openAlerts()
+        }
+    }
+
+    /** From a notification tapped on the phone: the inbox, once signed in. */
+    fun openAlertsWhenSignedIn() {
+        when (_state.value.screen) {
+            Screen.Starting, Screen.SignIn -> alertsRequested = true
+            else -> openAlerts()
+        }
+    }
+
+    /** Best effort: push is a convenience, and every notification is in the inbox whether it works or not. */
+    private fun registerPush() {
+        val registrar = push ?: return
+        viewModelScope.launch { registrar.sync() }
     }
 
     fun loadPcs() = launchBusy {
@@ -162,6 +195,8 @@ class AppViewModel(
     fun signOut() = launchBusy {
         stopRemote()
         leavePc()
+        // While there is still an access token to clear the registration with: a signed-out phone is not woken.
+        push?.unregister()
         session.signOut()
         _state.value = UiState(screen = Screen.SignIn)
     }

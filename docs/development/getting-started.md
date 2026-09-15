@@ -197,6 +197,20 @@ To run the live test against a real API, start the local cloud first and pass it
 owner password as instrumentation arguments — see `LiveApiTest.kt`. From the emulator the development
 machine is `10.0.2.2`.
 
+**Push wake-ups** need a Firebase project of your own ([push](../architecture/push.md)). Without one the
+app builds and runs with no push service and says so. With one, give the app its project settings —
+not credentials, but per deployment, so in `apps/android/local.properties` (ignored by git) or as `-P`:
+
+```properties
+wolf.firebase.applicationId=1:000000000000:android:0000000000000000
+wolf.firebase.projectId=your-firebase-project
+wolf.firebase.apiKey=…
+wolf.firebase.senderId=000000000000
+```
+
+and give the API `WOLF_PUSH_PROVIDER=fcm`, `WOLF_FCM_PROJECT_ID` and `WOLF_FCM_CREDENTIALS_FILE` (a
+service-account key file; `npm run dev:cloud` reads the same three).
+
 ## Useful commands
 
 ```bash

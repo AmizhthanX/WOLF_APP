@@ -5,7 +5,7 @@ import { createDatabase } from '@wolf/server-core';
 import { createRepositories } from '@wolf/server-core';
 import { InMemoryRateLimiter } from './http/rate-limit.js';
 import { buildApp } from './http/app.js';
-import { AlertJob, MaintenanceJob, RollupJob } from '@wolf/server-core';
+import { AlertJob, MaintenanceJob, PushJob, RollupJob, createPushSender } from '@wolf/server-core';
 import type { AppContext } from './http/context.js';
 import { AutomationJob } from './automation/job.js';
 
@@ -47,12 +47,20 @@ async function main(): Promise<void> {
   const automations = new AutomationJob(context);
   automations.start();
 
+  // Wake-ups for phones, when a push service is configured. Without one, notifications are shown in the app
+  // only, and the app says so rather than waiting for wake-ups that never come.
+  const pushSender = await createPushSender(config);
+  const push = pushSender ? new PushJob(context, pushSender) : null;
+  push?.start();
+  if (!pushSender) logger.info('Push wake-ups are not configured; notifications are delivered in the app only.');
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutting down');
     maintenance.stop();
     rollup.stop();
     alerts.stop();
     automations.stop();
+    push?.stop();
     try {
       await app.close();
       await db.end();

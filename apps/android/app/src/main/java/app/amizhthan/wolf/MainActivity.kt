@@ -1,11 +1,22 @@
 package app.amizhthan.wolf
 
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import app.amizhthan.wolf.push.AndroidNotifier
+import app.amizhthan.wolf.push.FirebasePushTokens
+import app.amizhthan.wolf.push.PrefsRegistrationStore
+import app.amizhthan.wolf.push.PrefsSeenStore
+import app.amizhthan.wolf.push.PushRegistrar
+import app.amizhthan.wolf.push.PushSetup
+import app.amizhthan.wolf.push.PushTokens
+import app.amizhthan.wolf.push.WakeHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.remote.RemoteDesktopController
@@ -32,10 +43,10 @@ class MainActivity : ComponentActivity() {
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
 
         val graph = AppGraph.get(applicationContext)
+        if (savedInstanceState == null && opensAlerts(intent)) alertsRequests.intValue += 1
         setContent {
-            WolfApp(
-                viewModel = viewModel {
-                    AppViewModel(graph.session, graph.api) { pcId ->
+            val app = viewModel {
+                    AppViewModel(graph.session, graph.api, graph.pushRegistrar) { pcId ->
                         RemoteDesktopController(
                             applicationContext,
                             pcId,
@@ -45,13 +56,33 @@ class MainActivity : ComponentActivity() {
                             ContentResolverDocuments(applicationContext.contentResolver),
                         )
                     }
-                },
-                alerts = viewModel { AlertsAutomationsViewModel(graph.session, graph.api) },
+            }
+            val requests = alertsRequests.intValue
+            LaunchedEffect(requests) { if (requests > 0) app.openAlertsWhenSignedIn() }
+            WolfApp(
+                viewModel = app,
+                alerts = viewModel { AlertsAutomationsViewModel(graph.session, graph.api, pushRegistrar = graph.pushRegistrar) },
                 configuration = viewModel {
                     ConfigurationViewModel(graph.session, graph.api, ContentResolverDocuments(applicationContext.contentResolver))
                 },
             )
         }
+    }
+
+    /** Taps on a notification while the app is already running arrive here. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (opensAlerts(intent)) alertsRequests.intValue += 1
+    }
+
+    private val alertsRequests = mutableIntStateOf(0)
+
+    private fun opensAlerts(intent: Intent?): Boolean = intent?.getStringExtra(EXTRA_OPEN) == OPEN_ALERTS
+
+    companion object {
+        const val EXTRA_OPEN = "app.amizhthan.wolf.OPEN"
+        const val OPEN_ALERTS = "alerts"
     }
 }
 
@@ -72,6 +103,13 @@ class AppGraph private constructor(context: Context) {
         deviceName = listOfNotNull(Build.MANUFACTURER, Build.MODEL).joinToString(" "),
         platform = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
     )
+
+    /** This build's push service, or null when it was built without a Firebase project. */
+    val pushTokens: PushTokens? = if (PushSetup.initialize(context)) FirebasePushTokens() else null
+
+    val pushRegistrar = PushRegistrar(api, session, pushTokens, PrefsRegistrationStore(context))
+
+    val wakeHandler = WakeHandler(api, session, AndroidNotifier(context), PrefsSeenStore(context))
 
     companion object {
         @Volatile

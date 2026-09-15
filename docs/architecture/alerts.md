@@ -72,13 +72,14 @@ bucket straddling the start could hold its minimum from before the window.
 
 ## Delivery
 
-In-app only. What is deliberately not built yet, and why each is its own piece of work:
+In the app, and — when the owner configures it — as a content-free push wake-up to their phones, which
+then fetch the notification from WOLF ([push](push.md)). What is deliberately not built yet, and why each
+is its own piece of work:
 
 - **Webhooks** — a URL the owner types that the server then calls is a server-side request
   forgery surface (cloud metadata endpoints, internal services). It needs egress allow-listing,
   DNS-rebinding defence and signed payloads before it exists.
 - **E-mail** — needs a provider, its credentials in secret management, and bounce handling.
-- **Push** — needs the Android client and a push credential; arrives with Android.
 
 ## Retention
 

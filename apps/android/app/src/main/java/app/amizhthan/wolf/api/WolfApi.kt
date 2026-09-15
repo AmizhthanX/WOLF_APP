@@ -97,6 +97,18 @@ class WolfApi(
     suspend fun latestTelemetry(pcId: String, bearer: String): LatestTelemetry =
         send<Unit, LatestTelemetry>("GET", listOf("pcs", pcId, "telemetry", "latest"), bearer, null, null, LatestTelemetry.serializer())
 
+    suspend fun pushStatus(bearer: String): PushStatusView =
+        send<Unit, PushStatusView>("GET", listOf("push"), bearer, null, null, PushStatusView.serializer())
+
+    /** Registers the token for the device the access token belongs to, and no other. */
+    suspend fun registerPushToken(token: String, bearer: String) {
+        send<PushTokenRequest, Unit>("PUT", listOf("push", "token"), bearer, PushTokenRequest(token = token), PushTokenRequest.serializer(), null)
+    }
+
+    suspend fun clearPushToken(bearer: String) {
+        send<Unit, Unit>("DELETE", listOf("push", "token"), bearer, null, null, null)
+    }
+
     suspend fun listAlertRules(bearer: String): AlertRuleList =
         send<Unit, AlertRuleList>("GET", listOf("alert-rules"), bearer, null, null, AlertRuleList.serializer())
 

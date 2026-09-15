@@ -12,6 +12,9 @@ androidx-test-ext = "1.2.1"
 androidx-test-runner = "1.6.2"
 # LiveKit's maintained libwebrtc build for Android, from Maven Central. BSD-3-Clause.
 webrtc = "137.7151.05"
+# Firebase Cloud Messaging, from Google Maven. The SDK is Apache-2.0; the Play services libraries it pulls in are
+# under the Android Software Development Kit License.
+firebase-messaging = "24.1.0"
 
 [libraries]
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
@@ -27,6 +30,7 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 webrtc = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
+firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging", version.ref = "firebase-messaging" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidx-test-ext" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidx-test-runner" }

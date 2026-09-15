@@ -7,6 +7,7 @@ import { CommandRepository } from './commands.js';
 import { DeviceRepository } from './devices.js';
 import { EnrollmentRepository } from './enrollment.js';
 import { PcRepository } from './pcs.js';
+import { PushRepository } from './push.js';
 import { RefreshTokenRepository } from './refresh-tokens.js';
 import { RemoteDesktopRepository } from './remote-desktop.js';
 import { SessionRepository } from './sessions.js';
@@ -21,6 +22,7 @@ export * from './commands.js';
 export * from './devices.js';
 export * from './enrollment.js';
 export * from './pcs.js';
+export * from './push.js';
 export * from './refresh-tokens.js';
 export * from './remote-desktop.js';
 export * from './sessions.js';
@@ -41,6 +43,7 @@ export interface Repositories {
   readonly audit: AuditRepository;
   readonly automations: AutomationRepository;
   readonly configuration: ConfigurationRepository;
+  readonly push: PushRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -58,5 +61,6 @@ export function createRepositories(db: Database): Repositories {
     audit: new AuditRepository(db),
     automations: new AutomationRepository(db),
     configuration: new ConfigurationRepository(db),
+    push: new PushRepository(db),
   };
 }

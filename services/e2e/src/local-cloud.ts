@@ -9,7 +9,7 @@ import { ClientLink } from '@wolf/realtime/client-link';
 import { AgentRegistry } from '@wolf/realtime/registry';
 import { ClientRegistry } from '@wolf/realtime/client-registry';
 import type { RealtimeContext } from '@wolf/realtime/context';
-import { createRepositories, loadConfig, migrate } from '@wolf/server-core';
+import { PushJob, createPushSender, createRepositories, loadConfig, migrate } from '@wolf/server-core';
 // Test-only: an in-process Postgres. Kept behind its own export so a production import
 // graph can never reach it, and imported here rather than in any service for the same
 // reason — this file is development tooling, not a service.
@@ -70,6 +70,10 @@ async function main(): Promise<void> {
     DATABASE_URL: 'postgres://local/wolf',
     WOLF_TOKEN_SECRET: process.env['WOLF_TOKEN_SECRET'] ?? 'local-development-secret-long-enough-to-pass',
     WOLF_ALLOWED_ORIGINS: WEB_ORIGIN,
+    // Push only when the developer points at a real Firebase project; otherwise the cloud says it has none.
+    WOLF_PUSH_PROVIDER: process.env['WOLF_PUSH_PROVIDER'],
+    WOLF_FCM_PROJECT_ID: process.env['WOLF_FCM_PROJECT_ID'],
+    WOLF_FCM_CREDENTIALS_FILE: process.env['WOLF_FCM_CREDENTIALS_FILE'],
   } as NodeJS.ProcessEnv);
 
   const repos = createRepositories(db);
@@ -160,6 +164,11 @@ async function main(): Promise<void> {
   }, 15_000);
   sweep.unref();
 
+  const pushSender = await createPushSender(config);
+  const push = pushSender ? new PushJob(apiContext, pushSender) : null;
+  push?.start();
+  if (!pushSender) logger.info('Push wake-ups are not configured (set WOLF_PUSH_PROVIDER=fcm to use a Firebase project).');
+
   logger.info(
     {
       api: `http://127.0.0.1:${API_PORT}`,
@@ -174,6 +183,7 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     logger.info('Shutting down.');
     clearInterval(sweep);
+    push?.stop();
     await Promise.all(unsubscribe.map((stop) => stop()));
     realtime.agents.closeAll('local-cloud-shutdown');
     await app.close();

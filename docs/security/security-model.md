@@ -356,11 +356,19 @@ Stated plainly rather than left to be discovered:
 - **Device keys are registered but nothing is signed with them yet.** The Android app and the web
   client send a P-256 public key at sign-in and the server stores it; no request carries a signature
   made with it. Revocation and refresh-token rotation are what protect a session today.
-- **Notifications are in-app only.** Nothing is e-mailed, pushed or sent to a webhook. A
-  webhook is a URL the owner supplies that the server then requests, which is a server-side
-  request forgery surface into the cloud network; it is not built until egress is allow-listed,
-  DNS rebinding is handled and payloads are signed. An owner who is not looking at WOLF is not
-  told anything.
+- **Notifications are not e-mailed or sent to a webhook.** A webhook is a URL the owner supplies
+  that the server then requests, which is a server-side request forgery surface into the cloud
+  network; it is not built until egress is allow-listed, DNS rebinding is handled and payloads are
+  signed.
+- **Push goes through Google, and carries nothing** ([push](../architecture/push.md)). When the
+  owner configures FCM, Google learns a registration token and that WOLF woke that phone at that
+  time — not which PC, which alert or how many. The phone fetches the content from WOLF over its
+  own authenticated connection and posts it private on the lock screen. The sending credential is a
+  service-account key read from a mounted file; tokens are never logged, audited or returned by the
+  API, a device can register only its own, and revoking a device deletes its token in the same
+  transaction. A wake-up is not authority: the phone acts on nothing in it but its kind. A leaked
+  token lets its holder learn nothing and send nothing without WOLF's Firebase credential. Push is
+  off by default, and with it off an owner who is not looking at WOLF is not told anything.
 - **Alert evaluation needs a running API.** The evaluator runs inside the API process. With no
   instance up, nothing is evaluated, and an offline rule about the API's own host has nobody to
   fire it.

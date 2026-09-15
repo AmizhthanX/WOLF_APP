@@ -55,6 +55,21 @@ const environmentSchema = z.object({
   WOLF_TURN_SECRET: z.string().default(''),
 
   WOLF_TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(3600),
+
+  /**
+   * Push wake-ups for phones. `none` by default: a push service is a third party, and WOLF routes nothing
+   * through one it was not configured to use. Configured, a wake-up still carries no content.
+   */
+  WOLF_PUSH_PROVIDER: z.enum(['none', 'fcm']).default('none'),
+
+  /** The Firebase project the Android app is registered in. */
+  WOLF_FCM_PROJECT_ID: z.string().default(''),
+
+  /**
+   * A service-account JSON file allowed to send FCM messages, mounted from secret management. A path and
+   * never the key itself, so the key is not in the environment of every process the server starts.
+   */
+  WOLF_FCM_CREDENTIALS_FILE: z.string().default(''),
 });
 
 export type Environment = z.infer<typeof environmentSchema>;
@@ -86,6 +101,11 @@ export interface Config {
     readonly turnCredentialTtlSeconds: number;
     /** True when a stream can reach a PC that is not on the same network. */
     readonly internetCapable: boolean;
+  };
+  readonly push: {
+    readonly provider: 'none' | 'fcm';
+    readonly fcmProjectId: string | null;
+    readonly fcmCredentialsFile: string | null;
   };
 }
 
@@ -134,6 +154,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  if (env.WOLF_PUSH_PROVIDER === 'fcm' && (env.WOLF_FCM_PROJECT_ID.trim() === '' || env.WOLF_FCM_CREDENTIALS_FILE.trim() === '')) {
+    throw new ConfigurationError(
+      'WOLF_PUSH_PROVIDER=fcm needs WOLF_FCM_PROJECT_ID and WOLF_FCM_CREDENTIALS_FILE (a service-account JSON file).',
+    );
+  }
+
   return {
     env: env.NODE_ENV,
     isProduction: env.NODE_ENV === 'production',
@@ -162,6 +188,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
       // Without at least a STUN server, ICE can only use host candidates, which means
       // streaming works on the same network and nowhere else.
       internetCapable: stunUrls.length > 0 || turnUrls.length > 0,
+    },
+    push: {
+      provider: env.WOLF_PUSH_PROVIDER,
+      fcmProjectId: env.WOLF_FCM_PROJECT_ID.trim() || null,
+      fcmCredentialsFile: env.WOLF_FCM_CREDENTIALS_FILE.trim() || null,
     },
   };
 }

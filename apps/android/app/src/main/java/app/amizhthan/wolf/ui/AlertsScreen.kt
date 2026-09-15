@@ -1,5 +1,12 @@
 package app.amizhthan.wolf.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import app.amizhthan.wolf.push.PushState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,6 +51,7 @@ fun AlertsScreen(
     onDeleteRule: (AlertRuleView) -> Unit,
     onCreateRule: (AlertRuleInput) -> Unit,
     onDismissProblem: () -> Unit,
+    onPushChanged: () -> Unit = {},
 ) {
     var deleting by remember { mutableStateOf<AlertRuleView?>(null) }
     val pcName: (String?) -> String = { id -> if (id == null) "every PC" else state.pcs.firstOrNull { it.id == id }?.name ?: "a removed PC" }
@@ -52,12 +60,10 @@ fun AlertsScreen(
         item {
             TextButton(onClick = onBack) { Text("Back") }
             Text("Alerts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(
-                "Rules are checked once a minute. Notifications appear here and in the web dashboard only: WOLF does " +
-                    "not send push notifications, e-mail or webhooks yet, so nothing reaches this phone while the app is closed.",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Text("Rules are checked once a minute. WOLF does not send e-mail or webhooks.", style = MaterialTheme.typography.bodySmall)
         }
+
+        item { PushCard(state.push, onPushChanged) }
 
         state.problem?.let { problem -> item { ProblemCard(problem, onDismiss = onDismissProblem) } }
         state.notice?.let { notice -> item { Text(notice, style = MaterialTheme.typography.bodyMedium) } }
@@ -132,6 +138,51 @@ fun AlertsScreen(
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
+    }
+}
+
+/**
+ * Whether this phone hears about news while WOLF is closed, and what stands in the way if not — in the order the
+ * owner can do something about it.
+ */
+@Composable
+private fun PushCard(push: PushState?, onPushChanged: () -> Unit) {
+    val context = LocalContext.current
+    fun permitted() = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    var allowed by remember { mutableStateOf(permitted()) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        allowed = granted
+        onPushChanged()
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Notifications on this phone", fontWeight = FontWeight.SemiBold)
+            Text(
+                when {
+                    push == null -> "Checking…"
+                    !push.buildConfigured -> "This build of the app has no push service, so news shows only while WOLF is open."
+                    push.serverConfigured == null -> "WOLF could not be asked whether it can wake this phone. News is always in the inbox."
+                    !push.serverConfigured -> "This WOLF server has no push service configured, so news shows only while WOLF is open."
+                    !allowed -> "WOLF can wake this phone, but notifications are not allowed for it."
+                    !push.registered -> "This phone is not registered for wake-ups yet."
+                    else -> "WOLF wakes this phone when there is news."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (push?.buildConfigured == true) {
+                Text(
+                    "A wake-up goes through Google's push service and says nothing about what happened: no PC, no alert, " +
+                        "no count. The phone then fetches the notification from WOLF itself. On the lock screen it shows only that " +
+                        "WOLF has something.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (!allowed && push?.buildConfigured == true) {
+                OutlinedButton(onClick = { ask.launch(Manifest.permission.POST_NOTIFICATIONS) }) { Text("Allow notifications") }
+            }
+        }
     }
 }
 
