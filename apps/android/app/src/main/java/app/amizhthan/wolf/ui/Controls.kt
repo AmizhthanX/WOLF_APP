@@ -56,9 +56,9 @@ internal fun NumberField(label: String, value: String, onValueChange: (String) -
 }
 
 @Composable
-internal fun CheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun CheckRow(label: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = checked, onCheckedChange = onChange)
+        Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled)
         Text(label)
     }
 }

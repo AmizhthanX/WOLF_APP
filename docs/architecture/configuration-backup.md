@@ -70,6 +70,13 @@ disaster recovery is exactly when that bites.
 The audit record of a restore holds sections, counts and warning codes — never names, rules or
 actions from the file.
 
+## Clients
+
+The web dashboard downloads the file through the browser. The Android app saves it through the system
+document picker and restores from a file picked the same way, with no storage permission; it checks only
+size and format before sending and leaves verification to the server. See
+[the Android client](android.md#configuration-backup).
+
 ## Not covered
 
 - Agent settings stored on the PC itself (its local options and store) stay on the PC.

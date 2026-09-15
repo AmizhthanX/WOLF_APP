@@ -14,7 +14,9 @@ import app.amizhthan.wolf.security.KeystoreSecretCipher
 import app.amizhthan.wolf.security.TokenVault
 import app.amizhthan.wolf.session.SessionManager
 import app.amizhthan.wolf.ui.AlertsAutomationsViewModel
+import app.amizhthan.wolf.storage.ContentResolverDocuments
 import app.amizhthan.wolf.ui.AppViewModel
+import app.amizhthan.wolf.ui.ConfigurationViewModel
 import app.amizhthan.wolf.ui.WolfApp
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -38,6 +40,9 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 alerts = viewModel { AlertsAutomationsViewModel(graph.session, graph.api) },
+                configuration = viewModel {
+                    ConfigurationViewModel(graph.session, graph.api, ContentResolverDocuments(applicationContext.contentResolver))
+                },
             )
         }
     }

@@ -65,9 +65,10 @@ private val POWER_ACTIONS = listOf(
 )
 
 @Composable
-fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel) {
+fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel, configuration: ConfigurationViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val alertsState by alerts.state.collectAsStateWithLifecycle()
+    val configurationState by configuration.state.collectAsStateWithLifecycle()
 
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -91,6 +92,7 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel) {
                             onOpen = viewModel::openPc,
                             onAlerts = viewModel::openAlerts,
                             onAutomations = viewModel::openAutomations,
+                            onConfiguration = viewModel::openConfiguration,
                             onSignOut = viewModel::signOut,
                         )
                     }
@@ -144,6 +146,26 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel) {
                             onDismissProblem = alerts::dismissProblem,
                         )
                     }
+                    Screen.Configuration -> {
+                        val leave = {
+                            configuration.reset()
+                            viewModel.home()
+                        }
+                        BackHandler(onBack = leave)
+                        ConfigurationScreen(
+                            state = configurationState,
+                            onBack = leave,
+                            onPrepareBackup = configuration::prepareBackup,
+                            onSavePickerOpened = configuration::savePickerOpened,
+                            onSaveBackup = configuration::saveBackup,
+                            onChooseBackup = configuration::chooseBackup,
+                            onToggleSection = configuration::toggleSection,
+                            onEnableAutomations = configuration::setEnableAutomations,
+                            onPreview = configuration::preview,
+                            onRestore = configuration::restore,
+                            onDismissProblem = configuration::dismissProblem,
+                        )
+                    }
                 }
             }
 
@@ -172,6 +194,20 @@ fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel) {
                     problem = alertsState.authorityProblem,
                     onCancel = alerts::cancelAuthority,
                     onConfirm = alerts::confirmAuthority,
+                )
+            }
+
+            configurationState.pendingAuthority?.let { pending ->
+                ConfirmDialog(
+                    title = pending.title,
+                    description = pending.description +
+                        if (pending.requiresPassword) " Because it is ${pending.riskLevel} risk, your password is needed." else "",
+                    riskLevel = pending.riskLevel,
+                    requiresPassword = pending.requiresPassword,
+                    busy = configurationState.confirming,
+                    problem = configurationState.authorityProblem,
+                    onCancel = configuration::cancelRestore,
+                    onConfirm = configuration::confirmRestore,
                 )
             }
         }
@@ -308,6 +344,7 @@ private fun PcListScreen(
     onOpen: (String) -> Unit,
     onAlerts: () -> Unit,
     onAutomations: () -> Unit,
+    onConfiguration: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -329,6 +366,7 @@ private fun PcListScreen(
             }
             OutlinedButton(onClick = onAutomations, modifier = Modifier.weight(1f)) { Text("Automations") }
         }
+        OutlinedButton(onClick = onConfiguration, modifier = Modifier.fillMaxWidth()) { Text("Configuration backup") }
 
         if (pcs != null && pcs.isEmpty()) {
             Text("No PCs are enrolled yet. Add one from the web dashboard.")

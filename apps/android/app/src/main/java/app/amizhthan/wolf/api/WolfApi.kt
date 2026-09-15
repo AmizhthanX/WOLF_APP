@@ -153,6 +153,20 @@ class WolfApi(
     suspend fun runAutomation(automationId: String, bearer: String): RunAccepted =
         send<Unit, RunAccepted>("POST", listOf("automations", automationId, "run"), bearer, null, null, RunAccepted.serializer())
 
+    /**
+     * The backup as the server built it, kept as JSON rather than modelled, so the file holds exactly what
+     * the server's checksum covers. The cloud keeps no copy.
+     */
+    suspend fun configurationBackup(bearer: String): JsonObject =
+        send<Unit, JsonObject>("GET", listOf("configuration", "backup"), bearer, null, null, JsonObject.serializer())
+
+    suspend fun previewRestore(request: RestoreRequest, bearer: String): RestorePlanResponse =
+        send("POST", listOf("configuration", "restore", "preview"), bearer, request, RestoreRequest.serializer(), RestorePlanResponse.serializer())
+
+    /** Always at least medium risk, so the first attempt is refused for a confirmation: see [app.amizhthan.wolf.session.AccountAuthority]. */
+    suspend fun restoreConfiguration(request: RestoreRequest, bearer: String): RestoreResult =
+        send("POST", listOf("configuration", "restore"), bearer, request, RestoreRequest.serializer(), RestoreResult.serializer())
+
     suspend fun automationRuns(automationId: String, bearer: String): AutomationRunList =
         send<Unit, AutomationRunList>("GET", listOf("automations", automationId, "runs"), bearer, null, null, AutomationRunList.serializer())
 

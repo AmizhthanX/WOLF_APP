@@ -2,8 +2,8 @@
 
 Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics,
 commands — power actions and the process list — with the same confirmation ladder as the web client, and
-remote desktop over WebRTC with touch mapped to WOLF input, and alert rules, the notification inbox and
-automations.
+remote desktop over WebRTC with touch mapped to WOLF input, alert rules, the notification inbox and
+automations, and configuration backup and restore.
 
 ## Pieces
 
@@ -21,6 +21,7 @@ automations.
 | Alerts, automations | `api/AlertModels.kt`, `api/Automations.kt` | Rule and automation shapes, built within the protocol's bounds, and described |
 | Account authority | `session/AccountAuthority.kt` | Confirmation and password re-entry for decisions saved rather than sent |
 | Alerts UI | `ui/AlertsAutomationsViewModel.kt`, `ui/AlertsScreen.kt`, `ui/AutomationsScreen.kt` | Inbox, rules, automations and their runs |
+| Configuration backup | `api/ConfigurationBackup.kt`, `storage/Documents.kt`, `ui/ConfigurationViewModel.kt`, `ui/ConfigurationScreen.kt` | The backup file, the system document picker, restore |
 | UI | `ui/`, `MainActivity.kt` | Sign-in, PCs, live metrics |
 | Endpoint | `src/debug/…/ApiEndpoint.kt`, `src/release/…/ApiEndpoint.kt` | API and relay addresses per build type |
 
@@ -156,6 +157,30 @@ on re-authorizes. There is no PC session or privileged grant — the account tok
 the server records it against this phone's device. Revoking that device turns those automations off at
 their next run; signing out does not, because sign-out revokes the refresh token and not the device.
 
+## Configuration backup
+
+The web dashboard's backup and restore ([configuration backup](configuration-backup.md)), with files in
+the **system document picker**: the app asks for no storage permission, sees only the file the owner
+picks, and keeps no copy of anything it read or wrote.
+
+**Back up.** The backup is fetched first and the picker opened second, so a failed request never leaves an
+empty file behind. It is held in memory only until it is written, and dropped if the owner cancels — the
+cloud keeps no copy either, and the app says so. The file is the server's JSON, indented, with every value
+written back as it came; it is kept as JSON rather than modelled, so nothing the app does not know about
+is lost from the file the server's checksum covers. Written with truncation, so saving over a longer old
+backup leaves no tail.
+
+**Restore.** Choose a file; choose sections; *check what will change*; restore. The phone refuses only what
+it can tell without trusting itself — a file over the API's 4 MiB restore limit, not JSON, or not in WOLF's
+backup format — and leaves the checksum, the format version and every item to the server, which verifies
+them. The summary shown is counts, not names. The restore sends the exact request that was previewed; if
+the sections or the automations choice change, the preview is cleared and must be checked again, and a
+preview answered after the choice changed is discarded. Authority is the same flow as automations: the
+server names the level — at least medium, since configuration is replaced wholesale, and higher if restored
+automations are turned on — and the phone confirms it, with the password when it is high.
+
+Leaving the screen, or signing out, forgets the chosen file and any fetched backup.
+
 ## Device identity
 
 An ECDSA P-256 key generated in the Android Keystore — the same curve the server and the Windows
@@ -217,6 +242,11 @@ npm run build:android         # debug APK
   attempt, no request without a password, critical refused rather than asked, never climbing, a stale
   sign-in asking again, turning off free and turning on not. The builders held to the protocol's exact
   JSON and bounds; descriptions, including kinds the app does not know; the alert and inbox paths.
+- **JVM, configuration:** the file checks (too large, not JSON, not WOLF's format, a byte-order mark
+  accepted, a newer version left to the server), the file written value for value, names, section order,
+  plan wording; backup and restore against a mock API that verifies the file and always asks — medium at
+  the named level, the password when restored automations make it high, a damaged file refused with
+  nothing restored.
 - **JVM:** the API client against a mock server (paths, the error envelope, ids that cannot add path
   segments, unknown metrics staying unknown); the session against a mock server that rotates refresh
   tokens and treats reuse as theft (single shared refresh, sign-out on refusal, offline launch); the
@@ -235,6 +265,10 @@ npm run build:android         # debug APK
   confirm, run by hand and found in the inbox; a restart automation asking for the password before it is
   saved. That one is saved turned off with a manual trigger, so it cannot run, and everything the test
   creates is deleted.
+- **Live configuration** (`LiveConfigurationTest`), gated the same way: a backup written to a real file
+  through the app's document store and read back identical, holding none of the strings of credentials;
+  a rule deleted and restored from that file — alert rules only — at the medium level the server named,
+  coming back with its id; an edited copy refused by the server.
 
 ```bash
 npm run test:android:device -- \
@@ -254,7 +288,7 @@ under `org.webrtc`. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
 
 ## Not built yet
 
-- Configuration backup, services, scheduled tasks and the file manager.
+- Services, scheduled tasks and the file manager.
 - Push notifications (WOLF sends none yet), and building service, scheduled-task and startup-item
   automations on the phone.
 - Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures.

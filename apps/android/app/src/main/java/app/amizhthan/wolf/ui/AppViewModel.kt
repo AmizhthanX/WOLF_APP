@@ -38,6 +38,7 @@ sealed interface Screen {
     data class RemoteDesktop(val pcId: String) : Screen
     data object Alerts : Screen
     data object Automations : Screen
+    data object Configuration : Screen
 }
 
 /** What to do with a command's result once it has one. Kept with a pending command across its confirmation. */
@@ -121,6 +122,8 @@ class AppViewModel(
     fun openAlerts() = openAccountScreen(Screen.Alerts)
 
     fun openAutomations() = openAccountScreen(Screen.Automations)
+
+    fun openConfiguration() = openAccountScreen(Screen.Configuration)
 
     /** Back to the PC list from a screen that is about the account rather than one PC. */
     fun home() {

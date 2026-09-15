@@ -865,8 +865,19 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
 - Proven against the real API and agent: rules in both shapes, a notify automation run by hand into the
   inbox, a high-risk save that asks for the password
 
+**Done — configuration backup and restore**
+
+- Backup saved to a file the owner picks in the system document picker — no storage permission, no copy
+  kept by the app or the cloud — fetched before the picker opens, so a failure leaves no empty file
+- The server's JSON kept as JSON and written back value for value, so the checksum still covers it
+- Restore with sections, a preview of what will change, and the server-named confirmation; the phone
+  checks size and format and leaves the checksum and every item to the server
+- Proven against the real API through the real document store: back up, delete a rule, restore it from
+  the file with its id; an edited copy refused
+
 **Still open for Android**
-- Configuration backup; push notifications; building service, task and startup-item automations
+- Push notifications; building service, task and startup-item automations; services, scheduled tasks
+  and the file manager
 - Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
