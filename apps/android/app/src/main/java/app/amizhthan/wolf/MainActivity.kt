@@ -13,6 +13,7 @@ import app.amizhthan.wolf.security.KeystoreDeviceIdentity
 import app.amizhthan.wolf.security.KeystoreSecretCipher
 import app.amizhthan.wolf.security.TokenVault
 import app.amizhthan.wolf.session.SessionManager
+import app.amizhthan.wolf.ui.AlertsAutomationsViewModel
 import app.amizhthan.wolf.ui.AppViewModel
 import app.amizhthan.wolf.ui.WolfApp
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -36,6 +37,7 @@ class MainActivity : ComponentActivity() {
                         RemoteDesktopController(applicationContext, pcId, graph.api, graph.session, graph.http)
                     }
                 },
+                alerts = viewModel { AlertsAutomationsViewModel(graph.session, graph.api) },
             )
         }
     }

@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonObject
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -95,6 +96,65 @@ class WolfApi(
 
     suspend fun latestTelemetry(pcId: String, bearer: String): LatestTelemetry =
         send<Unit, LatestTelemetry>("GET", listOf("pcs", pcId, "telemetry", "latest"), bearer, null, null, LatestTelemetry.serializer())
+
+    suspend fun listAlertRules(bearer: String): AlertRuleList =
+        send<Unit, AlertRuleList>("GET", listOf("alert-rules"), bearer, null, null, AlertRuleList.serializer())
+
+    suspend fun createAlertRule(input: AlertRuleInput, bearer: String): AlertRuleResponse =
+        send("POST", listOf("alert-rules"), bearer, input, AlertRuleInput.serializer(), AlertRuleResponse.serializer())
+
+    suspend fun setAlertRuleEnabled(ruleId: String, enabled: Boolean, bearer: String): AlertRuleResponse =
+        send("PATCH", listOf("alert-rules", ruleId), bearer, AlertRulePatch(enabled), AlertRulePatch.serializer(), AlertRuleResponse.serializer())
+
+    suspend fun deleteAlertRule(ruleId: String, bearer: String) {
+        send<Unit, Unit>("DELETE", listOf("alert-rules", ruleId), bearer, null, null, null)
+    }
+
+    suspend fun listNotifications(bearer: String): NotificationList =
+        send<Unit, NotificationList>("GET", listOf("notifications"), bearer, null, null, NotificationList.serializer())
+
+    suspend fun markNotificationRead(notificationId: String, bearer: String) {
+        send<Unit, Unit>("POST", listOf("notifications", notificationId, "read"), bearer, null, null, null)
+    }
+
+    suspend fun markAllNotificationsRead(bearer: String): MarkedRead =
+        send<Unit, MarkedRead>("POST", listOf("notifications", "read-all"), bearer, null, null, MarkedRead.serializer())
+
+    suspend fun listAutomations(bearer: String): AutomationList =
+        send<Unit, AutomationList>("GET", listOf("automations"), bearer, null, null, AutomationList.serializer())
+
+    /** Saving is where an automation's authority comes from, so it carries the confirmed level the server named. */
+    suspend fun createAutomation(definition: JsonObject, confirmedRiskLevel: String?, bearer: String): AutomationResponse =
+        send(
+            "POST",
+            listOf("automations"),
+            bearer,
+            SaveAutomationRequest(definition, confirmedRiskLevel),
+            SaveAutomationRequest.serializer(),
+            AutomationResponse.serializer(),
+        )
+
+    /** A partial update. Turning one off needs no authority; turning one on, or widening it, does. */
+    suspend fun updateAutomation(automationId: String, patch: JsonObject, confirmedRiskLevel: String?, bearer: String): AutomationResponse =
+        send(
+            "PATCH",
+            listOf("automations", automationId),
+            bearer,
+            SaveAutomationRequest(patch, confirmedRiskLevel),
+            SaveAutomationRequest.serializer(),
+            AutomationResponse.serializer(),
+        )
+
+    suspend fun deleteAutomation(automationId: String, bearer: String) {
+        send<Unit, Unit>("DELETE", listOf("automations", automationId), bearer, null, null, null)
+    }
+
+    /** Runs on the authority it was saved with, on its listed PCs. Accepted, not finished: see [automationRuns]. */
+    suspend fun runAutomation(automationId: String, bearer: String): RunAccepted =
+        send<Unit, RunAccepted>("POST", listOf("automations", automationId, "run"), bearer, null, null, RunAccepted.serializer())
+
+    suspend fun automationRuns(automationId: String, bearer: String): AutomationRunList =
+        send<Unit, AutomationRunList>("GET", listOf("automations", automationId, "runs"), bearer, null, null, AutomationRunList.serializer())
 
     private suspend fun <B, R> send(
         method: String,

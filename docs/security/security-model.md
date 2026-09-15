@@ -85,6 +85,13 @@ refused, and the client is told the true level so it can re-prompt.
 Privileged grants are single-use, scoped to one PC and one session, expire in minutes, and
 are consumed as part of authorizing the command.
 
+Automations saved from the Android app are authorized exactly as from the web: the server classifies,
+the phone sends back only the level the server named, a high-risk save needs the password re-entered
+(through a call that is not retried, so a typo counts once against the lockout), and a critical action
+is refused outright and shown as a refusal — there is no confirmation for it to click through. The
+authority is recorded against the phone's device: revoking the device turns its automations off at their
+next run, while signing out, which revokes only the refresh token, does not.
+
 ## Capabilities
 
 Sessions grant named capabilities individually: `screen`, `audio`, `input`, `clipboard`,

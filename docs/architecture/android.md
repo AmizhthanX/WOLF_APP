@@ -2,7 +2,8 @@
 
 Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics,
 commands — power actions and the process list — with the same confirmation ladder as the web client, and
-remote desktop over WebRTC with touch mapped to WOLF input. Alerts and automations follow.
+remote desktop over WebRTC with touch mapped to WOLF input, and alert rules, the notification inbox and
+automations.
 
 ## Pieces
 
@@ -17,6 +18,9 @@ remote desktop over WebRTC with touch mapped to WOLF input. Alerts and automatio
 | WebRTC | `remote/WebRtcAndroid.kt` | libwebrtc peer connection, decoders, the signaling socket |
 | Input | `remote/InputEvents.kt` | Touch to normalised coordinates; WOLF input events |
 | Remote desktop | `remote/RemoteDesktopController.kt`, `ui/RemoteDesktopScreen.kt` | Its own PC session, renderer and gestures |
+| Alerts, automations | `api/AlertModels.kt`, `api/Automations.kt` | Rule and automation shapes, built within the protocol's bounds, and described |
+| Account authority | `session/AccountAuthority.kt` | Confirmation and password re-entry for decisions saved rather than sent |
+| Alerts UI | `ui/AlertsAutomationsViewModel.kt`, `ui/AlertsScreen.kt`, `ui/AutomationsScreen.kt` | Inbox, rules, automations and their runs |
 | UI | `ui/`, `MainActivity.kt` | Sign-in, PCs, live metrics |
 | Endpoint | `src/debug/…/ApiEndpoint.kt`, `src/release/…/ApiEndpoint.kt` | API and relay addresses per build type |
 
@@ -109,6 +113,49 @@ moved the PC's pointer to exactly (0.25, 0.25) of the screen, read back on the P
 changes mid-stream from the phone, a hardware keyboard's shortcuts, pinch-zoom and scroll gestures.
 These exist in the protocol and the web client.
 
+## Alerts and automations
+
+Account-wide rather than about one PC, so none of it opens a PC session. The PC list shows the unread
+count; the Alerts and Automations screens refresh every 30 seconds while open, and a run's history every
+3 seconds while it is expanded — the web dashboard's pace.
+
+**Alerts.** The inbox (mark one or all read), the rules (turn off, turn on, delete), and a new-rule form:
+every PC or one, a metric above or below a threshold or the PC being offline, how long it must hold, the
+quiet period after notifying, severity. The metrics offered are the web dashboard's, which are the ids the
+server's rollup computes, and a device ("C:") is kept only for metrics that have devices — on CPU usage it
+would match nothing, silently. Nulls are left out of what is sent, so the server applies its own defaults.
+
+**No push notifications.** WOLF does not send any yet, and the app says so on the Alerts screen: nothing
+reaches the phone while the app is closed. The app does not poll in the background to imitate them.
+
+**Automations.** The list shows each one's authorized risk, trigger, actions, targets, conditions and last
+run, with Run now, Turn on/off, History and Delete. The builder on the phone covers schedules, alert
+triggers and manual runs; the PC the alert fired for, or chosen PCs; the nobody-connected, time-window and
+CPU-below conditions; and **notify and power actions**. Service, scheduled-task and startup-item actions
+are shown when an automation has them, and built from the web dashboard — the phone has no way yet to pick
+a service or a task by name from the PC, and typing one blind is how an automation ends up aimed at
+nothing. Every payload is built in `Automations.kt`, which applies the protocol's bounds (1–5 actions,
+up to 5 conditions, 1–20 distinct PCs, HH:MM times, a power delay of at most a day) and never forces a
+power action.
+
+Anything a newer server sends that this app does not model — a trigger, condition, action or target
+kind — is listed by its name rather than dropped, so the list stays the truth.
+
+**Authority** is the web client's `useAuthority`, not the command ladder:
+
+1. Save with no confirmation. Accepted means nothing in it needed one.
+2. Refused: the server names the level. Medium asks for a yes; high asks for the password, re-entered
+   through the no-retry call so a typo counts once, and the save is retried with the token that produced.
+3. Retried at exactly that level. A higher level named on the retry asks again; a re-authentication
+   refusal names no level and always means the password.
+4. **Critical is a refusal, never a question.** The server refuses a critical action outright, and the
+   app shows that as a problem. There is no dialog the owner could click through.
+
+Turning an automation off and renaming it need nothing, because neither can make it do more; turning one
+on re-authorizes. There is no PC session or privileged grant — the account token carries the decision and
+the server records it against this phone's device. Revoking that device turns those automations off at
+their next run; signing out does not, because sign-out revokes the refresh token and not the device.
+
 ## Device identity
 
 An ECDSA P-256 key generated in the Android Keystore — the same curve the server and the Windows
@@ -165,6 +212,11 @@ npm run build:android         # debug APK
   rejects video failing as `codec-unsupported`, an agent that is away, a dropped connection reported as
   reconnecting, errors from the PC carrying their own advice; touch normalisation against a
   letterboxed picture; input event bounds; decoder profile-level-ids to H.264 profiles.
+- **JVM, automations:** authority against a mock API enforcing `authorizeSave` — nothing confirmed
+  before the server asks, medium at the named level, high with the re-authenticated token, one password
+  attempt, no request without a password, critical refused rather than asked, never climbing, a stale
+  sign-in asking again, turning off free and turning on not. The builders held to the protocol's exact
+  JSON and bounds; descriptions, including kinds the app does not know; the alert and inbox paths.
 - **JVM:** the API client against a mock server (paths, the error envelope, ids that cannot add path
   segments, unknown metrics staying unknown); the session against a mock server that rotates refresh
   tokens and treats reuse as theft (single shared refresh, sign-out on refusal, offline launch); the
@@ -178,6 +230,11 @@ npm run build:android         # debug APK
   running agent on the development PC: the stream reaches `streaming`, frames are decoded, control is
   granted, and a single `pointer.move` is sent — never a click, since the PC is someone's real desktop.
   The runner reads the PC cursor back to confirm the move arrived.
+- **Live alerts and automations** (`LiveAlertsAutomationsTest`), gated the same way: both rule shapes
+  accepted by the server's schema, turned off and deleted; a notify-only automation saved with nothing to
+  confirm, run by hand and found in the inbox; a restart automation asking for the password before it is
+  saved. That one is saved turned off with a manual trigger, so it cannot run, and everything the test
+  creates is deleted.
 
 ```bash
 npm run test:android:device -- \
@@ -197,7 +254,9 @@ under `org.webrtc`. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
 
 ## Not built yet
 
-- Alerts, automations, configuration backup, services, scheduled tasks and the file manager.
+- Configuration backup, services, scheduled tasks and the file manager.
+- Push notifications (WOLF sends none yet), and building service, scheduled-task and startup-item
+  automations on the phone.
 - Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures.
 - Release signing and distribution through CI.
 - Unlocking the vault with the phone's biometric or screen lock.

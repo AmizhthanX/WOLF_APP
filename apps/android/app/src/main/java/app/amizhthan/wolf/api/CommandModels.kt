@@ -99,13 +99,14 @@ data class ProcessListResult(
 object Commands {
     val POWER_ACTIONS = listOf("lock", "sign-out", "sleep", "hibernate", "restart", "shutdown")
 
-    fun power(action: String): JsonObject {
+    fun power(action: String, delaySeconds: Int = 0): JsonObject {
         require(action in POWER_ACTIONS) { "Unknown power action $action" }
+        require(delaySeconds in 0..86_400) { "A power action's delay is between 0 seconds and a day." }
         return buildJsonObject {
             put("type", "power.action")
             putJsonObject("payload") {
                 put("action", action)
-                put("delaySeconds", 0)
+                put("delaySeconds", delaySeconds)
                 // Never forced from here: forcing is critical risk and closes the user's unsaved work.
                 put("force", false)
             }

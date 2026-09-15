@@ -852,8 +852,21 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
 - Proven live: the development PC streamed to the emulator at 2560×1440, control was granted, and a
   pointer move landed at exactly (0.25, 0.25) of the PC's screen, read back on the PC
 
+**Done — alerts and automations**
+
+- The inbox, alert rules and automations on the phone, with the unread count on the PC list; lists
+  refreshed while their screen is open and never in the background
+- A rule and automation builder that applies the protocol's bounds before sending, and never forces a
+  power action; notify and power actions on the phone, the other automatable commands shown and built on
+  the web
+- **Saving is authorizing.** The web client's authority flow: the server names the level, medium
+  confirms, high re-enters the password once, and a critical action is a refusal rather than a dialog
+- Kinds the app does not model are listed by name instead of dropped
+- Proven against the real API and agent: rules in both shapes, a notify automation run by hand into the
+  inbox, a high-risk save that asks for the password
+
 **Still open for Android**
-- Alerts, automations and configuration backup
+- Configuration backup; push notifications; building service, task and startup-item automations
 - Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet

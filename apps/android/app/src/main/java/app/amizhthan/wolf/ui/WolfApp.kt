@@ -27,6 +27,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,8 +65,9 @@ private val POWER_ACTIONS = listOf(
 )
 
 @Composable
-fun WolfApp(viewModel: AppViewModel) {
+fun WolfApp(viewModel: AppViewModel, alerts: AlertsAutomationsViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val alertsState by alerts.state.collectAsStateWithLifecycle()
 
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -74,13 +77,23 @@ fun WolfApp(viewModel: AppViewModel) {
                 when (val screen = state.screen) {
                     Screen.Starting -> Centered { CircularProgressIndicator() }
                     Screen.SignIn -> SignInScreen(busy = state.busy, onSignIn = viewModel::signIn)
-                    Screen.Pcs -> PcListScreen(
-                        pcs = state.pcs,
-                        busy = state.busy,
-                        onRefresh = viewModel::loadPcs,
-                        onOpen = viewModel::openPc,
-                        onSignOut = viewModel::signOut,
-                    )
+                    Screen.Pcs -> {
+                        // Rules fire whether or not their screen is open; the count on this one is how the owner hears of it.
+                        LaunchedEffect(Unit) { alerts.refreshUnread() }
+                        PcListScreen(
+                            pcs = state.pcs,
+                            busy = state.busy,
+                            unreadCount = alertsState.unreadCount,
+                            onRefresh = {
+                                viewModel.loadPcs()
+                                alerts.refreshUnread()
+                            },
+                            onOpen = viewModel::openPc,
+                            onAlerts = viewModel::openAlerts,
+                            onAutomations = viewModel::openAutomations,
+                            onSignOut = viewModel::signOut,
+                        )
+                    }
                     is Screen.Pc -> {
                         BackHandler(onBack = viewModel::back)
                         PcScreen(
@@ -97,6 +110,40 @@ fun WolfApp(viewModel: AppViewModel) {
                         BackHandler(onBack = viewModel::closeRemoteDesktop)
                         viewModel.remoteDesktop()?.let { RemoteDesktopScreen(it, onClose = viewModel::closeRemoteDesktop) }
                     }
+                    Screen.Alerts -> {
+                        BackHandler(onBack = viewModel::home)
+                        DisposableEffect(Unit) {
+                            alerts.watch()
+                            onDispose { alerts.stopWatching() }
+                        }
+                        AlertsScreen(
+                            state = alertsState,
+                            onBack = viewModel::home,
+                            onMarkRead = alerts::markRead,
+                            onMarkAllRead = alerts::markAllRead,
+                            onSetRuleEnabled = alerts::setRuleEnabled,
+                            onDeleteRule = alerts::deleteRule,
+                            onCreateRule = alerts::createRule,
+                            onDismissProblem = alerts::dismissProblem,
+                        )
+                    }
+                    Screen.Automations -> {
+                        BackHandler(onBack = viewModel::home)
+                        DisposableEffect(Unit) {
+                            alerts.watch()
+                            onDispose { alerts.stopWatching() }
+                        }
+                        AutomationsScreen(
+                            state = alertsState,
+                            onBack = viewModel::home,
+                            onRunNow = alerts::runNow,
+                            onSetEnabled = alerts::setAutomationEnabled,
+                            onToggleHistory = alerts::toggleHistory,
+                            onDelete = alerts::deleteAutomation,
+                            onSave = alerts::save,
+                            onDismissProblem = alerts::dismissProblem,
+                        )
+                    }
                 }
             }
 
@@ -112,6 +159,21 @@ fun WolfApp(viewModel: AppViewModel) {
                     onConfirm = viewModel::confirm,
                 )
             }
+
+            alertsState.authority?.let { request ->
+                val pending = request.pending
+                ConfirmDialog(
+                    title = pending.title,
+                    description = pending.description +
+                        if (pending.requiresPassword) " Because it is ${pending.riskLevel} risk, your password is needed." else "",
+                    riskLevel = pending.riskLevel,
+                    requiresPassword = pending.requiresPassword,
+                    busy = alertsState.confirming,
+                    problem = alertsState.authorityProblem,
+                    onCancel = alerts::cancelAuthority,
+                    onConfirm = alerts::confirmAuthority,
+                )
+            }
         }
     }
 }
@@ -125,7 +187,7 @@ private fun Centered(content: @Composable () -> Unit) {
 
 /** Every failure shows what went wrong, why, what to do, and the reference to quote. */
 @Composable
-private fun ProblemCard(problem: WolfProblem, onDismiss: () -> Unit) {
+internal fun ProblemCard(problem: WolfProblem, onDismiss: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(problem.problem, fontWeight = FontWeight.SemiBold)
@@ -149,7 +211,7 @@ internal fun riskWords(level: String): String = when (level) {
 }
 
 @Composable
-private fun ConfirmDialog(
+internal fun ConfirmDialog(
     title: String,
     description: String,
     riskLevel: String,
@@ -241,8 +303,11 @@ private fun SignInScreen(busy: Boolean, onSignIn: (String, String) -> Unit) {
 private fun PcListScreen(
     pcs: List<PcSummary>?,
     busy: Boolean,
+    unreadCount: Int,
     onRefresh: () -> Unit,
     onOpen: (String) -> Unit,
+    onAlerts: () -> Unit,
+    onAutomations: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -256,6 +321,13 @@ private fun PcListScreen(
             }
             TextButton(onClick = onRefresh, enabled = !busy) { Text("Refresh") }
             TextButton(onClick = onSignOut) { Text("Sign out") }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onAlerts, modifier = Modifier.weight(1f)) {
+                Text(if (unreadCount > 0) "Alerts · $unreadCount unread" else "Alerts")
+            }
+            OutlinedButton(onClick = onAutomations, modifier = Modifier.weight(1f)) { Text("Automations") }
         }
 
         if (pcs != null && pcs.isEmpty()) {
