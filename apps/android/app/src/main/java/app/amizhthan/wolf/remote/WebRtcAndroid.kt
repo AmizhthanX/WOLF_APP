@@ -128,7 +128,9 @@ class WebRtcPeerFactory(
             channel = dataChannel
             dataChannel.registerObserver(object : DataChannel.Observer {
                 override fun onBufferedAmountChange(previousAmount: Long) = Unit
-                override fun onStateChange() = Unit
+                override fun onStateChange() {
+                    if (dataChannel.state() == DataChannel.State.OPEN) post { events.onControlChannelOpen() }
+                }
                 override fun onMessage(buffer: DataChannel.Buffer) {
                     val bytes = ByteArray(buffer.data.remaining())
                     buffer.data.get(bytes)
@@ -136,6 +138,8 @@ class WebRtcPeerFactory(
                     post { events.onControlMessage(text) }
                 }
             })
+            // A channel adopted already open gets no state change to say so. Reporting it twice is harmless.
+            if (dataChannel.state() == DataChannel.State.OPEN) post { events.onControlChannelOpen() }
         }
 
         override fun answer(offerSdp: String, onAnswer: (String) -> Unit, onError: (String) -> Unit) {

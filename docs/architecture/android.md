@@ -2,7 +2,7 @@
 
 Kotlin and Jetpack Compose, in `apps/android`. Built so far: sign-in, the PC list, live metrics,
 commands — power actions and the process list — with the same confirmation ladder as the web client, and
-remote desktop over WebRTC with touch mapped to WOLF input, services, scheduled tasks and startup items,
+remote desktop over WebRTC with touch mapped to WOLF input, the file manager, services, scheduled tasks and startup items,
 alert rules, the notification inbox and automations, and configuration backup and restore.
 
 ## Pieces
@@ -23,6 +23,7 @@ alert rules, the notification inbox and automations, and configuration backup an
 | Alerts UI | `ui/AlertsAutomationsViewModel.kt`, `ui/AlertsScreen.kt`, `ui/AutomationsScreen.kt` | Inbox, rules, automations and their runs |
 | Configuration backup | `api/ConfigurationBackup.kt`, `storage/Documents.kt`, `ui/ConfigurationViewModel.kt`, `ui/ConfigurationScreen.kt` | The backup file, the system document picker, restore |
 | What runs on a PC | `api/CommandModels.kt` (`Commands`, `PcTools`), `ui/PcToolsScreens.kt` | Services, scheduled tasks and startup items |
+| Files | `remote/FileTransfer.kt`, `ui/FilesPanel.kt`, `storage/Documents.kt` | Browse, fetch and send over the stream's data channel |
 | UI | `ui/`, `MainActivity.kt` | Sign-in, PCs, live metrics |
 | Endpoint | `src/debug/…/ApiEndpoint.kt`, `src/release/…/ApiEndpoint.kt` | API and relay addresses per build type |
 
@@ -78,7 +79,7 @@ processes show no terminate button, and the server would classify them critical 
 The web client's protocol, spoken by a second implementation — which is the point of building it: the
 relay and the session host are held to the protocol rather than to one client's habits.
 
-1. A **separate PC session** asking for `screen` and `input` only. Commands keep their own session; a
+1. A **separate PC session** asking for `screen`, `input` and `file-transfer`, and nothing else. Commands keep their own session; a
    viewer does not carry `power`.
 2. The relay socket (`/client`), authenticated with that session token in the first message. The token
    never goes in the URL, where proxies log it.
@@ -112,9 +113,43 @@ Proven against the real thing: the live test below streamed the development PC t
 2560×1440 (252 frames decoded in about 35 seconds on the emulator), took control, and
 moved the PC's pointer to exactly (0.25, 0.25) of the screen, read back on the PC.
 
-**Not yet:** audio (profiles ask for none), clipboard, file transfer, multiple displays and profile
+**Not yet:** audio (profiles ask for none), clipboard, multiple displays and profile
 changes mid-stream from the phone, a hardware keyboard's shortcuts, pinch-zoom and scroll gestures.
 These exist in the protocol and the web client.
+
+## Files
+
+The web dashboard's file manager ([the file manager](file-manager.md)), on the remote desktop screen:
+**Files** opens a panel under the picture. Like the web, it rides the running stream's data channel, so
+**no server sees a name or a byte** — and, like the web, it needs a running stream.
+
+- **Its own lease.** "Ask for file access" sends `file.request`; the relay grants the `file-operations`
+  lease only to a session holding `file-transfer`, and the grant is renewed while held. Without it nothing
+  is sent: a file request without the lease fails on the phone before it reaches the channel. Losing the
+  lease clears what was shown.
+- **Browse:** drives with free space, folders, files with size, date, and whether an entry is a link, a
+  hidden file or under a Windows-owned location. A truncated folder says so. The PC's refusals are shown in
+  its words, with Windows' refusals marked as Windows'.
+- **Fetch** into a document the owner picks. Chunks are requested at exact offsets, each chunk's SHA-256 is
+  verified **before any of it is written**, and a transfer that does not finish — stopped, refused, a bad
+  chunk, a dropped stream — **removes the document**, so a partial copy never sits on the phone looking like
+  the file.
+- **Send** a document the owner picks into the folder shown. Never overwrites: the PC refuses `exists` and
+  the owner is told. The phone reads the file in order, so an answer from the PC that is not exactly past
+  what was sent ends the transfer rather than being guessed at, and the PC's whole-file checksum at the end
+  is compared with the phone's. Stopping or failing cancels the transfer on the PC, and its part file goes.
+  A document whose size the provider will not state is refused, because the PC must know the size first.
+- **Always answered.** Requests are matched to answers by id, never by order, and each is answered exactly
+  once: the PC's answer, its refusal, a 30-second timeout, or the stream ending.
+
+**A finding from the first live run:** the lease can be granted while the PC's data channel is still
+opening — the stream was connected, access granted, and the first listing failed with "not ready". File
+requests now wait for the channel to open, still bounded by their timeout; the Android peer reports when it
+does.
+
+Not built, as on the web: delete, rename, move and new folders (they belong on the command path); search;
+folder transfers; resuming an interrupted transfer (the protocol supports it; neither client uses it yet);
+browsing without a stream.
 
 ## Services, scheduled tasks and startup items
 
@@ -274,6 +309,14 @@ npm run build:android         # debug APK
   attempt, no request without a password, critical refused rather than asked, never climbing, a stale
   sign-in asking again, turning off free and turning on not. The builders held to the protocol's exact
   JSON and bounds; descriptions, including kinds the app does not know; the alert and inbox paths.
+- **JVM, files:** against a fake PC that behaves like the session host's file channel — every message's
+  protocol shape; paths built as the web builds them; a download at exact offsets, a corrupt chunk refused
+  with none of it written, a stop between chunks; an upload in contiguous chunks with only the last final and
+  overwrite never set, an empty file as one final empty chunk, a misaligned copy and a refusal each ending
+  the transfer and cancelling it on the PC, a whole-file checksum mismatch reported, a short source and an
+  over-limit file refused. On the stream: the lease requested, renewed and released; nothing sent without
+  it; answers matched by id out of order; a timeout answered once; waiting requests answered when the
+  stream ends; a request made before the channel opens sent when it does, and not sent if it timed out.
 - **JVM, services, tasks and startup items:** every command's exact protocol JSON; service names, task
   paths (rooted, no climbing, no wildcards), start types (boot and system refused) and actions held to the
   protocol; a startup change carrying nothing but on or off; lists decoded as the agent sends them,
@@ -313,6 +356,12 @@ npm run build:android         # debug APK
   critical, disabling a startup item medium); a phone-built service action saved into an automation that is
   off and manual-only, after the password, and deleted. On the development PC the agent runs without the
   privileged helper, so the lists came back empty with that reason — which is the path this test proves.
+- **Live files** (`LiveFileManagerTest`), over a real stream to the development PC: the drives listed; a
+  network path, a climbing path and a device name refused with their reasons; 200 KB of random bytes sent
+  into `C:\Users\Public\Documents` with the PC's checksum matching; the same name refused rather than
+  overwritten; the file fetched back into memory and through the document store into a real file, identical
+  byte for byte; a stopped upload leaving neither a file nor a part file. WOLF cannot delete, so the runner
+  removes the one file the test writes.
 
 ```bash
 npm run test:android:device -- \
@@ -332,7 +381,7 @@ under `org.webrtc`. Tests: JUnit 4 (EPL-1.0), OkHttp MockWebServer (Apache-2.0),
 
 ## Not built yet
 
-- The file manager.
+- Files: resuming an interrupted transfer, and browsing without a running stream (as on the web).
 - Push notifications (WOLF sends none yet).
 - Changing a service, task or startup item from the phone has not run against a machine with the
   privileged helper installed; the development PC runs the agent interactively without it. The same is

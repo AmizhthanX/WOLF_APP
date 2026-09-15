@@ -134,6 +134,17 @@ whose failure mode is an unbootable machine.
 A folder that shows 2000 of its 40000 files with no indication is one an operator concludes
 does not contain what they are looking for. Saying so is the difference.
 
+## Clients
+
+The web dashboard assembles a download in the tab and hands it to the browser's save dialog. The Android
+app writes it chunk by chunk into a document the owner picks, and removes that document if the transfer
+does not finish; it sends from a document picked the same way, and compares the PC's whole-file checksum
+with its own. See [the Android client](android.md#files).
+
+Both learned the same thing about the channel: the file lease can be granted while the PC's data channel
+is still opening. A client that sends the first listing the moment access is granted can find the channel
+not ready; the Android client holds requests until the channel opens, bounded by their timeout.
+
 ## What is not built
 
 - **Delete, rename, move, and new folders.** They are mutations with real blast radius, they

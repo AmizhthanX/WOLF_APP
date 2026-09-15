@@ -78,6 +78,8 @@ class StreamSessionTest {
         val controls = mutableListOf<InputControl>()
         val states = mutableListOf<RemoteState>()
         val refusals = mutableListOf<String>()
+        val fileControls = mutableListOf<InputControl>()
+        override fun onFileControl(control: InputControl) { fileControls += control }
         override fun onPhase(phase: StreamPhase, detail: String?) { phases += phase }
         override fun onFailure(failure: StreamFailure) { failures += failure }
         override fun onNegotiation(negotiation: Negotiation) { negotiations += negotiation }
@@ -123,12 +125,154 @@ class StreamSessionTest {
         stream.onSocketMessage(accepted())
         stream.onSocketMessage(signal("""{"type":"sdp.offer","sdp":"v=0 OFFER"}"""))
         peerEvents.onConnected()
+        peerEvents.onControlChannelOpen()
     }
 
     private fun payloads() = socket.sent.filter { it["kind"]!!.jsonPrimitive.content == "client.signal" }
         .map { it["envelope"]!!.jsonObject["payload"]!!.jsonObject }
 
     private fun types() = payloads().map { it["type"]!!.jsonPrimitive.content }
+
+    private fun grantFiles() = stream.onSocketMessage(
+        signal("""{"type":"file.control","granted":true,"holderSessionId":"$sessionId","expiresAt":"2026-09-15T10:10:00Z","reason":"granted"}"""),
+    )
+
+    @Test
+    fun a_file_request_made_before_the_data_channel_opens_is_sent_when_it_does() {
+        // The order the first live run saw: connected, access granted, and the channel still opening.
+        stream.onSocketOpen()
+        stream.onSocketMessage(accepted())
+        stream.onSocketMessage(signal("""{"type":"sdp.offer","sdp":"v=0 OFFER"}"""))
+        peerEvents.onConnected()
+        grantFiles()
+        var result: Result<JsonObject>? = null
+
+        stream.askFiles(FileMessages.list(null)) { result = it }
+        assertTrue("nothing is sent into a channel that is not open", peers.single().control.isEmpty())
+        assertNull("and it is not refused either", result)
+
+        peerEvents.onControlChannelOpen()
+        val sent = peers.single().control.single()
+        assertEquals("file.list", sent["kind"]!!.jsonPrimitive.content)
+
+        peerEvents.onControlMessage("""{"kind":"file.listing","requestId":"${sent["requestId"]!!.jsonPrimitive.content}","path":null,"entries":[],"truncated":false}""")
+        assertTrue(result!!.isSuccess)
+    }
+
+    @Test
+    fun a_request_that_timed_out_waiting_for_the_channel_is_not_sent_when_it_opens() {
+        stream.onSocketOpen()
+        stream.onSocketMessage(accepted())
+        stream.onSocketMessage(signal("""{"type":"sdp.offer","sdp":"v=0 OFFER"}"""))
+        grantFiles()
+        val results = mutableListOf<Result<JsonObject>>()
+
+        stream.askFiles(FileMessages.list(null)) { results += it }
+        scheduler.tick()
+        peerEvents.onControlChannelOpen()
+
+        assertEquals(1, results.size)
+        assertTrue(results.single().isFailure)
+        assertTrue(peers.single().control.isEmpty())
+    }
+
+    @Test
+    fun file_access_is_asked_for_renewed_while_held_and_released() {
+        connect()
+        stream.requestFiles()
+        assertEquals("file.request", types().last())
+
+        grantFiles()
+        assertTrue(stream.holdsFiles)
+        assertTrue(recorder.fileControls.single().granted)
+
+        scheduler.tick()
+        assertEquals(2, types().count { it == "file.request" })
+
+        stream.releaseFiles()
+        assertEquals("file.release", types().last())
+        assertFalse(stream.holdsFiles)
+        scheduler.tick()
+        assertEquals("no renewal after releasing", 2, types().count { it == "file.request" })
+    }
+
+    @Test
+    fun no_file_request_goes_to_the_pc_without_the_lease() {
+        connect()
+        var result: Result<JsonObject>? = null
+
+        stream.askFiles(FileMessages.list(null)) { result = it }
+
+        assertEquals("not-permitted", (result!!.exceptionOrNull() as FileRefusalException).refusal.reason)
+        assertTrue(peers.single().control.isEmpty())
+    }
+
+    @Test
+    fun file_answers_reach_the_request_that_asked_matched_by_id_not_by_order() {
+        connect()
+        grantFiles()
+        var first: Result<JsonObject>? = null
+        var second: Result<JsonObject>? = null
+
+        stream.askFiles(FileMessages.list(null)) { first = it }
+        stream.askFiles(FileMessages.stat("C:\\a.txt")) { second = it }
+        val sent = peers.single().control
+        val firstId = sent[0]["requestId"]!!.jsonPrimitive.content
+        val secondId = sent[1]["requestId"]!!.jsonPrimitive.content
+        assertTrue(Ulid.PATTERN.matches(firstId))
+        assertEquals("file.list", sent[0]["kind"]!!.jsonPrimitive.content)
+
+        peerEvents.onControlMessage("""{"kind":"file.info","requestId":"$secondId","path":"C:\\a.txt","entry":null,"partialBytes":null}""")
+        assertNull(first)
+        assertEquals("file.info", second!!.getOrThrow()["kind"]!!.jsonPrimitive.content)
+
+        peerEvents.onControlMessage("""{"kind":"file.refused","requestId":"$firstId","reason":"access-denied","detail":"Windows said no.","limitation":true}""")
+        val refusal = (first!!.exceptionOrNull() as FileRefusalException).refusal
+        assertEquals(FileRefusal("access-denied", "Windows said no.", true), refusal)
+
+        // An answer nobody is waiting for is dropped, not handed to the next request.
+        peerEvents.onControlMessage("""{"kind":"file.listing","requestId":"$firstId","path":null,"entries":[],"truncated":false}""")
+    }
+
+    @Test
+    fun a_file_request_the_pc_never_answers_is_timed_out_once() {
+        connect()
+        grantFiles()
+        val results = mutableListOf<Result<JsonObject>>()
+
+        stream.askFiles(FileMessages.list(null)) { results += it }
+        scheduler.tick()
+        scheduler.tick()
+
+        assertEquals(1, results.size)
+        assertEquals("The PC did not answer in time.", results.single().exceptionOrNull()!!.message)
+    }
+
+    @Test
+    fun file_requests_waiting_when_the_stream_ends_are_answered_and_the_lease_is_gone() {
+        connect()
+        grantFiles()
+        var result: Result<JsonObject>? = null
+        stream.askFiles(FileMessages.list(null)) { result = it }
+
+        stream.stop()
+
+        assertEquals("failed", (result!!.exceptionOrNull() as FileRefusalException).refusal.reason)
+        assertFalse(stream.holdsFiles)
+    }
+
+    @Test
+    fun losing_the_file_lease_stops_renewing_it() {
+        connect()
+        stream.requestFiles()
+        grantFiles()
+        stream.onSocketMessage(signal("""{"type":"file.control","granted":false,"holderSessionId":null,"expiresAt":null,"reason":"held-by-another-session"}"""))
+
+        assertFalse(stream.holdsFiles)
+        assertEquals("held-by-another-session", recorder.fileControls.last().reason)
+        scheduler.tick()
+        assertEquals(1, types().count { it == "file.request" })
+    }
 
     @Test
     fun the_socket_is_authenticated_before_anything_else_is_said() {

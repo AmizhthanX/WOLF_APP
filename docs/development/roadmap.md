@@ -896,10 +896,24 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   in-process `listen`, and the local cloud subscribes the same channels with the same sweep; the API's
   path is unchanged
 
+**Done — the file manager**
+
+- Browse, fetch and send on the remote desktop screen, over the stream's data channel: no server sees a
+  name or a byte. Its own lease, requested and renewed, and nothing sent without it
+- Fetched files go into a document the owner picks, every chunk verified before it is written, and the
+  document removed if the file does not arrive whole; sent files never overwrite, are checked end to end
+  against the PC's whole-file checksum, and are cancelled on the PC — part file and all — when stopped
+- Every request answered exactly once: matched by id, timed out, or ended with the stream
+- **A finding from the first live run:** the file lease can be granted while the PC's data channel is still
+  opening. Requests now wait for the channel, bounded by their timeout
+- Proven live: 200 KB sent to the development PC and fetched back identical, refusals with reasons, a stopped
+  upload leaving nothing
+
 **Still open for Android**
-- Push notifications; the file manager
+- Push notifications
+- Files: resuming an interrupted transfer; browsing without a stream (as on the web)
 - Changing services, tasks and startup items against a machine with the privileged helper installed
-- Remote desktop: audio, clipboard, file transfer, display switching, scroll and zoom gestures
+- Remote desktop: audio, clipboard, display switching, scroll and zoom gestures
 - Release signing and distribution through CI
 - Biometric unlock of the vault; device proof-of-possession, which the server does not ask for yet
 

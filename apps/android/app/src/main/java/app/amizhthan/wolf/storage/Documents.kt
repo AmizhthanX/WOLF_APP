@@ -2,11 +2,15 @@ package app.amizhthan.wolf.storage
 
 import android.content.ContentResolver
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 
 class ChosenDocument(val name: String, val bytes: ByteArray)
 
@@ -21,7 +25,18 @@ interface DocumentStore {
 
     /** Reads at most [limitBytes]; a longer file comes back cut at that length, for the caller to refuse. */
     suspend fun read(uri: Uri, limitBytes: Int): ChosenDocument
+
+    /** A chosen document open for writing, truncated. The caller closes it. */
+    suspend fun openOutput(uri: Uri): OutputStream
+
+    /** A chosen document open for reading, with its name and, when the provider knows it, its size. */
+    suspend fun openInput(uri: Uri): OpenedDocument
+
+    /** Remove a document this app created, when what went into it is not the whole file. */
+    suspend fun delete(uri: Uri): Boolean
 }
+
+class OpenedDocument(val name: String, val sizeBytes: Long?, val stream: InputStream)
 
 class ContentResolverDocuments(private val resolver: ContentResolver) : DocumentStore {
     override suspend fun write(uri: Uri, text: String) = withContext(Dispatchers.IO) {
@@ -43,6 +58,34 @@ class ContentResolverDocuments(private val resolver: ContentResolver) : Document
             buffer.toByteArray()
         }
         ChosenDocument(displayName(uri) ?: uri.lastPathSegment ?: "backup", bytes)
+    }
+
+    override suspend fun openOutput(uri: Uri): OutputStream = withContext(Dispatchers.IO) {
+        resolver.openOutputStream(uri, "wt") ?: throw IOException("The chosen location could not be opened for writing.")
+    }
+
+    override suspend fun openInput(uri: Uri): OpenedDocument = withContext(Dispatchers.IO) {
+        var name: String? = null
+        var size: Long? = null
+        runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    name = cursor.getString(0)
+                    size = if (cursor.isNull(1)) null else cursor.getLong(1)
+                }
+            }
+        }
+        if (uri.scheme == "file") size = size ?: uri.path?.let { File(it).takeIf(File::isFile)?.length() }
+        val stream = resolver.openInputStream(uri) ?: throw IOException("The chosen file could not be opened.")
+        OpenedDocument(name ?: uri.lastPathSegment ?: "file", size, stream)
+    }
+
+    override suspend fun delete(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        if (uri.scheme == "file") {
+            uri.path?.let { File(it).delete() } == true
+        } else {
+            runCatching { DocumentsContract.deleteDocument(resolver, uri) }.getOrDefault(false)
+        }
     }
 
     private fun displayName(uri: Uri): String? = runCatching {

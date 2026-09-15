@@ -66,6 +66,7 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
     val controlling = state.control?.granted == true
     var dragAt by remember { mutableStateOf<NormalizedPoint?>(null) }
     var typed by remember { mutableStateOf("") }
+    var showFiles by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row {
@@ -80,6 +81,7 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
                     )
                 }
             }
+            TextButton(onClick = { showFiles = !showFiles }) { Text(if (showFiles) "Hide files" else "Files") }
             if (controlling) {
                 TextButton(onClick = controller::releaseControl) { Text("Release") }
             } else {
@@ -102,7 +104,7 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
         if (!controlling && state.control != null) Text(controlWords(state.control?.reason), style = MaterialTheme.typography.bodySmall)
         state.inputRefusal?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
 
-        Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
+        Box(modifier = Modifier.weight(if (showFiles) 0.35f else 1f).fillMaxWidth().background(Color.Black)) {
             AndroidView(
                 factory = { context -> SurfaceViewRenderer(context).also(controller::attachRenderer) },
                 onRelease = controller::detachRenderer,
@@ -151,7 +153,9 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
             )
         }
 
-        if (controlling) {
+        if (showFiles) {
+            FilesPanel(controller, streaming = state.phase == StreamPhase.STREAMING, modifier = Modifier.weight(0.65f).fillMaxWidth())
+        } else if (controlling) {
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(
                     value = typed,

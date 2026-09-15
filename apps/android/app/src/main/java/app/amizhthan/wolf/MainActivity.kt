@@ -36,7 +36,14 @@ class MainActivity : ComponentActivity() {
             WolfApp(
                 viewModel = viewModel {
                     AppViewModel(graph.session, graph.api) { pcId ->
-                        RemoteDesktopController(applicationContext, pcId, graph.api, graph.session, graph.http)
+                        RemoteDesktopController(
+                            applicationContext,
+                            pcId,
+                            graph.api,
+                            graph.session,
+                            graph.http,
+                            ContentResolverDocuments(applicationContext.contentResolver),
+                        )
                     }
                 },
                 alerts = viewModel { AlertsAutomationsViewModel(graph.session, graph.api) },

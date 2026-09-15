@@ -1,21 +1,34 @@
 package app.amizhthan.wolf.remote
 
 import android.content.Context
+import android.net.Uri
 import app.amizhthan.wolf.ApiEndpoint
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.session.PcSessionController
 import app.amizhthan.wolf.session.SessionManager
+import app.amizhthan.wolf.storage.DocumentStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 data class RemoteDesktopUiState(
     val phase: StreamPhase = StreamPhase.IDLE,
@@ -32,14 +45,28 @@ data class RemoteDesktopUiState(
     val profile: StreamProfile = StreamProfile.MOBILE_DATA,
 )
 
+data class TransferProgress(val name: String, val downloading: Boolean, val done: Long, val total: Long)
+
+/** The file manager as the screen shows it. Held in memory only, and only while the stream runs. */
+data class FilesUiState(
+    val control: InputControl? = null,
+    val folder: String? = null,
+    val entries: List<FileEntry>? = null,
+    val truncated: Boolean = false,
+    val busy: Boolean = false,
+    val notice: String? = null,
+    val progress: TransferProgress? = null,
+)
+
 /**
- * Remote desktop on the phone: its own PC session, the stream, and the picture.
+ * Remote desktop on the phone: its own PC session, the stream, the picture, and the PC's files.
  *
- * The session asks for `screen` and `input` and nothing more — separate from the session commands use,
- * because watching a machine and restarting it are different things to have been granted.
+ * The session asks for `screen`, `input` and `file-transfer` — separate from the session commands use,
+ * because watching a machine and restarting it are different things to have been granted. Control and
+ * files are each a lease on top, asked for when wanted and decided by the cloud.
  *
  * Everything the stream does happens on one thread, which the socket, the peer connection and the
- * renewal timer all post to.
+ * renewal timer all post to. File transfers run on their own coroutines and reach the stream through it.
  */
 class RemoteDesktopController(
     context: Context,
@@ -47,14 +74,24 @@ class RemoteDesktopController(
     private val api: WolfApi,
     session: SessionManager,
     private val http: OkHttpClient,
+    private val documents: DocumentStore,
 ) {
     private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadScheduledExecutor { runnable -> Thread(runnable, "wolf-remote-desktop") }
     private val post: (() -> Unit) -> Unit = { task -> if (!executor.isShutdown) executor.execute(task) }
-    private val pcSession = PcSessionController(pcId, api, session, capabilities = listOf("screen", "input"))
+    private val pcSession = PcSessionController(pcId, api, session, capabilities = listOf("screen", "input", "file-transfer"))
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _state = MutableStateFlow(RemoteDesktopUiState())
     val state: StateFlow<RemoteDesktopUiState> = _state.asStateFlow()
+
+    private val _files = MutableStateFlow(FilesUiState())
+    val files: StateFlow<FilesUiState> = _files.asStateFlow()
+
+    @Volatile
+    private var transferStopped = false
+
+    private val transfer = FileTransfer { message -> askOnStream(message) }
 
     val rtc: WebRtc by lazy { WebRtc.get(appContext) }
 
@@ -103,6 +140,108 @@ class RemoteDesktopController(
 
     fun send(events: List<JsonObject>) = post { stream?.sendInput(events) }
 
+    /* Files. Names and bytes go between this phone and the PC on the data channel, and nowhere else. */
+
+    fun requestFiles() = post { stream?.requestFiles() }
+
+    fun releaseFiles() {
+        transferStopped = true
+        post { stream?.releaseFiles() }
+        _files.update { FilesUiState(control = it.control?.copy(granted = false, reason = "released")) }
+    }
+
+    fun browse(path: String?) {
+        _files.update { it.copy(busy = true, notice = null) }
+        scope.launch {
+            try {
+                val listing = transfer.list(path)
+                _files.update { it.copy(folder = listing.path, entries = listing.entries, truncated = listing.truncated) }
+            } catch (error: FileRefusalException) {
+                // The PC's own words: WOLF refused it, Windows refused it, or nothing is there.
+                _files.update { it.copy(notice = words(error.refusal)) }
+            } finally {
+                _files.update { it.copy(busy = false) }
+            }
+        }
+    }
+
+    fun up() {
+        val folder = _files.value.folder ?: return
+        browse(FileMessages.parentOf(folder))
+    }
+
+    fun stopTransfer() {
+        transferStopped = true
+    }
+
+    /**
+     * Fetch a file into a document the owner chose. If it does not arrive whole, the document is removed, so a
+     * partial copy never sits on the phone looking like the real file.
+     */
+    fun download(entry: FileEntry, destination: Uri) {
+        val path = FileMessages.pathOf(_files.value.folder, entry)
+        transferStopped = false
+        _files.update { it.copy(notice = null, progress = TransferProgress(entry.name, true, 0, entry.sizeBytes ?: 0)) }
+        scope.launch {
+            var complete = false
+            try {
+                documents.openOutput(destination).use { sink ->
+                    transfer.download(path, sink, cancelled = { transferStopped }) { done, total ->
+                        _files.update { it.copy(progress = TransferProgress(entry.name, true, done, total)) }
+                    }
+                }
+                complete = true
+                _files.update { it.copy(notice = "${entry.name} was saved to this phone.") }
+            } catch (error: FileRefusalException) {
+                _files.update { it.copy(notice = words(error.refusal)) }
+            } catch (_: TransferCancelledException) {
+                _files.update { it.copy(notice = "Stopped. The partial copy on this phone was removed.") }
+            } catch (error: IOException) {
+                _files.update { it.copy(notice = "That file could not be saved on this phone: ${error.message ?: "the storage provider refused"}.") }
+            } finally {
+                if (!complete) withContext(NonCancellable) { documents.delete(destination) }
+                _files.update { it.copy(progress = null) }
+            }
+        }
+    }
+
+    /** Send a file the owner chose into the folder shown. Never replaces a file already there. */
+    fun upload(source: Uri) {
+        val folder = _files.value.folder
+        if (folder == null) {
+            _files.update { it.copy(notice = "Open a folder on the PC first.") }
+            return
+        }
+        transferStopped = false
+        _files.update { it.copy(notice = null) }
+        scope.launch {
+            var name = "That file"
+            try {
+                val document = documents.openInput(source)
+                name = document.name
+                document.stream.use { input ->
+                    val size = document.sizeBytes ?: throw FileRefusalException(
+                        FileRefusal("unsupported", "This phone could not tell how large that file is, and the PC needs to know before it accepts one.", false),
+                    )
+                    _files.update { it.copy(progress = TransferProgress(document.name, false, 0, size)) }
+                    transfer.upload(FileMessages.childPath(folder, document.name), size, input, cancelled = { transferStopped }) { done, total ->
+                        _files.update { it.copy(progress = TransferProgress(document.name, false, done, total)) }
+                    }
+                }
+                _files.update { it.copy(notice = "$name was written to the PC.", progress = null) }
+                browse(folder)
+            } catch (error: FileRefusalException) {
+                _files.update { it.copy(notice = words(error.refusal)) }
+            } catch (_: TransferCancelledException) {
+                _files.update { it.copy(notice = "Stopped. The PC removed the part it had received.") }
+            } catch (error: IOException) {
+                _files.update { it.copy(notice = "$name could not be read on this phone: ${error.message ?: "the storage provider refused"}.") }
+            } finally {
+                _files.update { it.copy(progress = null) }
+            }
+        }
+    }
+
     /** Bind the picture. Called when the view exists; the track may arrive before or after. */
     fun attachRenderer(view: SurfaceViewRenderer) {
         view.init(rtc.egl.eglBaseContext, object : RendererCommon.RendererEvents {
@@ -129,8 +268,10 @@ class RemoteDesktopController(
         view.release()
     }
 
-    /** Stop the stream and end its session on the server. */
+    /** Stop the stream and end its session on the server. Transfers in flight end with it. */
     suspend fun stop() {
+        transferStopped = true
+        scope.cancel()
         post {
             renderer?.let { track?.removeSink(it) }
             track = null
@@ -139,7 +280,24 @@ class RemoteDesktopController(
         }
         pcSession.close()
         executor.shutdown()
+        _files.value = FilesUiState()
     }
+
+    private suspend fun askOnStream(message: JsonObject): JsonObject = suspendCancellableCoroutine { continuation ->
+        post {
+            val current = stream
+            if (current == null) {
+                continuation.resumeWithException(FileRefusalException(FileRefusal("failed", "The stream to this PC is not running.", false)))
+            } else {
+                current.askFiles(message) { result ->
+                    result.fold({ continuation.resume(it) }, { continuation.resumeWithException(it) })
+                }
+            }
+        }
+    }
+
+    private fun words(refusal: FileRefusal): String =
+        if (refusal.limitation) "${refusal.detail} Windows refused this, not WOLF." else refusal.detail
 
     private fun attachTrack(videoTrack: VideoTrack) {
         track = videoTrack
@@ -154,6 +312,16 @@ class RemoteDesktopController(
         override fun onRemoteState(state: RemoteState) = _state.update { it.copy(remoteState = state) }
         override fun onInputRefused(reason: String, limitation: Boolean) = _state.update {
             it.copy(inputRefusal = if (limitation) "$reason (a Windows limitation)" else reason)
+        }
+        override fun onFileControl(control: InputControl) {
+            if (control.granted) {
+                _files.update { it.copy(control = control) }
+                if (_files.value.entries == null && !_files.value.busy) browse(null)
+            } else {
+                // Losing the lease ends what was shown: the listing belonged to a permission this session no longer has.
+                transferStopped = true
+                _files.update { FilesUiState(control = control) }
+            }
         }
     }
 }

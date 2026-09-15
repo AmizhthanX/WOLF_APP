@@ -36,6 +36,9 @@ interface PeerEvents {
     fun onLocalCandidate(candidate: String, sdpMid: String?, sdpMLineIndex: Int?)
     fun onLocalCandidatesComplete()
     fun onControlMessage(text: String)
+
+    /** The data channel the PC opened is ready to carry messages. It can open after the connection itself. */
+    fun onControlChannelOpen()
     fun onConnected()
     fun onDisconnected()
     fun onFailed()
@@ -71,6 +74,9 @@ interface StreamListener {
     fun onInputControl(control: InputControl)
     fun onRemoteState(state: RemoteState)
     fun onInputRefused(reason: String, limitation: Boolean)
+
+    /** Who holds this PC's files, as the cloud last decided. */
+    fun onFileControl(control: InputControl) {}
 }
 
 /**
@@ -116,8 +122,92 @@ class StreamSession(
     private var renewal: Cancellable? = null
     private var sequence = 0L
     private var closed = false
+    private var hasFiles = false
+    private var fileRenewal: Cancellable? = null
+    private var channelOpen = false
+
+    /** File requests asked for before the data channel opened, by request id, sent once it does. */
+    private val unsentFiles = ArrayDeque<Pair<String, String>>()
+
+    private class PendingFile(val reply: (Result<JsonObject>) -> Unit, val timeout: Cancellable)
+
+    /**
+     * File requests waiting for their answer, by request id. Correlated by id rather than by order, because
+     * a browse and a transfer chunk can be in flight together.
+     */
+    private val pendingFiles = LinkedHashMap<String, PendingFile>()
 
     val holdsControl: Boolean get() = hasControl
+
+    val holdsFiles: Boolean get() = hasFiles
+
+    /**
+     * Ask to be allowed at this PC's files: its own lease, asked for separately, because watching a screen is
+     * not being handed the disks behind it. Renewed while held, like control.
+     */
+    fun requestFiles() {
+        if (closed) return
+        signal(buildJsonObject { put("type", "file.request") })
+        if (fileRenewal == null) {
+            fileRenewal = scheduler.every(RENEW_INTERVAL_MS) {
+                if (hasFiles && !closed) signal(buildJsonObject { put("type", "file.request") })
+            }
+        }
+    }
+
+    fun releaseFiles() {
+        stopRenewingFiles()
+        hasFiles = false
+        signal(buildJsonObject { put("type", "file.release") })
+    }
+
+    /**
+     * Send one file request on the data channel and hand [reply] the answer with the matching id.
+     *
+     * Always answered exactly once: the PC's answer, the PC's refusal, a timeout, or the stream ending. A
+     * request left unanswered would be a file manager showing a spinner until the app is closed. Nothing is
+     * sent without the file lease.
+     */
+    fun askFiles(message: JsonObject, reply: (Result<JsonObject>) -> Unit) {
+        if (closed) return reply(Result.failure(fileFailure("failed", "The connection to this PC ended.")))
+        if (!hasFiles) return reply(Result.failure(fileFailure("not-permitted", "This session does not hold this PC's files.")))
+        val link = peer ?: return reply(Result.failure(fileFailure("failed", "The connection to this PC is not ready.")))
+
+        val requestId = Ulid.next()
+        lateinit var timeout: Cancellable
+        timeout = scheduler.every(FILE_REPLY_TIMEOUT_MS) {
+            timeout.cancel()
+            pendingFiles.remove(requestId)?.reply?.invoke(Result.failure(fileFailure("failed", "The PC did not answer in time.")))
+        }
+        pendingFiles[requestId] = PendingFile(reply, timeout)
+        val text = JsonObject(message + ("requestId" to JsonPrimitive(requestId))).toString()
+
+        // The lease can be granted before the PC's data channel has finished opening. Found by the first live
+        // run: the stream was connected, access granted, and the channel still opening. The request waits for
+        // the channel, bounded by its timeout, rather than failing as though the PC had refused it.
+        if (!channelOpen) {
+            unsentFiles.addLast(requestId to text)
+            return
+        }
+        sendFile(link, requestId, text)
+    }
+
+    override fun onControlChannelOpen() {
+        if (closed) return
+        channelOpen = true
+        val link = peer ?: return
+        while (unsentFiles.isNotEmpty()) {
+            val (requestId, text) = unsentFiles.removeFirst()
+            // One that timed out while waiting has already been answered.
+            if (pendingFiles.containsKey(requestId)) sendFile(link, requestId, text)
+        }
+    }
+
+    private fun sendFile(link: PeerLink, requestId: String, text: String) {
+        if (!link.sendControl(text)) {
+            settleFile(requestId, Result.failure(fileFailure("failed", "The connection to this PC is not ready.")))
+        }
+    }
 
     fun onSocketOpen() {
         if (closed) return
@@ -277,6 +367,12 @@ class StreamSession(
                 listener.onInputControl(InputControl(hasControl, payload.str("reason"), payload.str("expiresAt")))
             }
 
+            "file.control" -> {
+                hasFiles = payload["granted"].bool() == true
+                if (!hasFiles) stopRenewingFiles()
+                listener.onFileControl(InputControl(hasFiles, payload.str("reason"), payload.str("expiresAt")))
+            }
+
             "stream.state" -> listener.onRemoteState(
                 RemoteState(
                     state = payload.str("state") ?: "unknown",
@@ -308,6 +404,8 @@ class StreamSession(
 
     private fun answer(sdp: String) {
         setPhase(StreamPhase.CONNECTING, null)
+        // A new peer brings a new data channel, which is not open until it says so.
+        channelOpen = false
         peer?.close()
 
         val link = peers.create(iceServers, this)
@@ -364,11 +462,24 @@ class StreamSession(
     override fun onControlMessage(text: String) {
         if (closed) return
         val message = runCatching { WolfJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-        if (message.str("kind") == "input.response") {
-            val response = message.obj("response") ?: return
-            listener.onInputRefused(response.str("reason") ?: "The PC refused that input.", response["limitation"].bool() == true)
+        when (message.str("kind")) {
+            "input.response" -> {
+                val response = message.obj("response") ?: return
+                listener.onInputRefused(response.str("reason") ?: "The PC refused that input.", response["limitation"].bool() == true)
+            }
+            // Handed to whoever asked and nowhere else; nothing here keeps a listing or a chunk.
+            "file.listing", "file.info", "file.chunk", "file.written" -> settleFile(message.str("requestId"), Result.success(message))
+            "file.refused" -> settleFile(message.str("requestId"), Result.failure(FileRefusalException(FileMessages.refusal(message))))
         }
     }
+
+    private fun settleFile(requestId: String?, result: Result<JsonObject>) {
+        val pending = pendingFiles.remove(requestId ?: return) ?: return
+        pending.timeout.cancel()
+        pending.reply(result)
+    }
+
+    private fun fileFailure(reason: String, detail: String) = FileRefusalException(FileRefusal(reason, detail, false))
 
     override fun onConnected() {
         if (!closed) setPhase(StreamPhase.STREAMING, null)
@@ -416,14 +527,31 @@ class StreamSession(
     private fun teardown() {
         closed = true
         stopRenewing()
+        stopRenewingFiles()
         hasControl = false
+        hasFiles = false
+        channelOpen = false
+        unsentFiles.clear()
         peer?.close()
         peer = null
+
+        // Nothing is coming back for these; left waiting they would never be answered.
+        val waiting = pendingFiles.values.toList()
+        pendingFiles.clear()
+        waiting.forEach {
+            it.timeout.cancel()
+            it.reply(Result.failure(fileFailure("failed", "The connection to this PC ended.")))
+        }
     }
 
     private fun stopRenewing() {
         renewal?.cancel()
         renewal = null
+    }
+
+    private fun stopRenewingFiles() {
+        fileRenewal?.cancel()
+        fileRenewal = null
     }
 
     private fun setPhase(next: StreamPhase, detail: String?) {
@@ -438,6 +566,9 @@ class StreamSession(
 
         /** The web client's renewal period; the lease the cloud grants outlasts it. */
         const val RENEW_INTERVAL_MS = 45_000L
+
+        /** A file answer is one chunk read or written; far longer than that means the PC is not answering. */
+        const val FILE_REPLY_TIMEOUT_MS = 30_000L
     }
 }
 
