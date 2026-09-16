@@ -174,12 +174,12 @@ Proven against the real thing: the live test below streamed the development PC t
 2560×1440 (252 frames decoded in about 35 seconds on the emulator), took control, and
 moved the PC's pointer to exactly (0.25, 0.25) of the screen, read back on the PC.
 
-**A still desktop can leave the first picture missing.** Found by the extras live test, and on the PC's side:
-on a desktop where nothing changes, the session host sends no frame for many seconds (about 18 in those runs),
-and a key frame it is asked for is only encoded with the next captured frame. On the emulator's lossy network a
-2560×1440 key frame lost about a fifth of its packets, the phone asked for another 24 to 39 times, and none
-came until the screen changed. The mobile-data profile's smaller key frame usually arrives whole. This is a
-session host fix (re-encode the last picture on request), tracked separately; it affects the web client too.
+**A still desktop used to leave the first picture missing.** Found by the extras live test, on the PC's side:
+the session host sent no frame while nothing on screen changed, and a key frame it was asked for was only
+encoded with the next captured frame. On the emulator's lossy network a 2560×1440 key frame lost about a fifth
+of its packets, the phone asked for another 24 to 39 times, and none came until the screen changed. The
+session host now encodes the picture it already holds again when nothing new was captured
+([remote desktop](remote-desktop.md#recovering-from-loss)), which fixes it for every client.
 
 **Not yet:** profile changes mid-stream from the phone, and a hardware keyboard's shortcuts. These exist in
 the protocol and the web client.
@@ -485,7 +485,7 @@ key custody: [deployment](../deployment/README.md#android-app).
   byte for byte; a stopped upload leaving neither a file nor a part file. WOLF cannot delete, so the runner
   removes the one file the test writes.
 - **Live remote desktop extras** (`LiveRemoteDesktopExtrasTest`), against a local cloud and the running agent,
-  holding no `input` at all, on the mobile-data profile (see the still-desktop finding above): the displays listed
+  holding no `input` at all, on the full 2560×1440 profile again since the still-desktop fix: the displays listed
   by the real command; a stream asking for sound, negotiated as Opus, with audio packets arriving (about 270 in
   five seconds); on the development PC's single display, asking for the display shown changes nothing and the
   stream keeps streaming — a real switch needs a second monitor and is not proven live; and the clipboard both

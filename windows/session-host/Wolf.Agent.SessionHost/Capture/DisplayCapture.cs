@@ -302,7 +302,7 @@ public sealed class CaptureFrameLease : IDisposable
     private readonly IDisposable?[] _owned;
     private bool _disposed;
 
-    internal CaptureFrameLease(CapturedFrame frame, params IDisposable?[] owned)
+    public CaptureFrameLease(CapturedFrame frame, params IDisposable?[] owned)
     {
         Frame = frame;
         _owned = owned;

@@ -126,6 +126,9 @@ public sealed class H264Encoder : IDisposable
 
     public long FramesEncoded => Interlocked.Read(ref _framesOut);
 
+    /// <summary>Pictures the encoder accepted. Ahead of <see cref="FramesEncoded"/> while output is still inside it.</summary>
+    public long FramesIn => Interlocked.Read(ref _framesIn);
+
     public long FramesDropped => Interlocked.Read(ref _framesDropped);
 
     /// <summary>

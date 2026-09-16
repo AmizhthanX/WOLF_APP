@@ -91,8 +91,35 @@ public sealed class CapturePipeline : IDisposable
     private readonly int _maxHeightPixels;
     private long _framesCaptured;
     private long _framesEncoded;
+    private long _framesRepeated;
     private long _bytesEncoded;
     private double _encodeMsTotal;
+
+    /// <summary>
+    /// Whether the converter's output holds a picture of the display being captured.
+    ///
+    /// The converter keeps the last frame it converted in its output texture, which is what lets a
+    /// still desktop be encoded again. False until the first frame after start, a resize or a
+    /// display switch: a fresh converter's texture is blank, and a blank picture must never go out
+    /// as though it were the screen.
+    /// </summary>
+    private bool _hasPicture;
+
+    /// <summary>Set by <see cref="RequestKeyFrame"/>; cleared by the next picture encoded.</summary>
+    private int _refreshWanted;
+
+    /// <summary>The encoder's input count once the picture that has to come out was submitted.</summary>
+    private long _pictureSubmittedAt;
+
+    private int _repeatsForPicture;
+
+    /// <summary>
+    /// The most times one picture is submitted again while waiting for it to come out.
+    ///
+    /// A hardware encoder holds a frame or two; eight covers that with room, and bounds what a
+    /// still desktop can cost if an encoder never lets go.
+    /// </summary>
+    private const int MaxRepeatsPerPicture = 8;
 
     /// <summary>
     /// How long a window the reported rates cover.
@@ -244,6 +271,49 @@ public sealed class CapturePipeline : IDisposable
             preferDuplication);
         if (capture is null) return null;
 
+        return Build(
+            device,
+            capture,
+            monitorHandle,
+            targetFrameRate,
+            bitrateBitsPerSecond,
+            onFrame,
+            loggers,
+            maxWidthPixels,
+            maxHeightPixels,
+            preferDuplication,
+            h264Profile);
+    }
+
+    /// <summary>
+    /// Build the pipeline around a capture that has already started, taking ownership of it.
+    ///
+    /// The seam the pipeline's tests use to stand in for a screen that stops changing — which a
+    /// real desktop cannot be made to do on demand. A pipeline built this way cannot switch display.
+    /// </summary>
+    public static CapturePipeline? TryCreate(
+        CaptureDevice device,
+        IDisplayCapture capture,
+        int targetFrameRate,
+        int bitrateBitsPerSecond,
+        Action<EncodedVideoFrame> onFrame,
+        ILoggerFactory loggers,
+        uint h264Profile = MfGuids.H264ProfileHigh) =>
+        Build(device, capture, IntPtr.Zero, targetFrameRate, bitrateBitsPerSecond, onFrame, loggers, 0, 0, false, h264Profile);
+
+    private static CapturePipeline? Build(
+        CaptureDevice device,
+        IDisplayCapture capture,
+        IntPtr monitorHandle,
+        int targetFrameRate,
+        int bitrateBitsPerSecond,
+        Action<EncodedVideoFrame> onFrame,
+        ILoggerFactory loggers,
+        int maxWidthPixels,
+        int maxHeightPixels,
+        bool preferDuplication,
+        uint h264Profile)
+    {
         // A profile that caps the resolution is honoured from the start rather than being
         // reported as a setting WOLF ignores. Zero means no cap.
         (int Width, int Height) encoded = maxWidthPixels > 0 && maxHeightPixels > 0
@@ -465,7 +535,9 @@ public sealed class CapturePipeline : IDisposable
             if (lease is null)
             {
                 // Nothing changed on screen since the last tick. That is normal on a static
-                // desktop and is not a dropped frame.
+                // desktop and is not a dropped frame — but a still screen must not strand the
+                // picture it is showing. See RepeatLastPicture.
+                if (RepeatLastPicture()) EncodeAndDeliver(frames, ref presentation, interval);
                 continue;
             }
 
@@ -476,36 +548,83 @@ public sealed class CapturePipeline : IDisposable
                 continue;
             }
 
-            long encodeStart = Stopwatch.GetTimestamp();
-            frames.Clear();
-            _encoder.Encode(_converter.Output, presentation, frames);
-            double encodeMs = (Stopwatch.GetTimestamp() - encodeStart) * 1000.0 / Stopwatch.Frequency;
+            // A real picture answers any key frame request made since the last one: the encoder
+            // was already told to make its next picture a key frame.
+            _hasPicture = true;
+            Interlocked.Exchange(ref _refreshWanted, 0);
+            _repeatsForPicture = 0;
+            EncodeAndDeliver(frames, ref presentation, interval);
+            _pictureSubmittedAt = _encoder.FramesIn;
+        }
+    }
 
-            presentation += interval;
+    /// <summary>Encode what the converter holds, and hand every frame that comes out to the consumer.</summary>
+    private void EncodeAndDeliver(List<EncodedVideoFrame> frames, ref TimeSpan presentation, TimeSpan interval)
+    {
+        long encodeStart = Stopwatch.GetTimestamp();
+        frames.Clear();
+        _encoder.Encode(_converter.Output, presentation, frames);
+        double encodeMs = (Stopwatch.GetTimestamp() - encodeStart) * 1000.0 / Stopwatch.Frequency;
 
-            foreach (EncodedVideoFrame frame in frames)
+        presentation += interval;
+
+        foreach (EncodedVideoFrame frame in frames)
+        {
+            Interlocked.Increment(ref _framesEncoded);
+            Interlocked.Add(ref _bytesEncoded, frame.Data.Length);
+
+            try
             {
-                Interlocked.Increment(ref _framesEncoded);
-                Interlocked.Add(ref _bytesEncoded, frame.Data.Length);
-
-                try
-                {
-                    _onFrame(frame);
-                }
-                catch (Exception ex)
-                {
-                    // A consumer that throws must not take the capture thread down with it.
-                    _logger.LogError(ex, "The frame consumer threw; the stream continues.");
-                }
+                _onFrame(frame);
             }
-
-            lock (_running)
+            catch (Exception ex)
             {
-                _encodeMsTotal += encodeMs;
-                _windowEncodeMs += encodeMs;
-                _windowEncodeCalls++;
+                // A consumer that throws must not take the capture thread down with it.
+                _logger.LogError(ex, "The frame consumer threw; the stream continues.");
             }
         }
+
+        lock (_running)
+        {
+            _encodeMsTotal += encodeMs;
+            _windowEncodeMs += encodeMs;
+            _windowEncodeCalls++;
+        }
+    }
+
+    /// <summary>
+    /// Whether to encode the last picture again on a tick where nothing new was captured.
+    ///
+    /// Found by the Android client, on a still desktop. Graphics Capture delivers a frame only
+    /// when something on screen changes, and a hardware encoder hands its output back a frame or
+    /// two after the input. So a desktop that changed once and then stood still left its one
+    /// picture inside the encoder, and a viewer saw nothing for as long as the screen stayed still.
+    /// A key frame asked for then had nothing to apply to either: the request marks the next
+    /// picture, and no next picture was coming.
+    ///
+    /// So the picture already converted is submitted again, in two cases only: until the output
+    /// for the last real picture has come out, and after a key frame is asked for, until that has
+    /// come out. Both are bounded, so a desktop that stays still costs nothing once its picture is
+    /// out.
+    /// </summary>
+    private bool RepeatLastPicture()
+    {
+        if (!_hasPicture) return false;
+
+        if (Interlocked.Exchange(ref _refreshWanted, 0) == 1)
+        {
+            // The request already told the encoder to make its next picture a key frame; this is it.
+            _pictureSubmittedAt = _encoder.FramesIn + 1;
+            _repeatsForPicture = 0;
+        }
+        else if (_encoder.FramesEncoded >= _pictureSubmittedAt || _repeatsForPicture >= MaxRepeatsPerPicture)
+        {
+            return false;
+        }
+
+        _repeatsForPicture++;
+        Interlocked.Increment(ref _framesRepeated);
+        return true;
     }
 
     /// <summary>
@@ -555,7 +674,17 @@ public sealed class CapturePipeline : IDisposable
     /// False means the encoder will not produce one on demand and the client has to wait
     /// for the next scheduled key frame.
     /// </summary>
-    public bool RequestKeyFrame() => _encoder.RequestKeyFrame();
+    public bool RequestKeyFrame()
+    {
+        bool accepted = _encoder.RequestKeyFrame();
+
+        // Carried on the last picture if nothing on screen changes before the next tick.
+        if (accepted) Interlocked.Exchange(ref _refreshWanted, 1);
+        return accepted;
+    }
+
+    /// <summary>Pictures submitted again because nothing new was captured. See <see cref="RepeatLastPicture"/>.</summary>
+    public long FramesRepeated => Interlocked.Read(ref _framesRepeated);
 
     /// <summary>Whether this encoder answers key frame requests at all.</summary>
     public bool SupportsForcedKeyFrames => _encoder.SupportsForcedKeyFrames;
@@ -729,6 +858,12 @@ public sealed class CapturePipeline : IDisposable
 
         _converter = converter;
         _encoder = encoder;
+
+        // The new converter's output is blank until the next capture fills it, and the new encoder
+        // counts from zero.
+        _hasPicture = false;
+        _pictureSubmittedAt = 0;
+        _repeatsForPicture = 0;
 
         oldEncoder.Dispose();
         oldConverter.Dispose();

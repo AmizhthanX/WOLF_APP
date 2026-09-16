@@ -417,6 +417,9 @@ itself to the requested frame rate and does not collect the frames in between. M
 2560×1440: 30 fps sustained, 0 dropped, **0.47 ms per frame of encode time** against a
 33 ms budget.
 
+A tick on which nothing on screen changed captures nothing and, once the last picture is out of
+the encoder, encodes nothing. The one exception is described under *Recovering from loss*.
+
 ## Codec negotiation
 
 The PRD is explicit that no codec may be assumed. The agent enumerates Media Foundation
@@ -545,6 +548,23 @@ Requests are answered at most twice a second. A client losing packets steadily s
 indications steadily, and a key frame is the largest thing the encoder produces — answering
 every one would push a burst of them into a link that is already dropping packets, which is
 the cure making the disease worse.
+
+**A still desktop is answered too.** Graphics Capture delivers a frame only when something on
+screen changes, and a hardware encoder hands its output back a frame or two after the input.
+So a desktop that changed once and then stood still left its one picture inside the encoder:
+the viewer saw nothing, and a key frame asked for had nothing to apply to — the request marks
+the next picture, and no next picture was coming. Found by the Android client on a lossy
+emulator link, where a 2560×1440 key frame lost about a fifth of its packets and 24 to 39
+requests for another went unanswered; it affected every client.
+
+The pipeline now submits the picture the converter already holds again on a tick where nothing
+new was captured, in two cases only: until the output for the last real picture has come out,
+and after a key frame request, until that has come out. At most eight repeats per picture, and
+never after a resize or a display switch, whose fresh converter holds a blank texture. A desktop
+that stays still costs nothing once its picture is out. `StillDesktopTests` drives the real
+encoder with a capture that hands over one picture and then nothing: on the RTX 3060 the picture
+came out only after one repeat, the pipeline then stayed silent, and a requested key frame
+arrived without a second capture. With the repeat disabled, nothing came out at all.
 
 ### Route preference
 

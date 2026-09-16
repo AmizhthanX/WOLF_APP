@@ -179,9 +179,10 @@ class LiveRemoteDesktopExtrasTest {
                 created = StreamSession(
                     sessionToken = token,
                     iceServers = ice,
-                    // The small picture. The emulator's network loses about a fifth of a 2560x1440 key frame's packets,
-                    // and a still desktop sends no other picture to replace it.
-                    profile = StreamProfile.MOBILE_DATA.json,
+                    // The full picture. On the emulator's lossy link a 2560x1440 key frame loses about a fifth of its
+                    // packets; before the session host re-encoded a still desktop's picture on request, a lost one was
+                    // never replaced and this stream showed nothing.
+                    profile = StreamProfile.WIFI.json,
                     clientCodecs = DecoderCodecs.fromDecoderNames(rtc.decoderCodecNames),
                     socket = socket,
                     peers = recordingPeers,
