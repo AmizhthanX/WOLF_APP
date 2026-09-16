@@ -136,7 +136,8 @@ It serves `http://127.0.0.1:3110/`, which runs the dashboard's own `lib/device-k
 concurrent key creations under Web Locks yielding one key, the key surviving a reload, its
 private half refusing export, its web refresh proof verified by the API's verifier on the
 harness side, and a cleared database noticed. Results appear on the page, in `window.__wolf`,
-and in the harness's console.
+and in the harness's console. Add `?run=<label>` to the URL to name a run in the console when
+checking several browsers.
 
 ## Enrolling a Windows PC
 

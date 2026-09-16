@@ -828,9 +828,10 @@ and storage intelligence, automations, and configuration backup.
   key, a wrong clock, a pre-key sign-in; the web variant through the API's own e2e suite; every broker route checking
   CSRF first; `next build`. In a real Chromium, the device-key harness page: one key from five concurrent creations
   under Web Locks, the key kept across a reload, export refused, the signature accepted by the API's verifier, and the
-  loss noticed after clearing storage
-- **Not driven:** Firefox and Safari, a real private window, Safari's seven-day storage eviction, and the full
-  dashboard signed in to a running API in a browser
+  loss noticed after clearing storage. The same page, all seven steps, in Firefox 155 in a normal window and one opened
+  with `-private-window`, and in LibreWolf 154 (Firefox with its privacy defaults), each on a fresh profile
+- **Not driven:** Safari or any WebKit (not available on the Windows machine this was built on), Safari's seven-day
+  storage eviction, and the full dashboard signed in to a running API in a browser
 
 ## Android
 

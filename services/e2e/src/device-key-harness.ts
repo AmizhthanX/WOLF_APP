@@ -70,8 +70,13 @@ const server = createServer((request, response) => {
       try {
         const report = await readJson(request);
         const steps = (report['steps'] as { name: string; ok: boolean; detail: unknown }[] | undefined) ?? [];
+        const run = typeof report['run'] === 'string' ? ` [${report['run']}]` : '';
         for (const step of steps) console.log(`${step.ok ? 'ok    ' : 'FAILED'} ${step.name}${step.detail ? ` — ${String(step.detail)}` : ''}`);
-        console.log(report['passed'] ? `All ${steps.length} steps passed in ${String(report['userAgent'])}` : 'The device-key browser test FAILED');
+        console.log(
+          report['passed']
+            ? `All ${steps.length} steps passed${run} in ${String(report['userAgent'])}`
+            : `The device-key browser test FAILED${run} in ${String(report['userAgent'])}`,
+        );
         response.writeHead(204).end();
       } catch {
         response.writeHead(400).end();

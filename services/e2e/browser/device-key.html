@@ -143,7 +143,9 @@
         });
 
         const passed = steps.length === 7 && steps.every((s) => s.ok);
-        const report = { done: true, passed, steps, userAgent: navigator.userAgent };
+        // `?run=<label>` names the run in the harness log, so runs in several browsers can be told apart.
+        const run = new URLSearchParams(location.search).get('run');
+        const report = { done: true, passed, steps, userAgent: navigator.userAgent, run };
         window.__wolf = report;
         el('result').textContent = passed ? `PASSED — ${steps.length} steps` : 'FAILED';
         await fetch('/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(report) }).catch(() => undefined);
