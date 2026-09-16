@@ -12,6 +12,13 @@ import app.amizhthan.wolf.api.Commands
 import app.amizhthan.wolf.api.NotificationView
 import app.amizhthan.wolf.api.PcSummary
 import app.amizhthan.wolf.api.PcTools
+import app.amizhthan.wolf.api.CreatedWebhook
+import app.amizhthan.wolf.api.ShownSecret
+import app.amizhthan.wolf.api.WebhookList
+import app.amizhthan.wolf.api.WebhookPatch
+import app.amizhthan.wolf.api.WebhookSecret
+import app.amizhthan.wolf.api.WebhookView
+import app.amizhthan.wolf.api.Webhooks
 import app.amizhthan.wolf.api.ServiceListResult
 import app.amizhthan.wolf.api.ServiceRow
 import app.amizhthan.wolf.api.StartupListResult
@@ -75,6 +82,11 @@ data class AlertsState(
     val rules: List<AlertRuleView>? = null,
     val ruleLimit: Int = 0,
     val automations: List<AutomationView>? = null,
+    /** Null until asked; `configured` false when the server has no webhook key. */
+    val webhooks: WebhookList? = null,
+    /** A signing secret shown once, until dismissed. Memory only. */
+    val shownSecret: ShownSecret? = null,
+    val webhooksCreated: Int = 0,
     val automationLimit: Int = 0,
     val pcs: List<PcSummary> = emptyList(),
     /** The automation whose run history is open, and that history. */
@@ -332,13 +344,77 @@ class AlertsAutomationsViewModel(
 
     fun dismissProblem() = _state.update { it.copy(problem = null, notice = null) }
 
+    /* Webhooks. The URL is sent once and never shown again; a secret is shown once and kept only on screen. */
+
+    fun createWebhook(name: String, url: String, minSeverity: String) {
+        val input = try {
+            Webhooks.input(name, url, minSeverity)
+        } catch (error: IllegalArgumentException) {
+            _state.update { it.copy(problem = localProblem("webhook.invalid", error.message ?: "That webhook cannot be saved.")) }
+            return
+        }
+        var created: CreatedWebhook? = null
+        authorize(
+            "Add a webhook",
+            { bearer, _ -> created = api.createWebhook(input, bearer) },
+            "From now on WOLF will send your notifications to this address, whether or not anybody is watching.",
+        ) { state ->
+            val made = created
+            state.copy(
+                webhooksCreated = state.webhooksCreated + 1,
+                shownSecret = made?.let { ShownSecret(it.webhook.name, it.secret) },
+                notice = "Added \"${input.name}\".",
+            )
+        }
+    }
+
+    fun rotateWebhookSecret(webhook: WebhookView) {
+        var rotated: WebhookSecret? = null
+        authorize(
+            "Replace the signing secret for \"${webhook.name}\"",
+            { bearer, _ -> rotated = api.rotateWebhookSecret(webhook.id, bearer) },
+            "The old secret stops working at once. Update the receiver with the new one.",
+        ) { state -> state.copy(shownSecret = rotated?.let { ShownSecret(webhook.name, it.secret) }) }
+    }
+
+    fun setWebhookEnabled(webhook: WebhookView, enabled: Boolean) =
+        act(if (enabled) "Turned \"${webhook.name}\" on." else "Turned \"${webhook.name}\" off.") {
+            session.authorized { api.updateWebhook(webhook.id, WebhookPatch(enabled = enabled), it) }
+        }
+
+    fun setWebhookSeverity(webhook: WebhookView, minSeverity: String) = act {
+        session.authorized { api.updateWebhook(webhook.id, WebhookPatch(minSeverity = minSeverity), it) }
+    }
+
+    fun testWebhook(webhook: WebhookView) = launchBusy {
+        _state.update { it.copy(notice = null) }
+        val result = session.authorized { api.testWebhook(webhook.id, it) }
+        _state.update { it.copy(notice = "Test to ${webhook.host}: ${Webhooks.outcomeText(result.outcome, result.status)}.") }
+        load()
+    }
+
+    fun deleteWebhook(webhook: WebhookView) = act("Deleted \"${webhook.name}\".") {
+        session.authorized { api.deleteWebhook(webhook.id, it) }
+    }
+
+    fun dismissSecret() = _state.update { it.copy(shownSecret = null) }
+
+    private fun localProblem(code: String, problem: String) = WolfProblem(
+        code = code,
+        problem = problem,
+        currentState = "Nothing was saved.",
+        recommendedAction = "Check the details and try again.",
+        referenceId = "WOLF-API-LOCAL",
+    )
+
     private fun authorize(
         title: String,
         save: suspend (bearer: String, confirmedRiskLevel: String?) -> Unit,
+        description: String = DESCRIPTION,
         onSaved: (AlertsState) -> AlertsState,
     ) = launchBusy {
         _state.update { it.copy(notice = null) }
-        when (val outcome = authority.attempt(title, DESCRIPTION, save)) {
+        when (val outcome = authority.attempt(title, description, save)) {
             is Authorized.Done -> saved(onSaved)
             is Authorized.NeedsConfirmation -> _state.update {
                 it.copy(authority = AuthorityRequest(outcome.pending, save, onSaved), authorityProblem = null)
@@ -380,8 +456,10 @@ class AlertsAutomationsViewModel(
             val rules = session.authorized { api.listAlertRules(it) }
             val automations = session.authorized { api.listAutomations(it) }
             val pcs = session.authorized { api.listPcs(it) }.pcs
+            val webhooks = session.authorized { api.listWebhooks(it) }
             _state.update {
                 it.copy(
+                    webhooks = webhooks,
                     notifications = inbox.notifications,
                     unreadCount = inbox.unreadCount,
                     rules = rules.rules,

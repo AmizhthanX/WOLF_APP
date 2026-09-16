@@ -98,6 +98,7 @@ object AlertRules {
     fun label(notification: NotificationView): String = when (notification.kind) {
         "resolved" -> "Resolved"
         "automation" -> "Automation · ${notification.severity}"
+        "webhook" -> "Webhook · ${notification.severity}"
         else -> notification.severity.replaceFirstChar { it.titlecase(Locale.ROOT) }
     }
 }

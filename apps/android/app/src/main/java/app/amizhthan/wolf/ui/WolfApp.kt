@@ -164,6 +164,15 @@ fun WolfApp(
                             onCreateRule = alerts::createRule,
                             onDismissProblem = alerts::dismissProblem,
                             onPushChanged = alerts::refreshPush,
+                            webhooks = WebhookActions(
+                                create = alerts::createWebhook,
+                                setEnabled = alerts::setWebhookEnabled,
+                                setSeverity = alerts::setWebhookSeverity,
+                                test = alerts::testWebhook,
+                                rotate = alerts::rotateWebhookSecret,
+                                delete = alerts::deleteWebhook,
+                                dismissSecret = alerts::dismissSecret,
+                            ),
                         )
                     }
                     Screen.Automations -> {

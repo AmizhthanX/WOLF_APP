@@ -20,6 +20,7 @@ import { registerAlertRoutes } from '../routes/alerts.js';
 import { registerAutomationRoutes } from '../routes/automations.js';
 import { registerConfigurationRoutes } from '../routes/configuration.js';
 import { registerPushRoutes } from '../routes/push.js';
+import { registerWebhookRoutes } from '../routes/webhooks.js';
 
 export async function buildApp(context: AppContext): Promise<FastifyInstance> {
   const app = Fastify({
@@ -139,6 +140,7 @@ export async function buildApp(context: AppContext): Promise<FastifyInstance> {
       await registerAutomationRoutes(api, context);
       await registerConfigurationRoutes(api, context);
       await registerPushRoutes(api, context);
+      await registerWebhookRoutes(api, context);
     },
     { prefix: '/api/v1' },
   );

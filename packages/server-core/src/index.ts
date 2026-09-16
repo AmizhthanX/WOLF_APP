@@ -14,3 +14,7 @@ export * from './services/command-audit.js';
 export * from './services/command-results.js';
 export * from './cloud/index.js';
 export * from './jobs/push.js';
+export * from './jobs/webhooks.js';
+export * from './webhooks/egress.js';
+export * from './webhooks/secrets.js';
+export * from './webhooks/sender.js';

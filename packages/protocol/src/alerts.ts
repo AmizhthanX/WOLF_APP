@@ -22,13 +22,11 @@ import { AGGREGATED_METRICS } from '@wolf/telemetry-schema';
  * a clipboard or an event log reaches a rule, because rules are evaluated over telemetry and
  * presence and nothing else. The rule's own name is the owner's text, shown back to the owner.
  *
- * ## Delivered in the app, for now
+ * ## Delivered
  *
- * Notifications land in an inbox in the web app. E-mail, push and webhooks are not built. Each
- * is a real piece of design rather than a transport to bolt on: e-mail needs secret-managed
- * credentials, push needs the Android client, and a webhook is an owner-configured URL that the
- * cloud would make requests to — which is a server-side request forgery surface until it is
- * designed as one.
+ * In the inbox; as a content-free push wake-up to the owner's phones (`push.ts`); and to webhooks
+ * the owner configures (`webhooks.ts`), which are designed as the server-side request forgery
+ * surface they are. E-mail is not built: it needs secret-managed credentials and a provider.
  */
 
 export const ALERT_CONDITIONS = ['metric-above', 'metric-below', 'pc-offline'] as const;
@@ -127,8 +125,11 @@ export const alertRule = z.object({
 });
 export type AlertRule = z.infer<typeof alertRule>;
 
-/** `automation`: written by an automation's notify action, or to say one failed or was turned off. */
-export const NOTIFICATION_KINDS = ['fired', 'resolved', 'automation'] as const;
+/**
+ * `automation`: written by an automation's notify action, or to say one failed or was turned off.
+ * `webhook`: to say a webhook was turned off after failing too many deliveries.
+ */
+export const NOTIFICATION_KINDS = ['fired', 'resolved', 'automation', 'webhook'] as const;
 export const notificationKind = z.enum(NOTIFICATION_KINDS);
 export type NotificationKind = z.infer<typeof notificationKind>;
 

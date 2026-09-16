@@ -119,6 +119,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Link href="/settings/configuration" className="button-small">
           Backup
         </Link>
+        <Link href="/settings/webhooks" className="button-small">
+          Webhooks
+        </Link>
         <Link href="/alerts" className="button-small" aria-label={unread ? `Alerts, ${unread} unread` : 'Alerts'}>
           Alerts{unread ? <span className="status status-danger" style={{ marginLeft: 6 }}>{unread}</span> : null}
         </Link>

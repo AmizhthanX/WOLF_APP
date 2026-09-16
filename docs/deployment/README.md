@@ -40,7 +40,19 @@ Required in every environment:
 | `WOLF_TOKEN_ISSUER` | e.g. `https://api.amizhthan.app` |
 | `WOLF_ALLOWED_ORIGINS` | Explicit list. `*` is rejected in production, as is a non-HTTPS origin. |
 
+Optional:
+
+| Variable | Notes |
+| --- | --- |
+| `WOLF_WEBHOOK_KEY` | ≥32 bytes, from Secret Manager. Without it webhooks are off and the API says so. It encrypts stored webhook URLs and derives their signing secrets: changing it makes every stored webhook unreadable. |
+
 See `.env.example` for the full set.
+
+**Egress, when webhooks are on.** The API makes requests to addresses owners type. It refuses private,
+link-local and metadata addresses itself and pins each connection to the address it checked
+([webhooks](../architecture/webhooks.md)); the network should refuse them too, so a bug in that check is not
+the only thing between an owner-typed URL and the metadata server. On Cloud Run, route the API's egress through
+a VPC connector with firewall rules denying `169.254.169.254`, RFC 1918 and other internal ranges.
 
 Secrets come from Secret Manager, mounted as environment variables. Nothing sensitive is
 ever written to a configuration file in the image.

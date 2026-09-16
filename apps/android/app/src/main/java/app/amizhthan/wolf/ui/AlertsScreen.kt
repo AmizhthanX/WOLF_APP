@@ -39,6 +39,8 @@ import app.amizhthan.wolf.api.AlertRuleInput
 import app.amizhthan.wolf.api.AlertRuleView
 import app.amizhthan.wolf.api.AlertRules
 import app.amizhthan.wolf.api.PcSummary
+import app.amizhthan.wolf.api.WebhookView
+import app.amizhthan.wolf.api.Webhooks
 import java.util.Locale
 
 @Composable
@@ -52,6 +54,7 @@ fun AlertsScreen(
     onCreateRule: (AlertRuleInput) -> Unit,
     onDismissProblem: () -> Unit,
     onPushChanged: () -> Unit = {},
+    webhooks: WebhookActions? = null,
 ) {
     var deleting by remember { mutableStateOf<AlertRuleView?>(null) }
     val pcName: (String?) -> String = { id -> if (id == null) "every PC" else state.pcs.firstOrNull { it.id == id }?.name ?: "a removed PC" }
@@ -60,7 +63,7 @@ fun AlertsScreen(
         item {
             TextButton(onClick = onBack) { Text("Back") }
             Text("Alerts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("Rules are checked once a minute. WOLF does not send e-mail or webhooks.", style = MaterialTheme.typography.bodySmall)
+            Text("Rules are checked once a minute. WOLF does not send e-mail; it can send webhooks, below.", style = MaterialTheme.typography.bodySmall)
         }
 
         item { PushCard(state.push, onPushChanged) }
@@ -123,6 +126,10 @@ fun AlertsScreen(
         }
 
         item { NewRuleForm(pcs = state.pcs, busy = state.busy, created = state.rulesCreated, onCreate = onCreateRule) }
+
+        if (webhooks != null) {
+            item { WebhooksSection(state, webhooks) }
+        }
     }
 
     deleting?.let { rule ->
@@ -183,6 +190,124 @@ private fun PushCard(push: PushState?, onPushChanged: () -> Unit) {
                 OutlinedButton(onClick = { ask.launch(Manifest.permission.POST_NOTIFICATIONS) }) { Text("Allow notifications") }
             }
         }
+    }
+}
+
+/** What the webhooks section can ask for. */
+data class WebhookActions(
+    val create: (name: String, url: String, minSeverity: String) -> Unit,
+    val setEnabled: (WebhookView, Boolean) -> Unit,
+    val setSeverity: (WebhookView, String) -> Unit,
+    val test: (WebhookView) -> Unit,
+    val rotate: (WebhookView) -> Unit,
+    val delete: (WebhookView) -> Unit,
+    val dismissSecret: () -> Unit,
+)
+
+@Composable
+private fun WebhooksSection(state: AlertsState, actions: WebhookActions) {
+    val list = state.webhooks
+    var name by rememberSaveable(state.webhooksCreated) { mutableStateOf("") }
+    // Not saved across process death: a URL may carry a credential of its own.
+    var url by remember(state.webhooksCreated) { mutableStateOf("") }
+    var severity by rememberSaveable(state.webhooksCreated) { mutableStateOf("warning") }
+    var deleting by remember { mutableStateOf<WebhookView?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader("Webhooks") {
+            list?.takeIf { it.configured }?.let { Text("${it.webhooks.size} of ${it.limit}", style = MaterialTheme.typography.labelMedium) }
+        }
+
+        state.shownSecret?.let { shown ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Signing secret for \"${shown.webhookName}\"", fontWeight = FontWeight.SemiBold)
+                    androidx.compose.foundation.text.selection.SelectionContainer { Text(shown.secret, style = MaterialTheme.typography.bodySmall) }
+                    Text(
+                        "Shown this once. WOLF does not store it; replacing it is the only way to see a secret again. Each request carries " +
+                            "WOLF-Signature: t=…,v1=…, an HMAC-SHA256 of the timestamp, a dot and the body.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(onClick = actions.dismissSecret) { Text("I have saved it") }
+                }
+            }
+        }
+
+        when {
+            list == null -> Text("Loading…")
+            !list.configured -> Text(
+                "Webhooks are not set up on this WOLF server: it needs a webhook key to keep their addresses encrypted and to sign what it sends.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            else -> {
+                if (list.webhooks.isEmpty()) Text("No webhooks. Add one to send notifications to a chat channel or your own service.")
+                list.webhooks.forEach { webhook ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(webhook.name, fontWeight = FontWeight.SemiBold)
+                            Text(webhook.host, style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                "${Webhooks.stateText(webhook)} · sends ${Webhooks.SEVERITIES.first { it.first == webhook.minSeverity }.second.lowercase(Locale.ROOT)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                OutlinedButton(onClick = { actions.setEnabled(webhook, !webhook.enabled) }, enabled = !state.busy) {
+                                    Text(if (webhook.enabled) "Turn off" else "Turn on")
+                                }
+                                TextButton(onClick = { actions.test(webhook) }, enabled = !state.busy) { Text("Test") }
+                                TextButton(onClick = { actions.rotate(webhook) }, enabled = !state.busy) { Text("New secret") }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Webhooks.SEVERITIES.filter { it.first != webhook.minSeverity }.forEach { (id, label) ->
+                                    TextButton(onClick = { actions.setSeverity(webhook, id) }, enabled = !state.busy) { Text(label) }
+                                }
+                            }
+                            TextButton(onClick = { deleting = webhook }, enabled = !state.busy) {
+                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+
+                if (list.webhooks.size < list.limit) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Add a webhook", fontWeight = FontWeight.SemiBold)
+                            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("https:// address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            Text(
+                                "A public https address. WOLF refuses private and local ones, and afterwards shows only the host. Sent: each " +
+                                    "notification's title, detail, severity, time and which PC. Adding one needs your password.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Webhooks.SEVERITIES.forEach { (id, label) ->
+                                    if (id == severity) Button(onClick = {}) { Text(label) } else OutlinedButton(onClick = { severity = id }) { Text(label) }
+                                }
+                            }
+                            Button(onClick = { actions.create(name, url, severity) }, enabled = !state.busy && name.isNotBlank() && url.isNotBlank()) {
+                                Text("Add webhook")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    deleting?.let { webhook ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete \"${webhook.name}\"?") },
+            text = { Text("WOLF stops sending to ${webhook.host} at once.") },
+            confirmButton = {
+                Button(onClick = {
+                    actions.delete(webhook)
+                    deleting = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+        )
     }
 }
 

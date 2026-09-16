@@ -70,6 +70,16 @@ const environmentSchema = z.object({
    * never the key itself, so the key is not in the environment of every process the server starts.
    */
   WOLF_FCM_CREDENTIALS_FILE: z.string().default(''),
+
+  /**
+   * The key webhook URLs are encrypted with and webhook signing secrets are derived from, from secret management.
+   * Empty: webhooks are off, and the API says so. At least 32 bytes when set. Changing it makes every stored
+   * webhook unreadable — they have to be made again — so it is rotated deliberately, not casually.
+   */
+  WOLF_WEBHOOK_KEY: z
+    .string()
+    .default('')
+    .refine((value) => value === '' || Buffer.byteLength(value) >= 32, 'WOLF_WEBHOOK_KEY must be at least 32 bytes when set.'),
 });
 
 export type Environment = z.infer<typeof environmentSchema>;
@@ -106,6 +116,10 @@ export interface Config {
     readonly provider: 'none' | 'fcm';
     readonly fcmProjectId: string | null;
     readonly fcmCredentialsFile: string | null;
+  };
+  readonly webhooks: {
+    /** Null: webhooks are not configured on this server. */
+    readonly key: string | null;
   };
 }
 
@@ -193,6 +207,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
       provider: env.WOLF_PUSH_PROVIDER,
       fcmProjectId: env.WOLF_FCM_PROJECT_ID.trim() || null,
       fcmCredentialsFile: env.WOLF_FCM_CREDENTIALS_FILE.trim() || null,
+    },
+    webhooks: {
+      key: env.WOLF_WEBHOOK_KEY || null,
     },
   };
 }

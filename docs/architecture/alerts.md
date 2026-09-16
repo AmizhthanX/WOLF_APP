@@ -72,14 +72,12 @@ bucket straddling the start could hold its minimum from before the window.
 
 ## Delivery
 
-In the app, and — when the owner configures it — as a content-free push wake-up to their phones, which
-then fetch the notification from WOLF ([push](push.md)). What is deliberately not built yet, and why each
-is its own piece of work:
+In the app; as a content-free push wake-up to the owner's phones, which then fetch the notification from WOLF
+([push](push.md)); and, when the owner adds one, to a **webhook** — a signed HTTPS request to a public address,
+with private and metadata addresses refused, the connection pinned to the checked address, the URL encrypted at
+rest and never shown again ([webhooks](webhooks.md)).
 
-- **Webhooks** — a URL the owner types that the server then calls is a server-side request
-  forgery surface (cloud metadata endpoints, internal services). It needs egress allow-listing,
-  DNS-rebinding defence and signed payloads before it exists.
-- **E-mail** — needs a provider, its credentials in secret management, and bounce handling.
+Not built: **e-mail**, which needs a provider, its credentials in secret management, and bounce handling.
 
 ## Retention
 

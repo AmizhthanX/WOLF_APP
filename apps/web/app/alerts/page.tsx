@@ -133,7 +133,7 @@ function Alerts() {
               style={{ alignItems: 'flex-start', opacity: entry.readAt ? 0.65 : 1 }}
             >
               <span className={entry.kind === 'resolved' ? 'status status-online' : SEVERITY_TONE[entry.severity]}>
-                {entry.kind === 'resolved' ? 'Resolved' : entry.kind === 'automation' ? `Automation · ${entry.severity}` : entry.severity}
+                {entry.kind === 'resolved' ? 'Resolved' : entry.kind === 'automation' ? `Automation · ${entry.severity}` : entry.kind === 'webhook' ? `Webhook · ${entry.severity}` : entry.severity}
               </span>
               <div style={{ flex: 1 }}>
                 <div>

@@ -122,6 +122,27 @@ class WolfApi(
         send<Unit, Unit>("DELETE", listOf("alert-rules", ruleId), bearer, null, null, null)
     }
 
+    suspend fun listWebhooks(bearer: String): WebhookList =
+        send<Unit, WebhookList>("GET", listOf("webhooks"), bearer, null, null, WebhookList.serializer())
+
+    /** Needs a recently entered password; the server says so with `command.reauth_required`. */
+    suspend fun createWebhook(input: WebhookInput, bearer: String): CreatedWebhook =
+        send("POST", listOf("webhooks"), bearer, CreateWebhookRequest(input), CreateWebhookRequest.serializer(), CreatedWebhook.serializer())
+
+    suspend fun updateWebhook(webhookId: String, patch: WebhookPatch, bearer: String) {
+        send<WebhookPatch, Unit>("PATCH", listOf("webhooks", webhookId), bearer, patch, WebhookPatch.serializer(), null)
+    }
+
+    suspend fun rotateWebhookSecret(webhookId: String, bearer: String): WebhookSecret =
+        send<Unit, WebhookSecret>("POST", listOf("webhooks", webhookId, "rotate-secret"), bearer, null, null, WebhookSecret.serializer())
+
+    suspend fun testWebhook(webhookId: String, bearer: String): WebhookTestResult =
+        send<Unit, WebhookTestResult>("POST", listOf("webhooks", webhookId, "test"), bearer, null, null, WebhookTestResult.serializer())
+
+    suspend fun deleteWebhook(webhookId: String, bearer: String) {
+        send<Unit, Unit>("DELETE", listOf("webhooks", webhookId), bearer, null, null, null)
+    }
+
     suspend fun listNotifications(bearer: String): NotificationList =
         send<Unit, NotificationList>("GET", listOf("notifications"), bearer, null, null, NotificationList.serializer())
 

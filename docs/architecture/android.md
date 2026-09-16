@@ -283,6 +283,13 @@ on, with the notification permission asked for there. The app never polls in the
 push. Signing out clears the phone's registration on the server first; revoking the device clears it too.
 Tapping a notification opens the Alerts screen, after sign-in if needed.
 
+**Webhooks** ([webhooks](webhooks.md)), on the Alerts screen: each shows its name, host — never the URL — what it
+sends and how its last delivery went, with Turn on/off, Test, New secret, a severity choice and Delete. Adding one
+checks the address is https with no credentials before sending (whether it is public is the server's call, which
+resolves the name), and asks for the password through the same confirm-and-password flow as automations. The
+signing secret the server returns is shown once, in memory only, until "I have saved it"; its `toString` never
+prints it. The URL field is not kept across process death, since the address may carry a credential.
+
 **Automations.** The list shows each one's authorized risk, trigger, actions, targets, conditions and last
 run, with Run now, Turn on/off, History and Delete. The builder on the phone covers schedules, alert
 triggers and manual runs; the PC the alert fired for, or chosen PCs; the nobody-connected, time-window and

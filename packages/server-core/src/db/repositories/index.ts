@@ -13,6 +13,7 @@ import { RemoteDesktopRepository } from './remote-desktop.js';
 import { SessionRepository } from './sessions.js';
 import { TelemetryRepository } from './telemetry.js';
 import { UserRepository } from './users.js';
+import { WebhookRepository } from './webhooks.js';
 
 export * from './alerts.js';
 export * from './audit.js';
@@ -28,6 +29,7 @@ export * from './remote-desktop.js';
 export * from './sessions.js';
 export * from './telemetry.js';
 export * from './users.js';
+export * from './webhooks.js';
 
 export interface Repositories {
   readonly users: UserRepository;
@@ -44,6 +46,7 @@ export interface Repositories {
   readonly automations: AutomationRepository;
   readonly configuration: ConfigurationRepository;
   readonly push: PushRepository;
+  readonly webhooks: WebhookRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -62,5 +65,6 @@ export function createRepositories(db: Database): Repositories {
     automations: new AutomationRepository(db),
     configuration: new ConfigurationRepository(db),
     push: new PushRepository(db),
+    webhooks: new WebhookRepository(db),
   };
 }

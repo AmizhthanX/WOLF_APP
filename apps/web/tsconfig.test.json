@@ -20,6 +20,8 @@
     "lib/remote-desktop.test.ts",
     "lib/file-transfer.ts",
     "lib/wake.ts",
+    "lib/webhooks.ts",
+    "lib/webhooks.test.ts",
     "lib/wake.test.ts",
     "lib/file-transfer.test.ts",
     "lib/input-capture.ts",

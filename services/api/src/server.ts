@@ -5,7 +5,7 @@ import { createDatabase } from '@wolf/server-core';
 import { createRepositories } from '@wolf/server-core';
 import { InMemoryRateLimiter } from './http/rate-limit.js';
 import { buildApp } from './http/app.js';
-import { AlertJob, MaintenanceJob, PushJob, RollupJob, createPushSender } from '@wolf/server-core';
+import { AlertJob, MaintenanceJob, PushJob, RollupJob, WebhookJob, WebhookSecrets, WebhookSender, createPushSender } from '@wolf/server-core';
 import type { AppContext } from './http/context.js';
 import { AutomationJob } from './automation/job.js';
 
@@ -54,6 +54,14 @@ async function main(): Promise<void> {
   push?.start();
   if (!pushSender) logger.info('Push wake-ups are not configured; notifications are delivered in the app only.');
 
+  // Webhooks, when the server has a key to seal their URLs and sign what it sends. Without one the API says
+  // webhooks are not set up, rather than accepting URLs it could not keep safely.
+  const webhooks = config.webhooks.key
+    ? new WebhookJob(context, new WebhookSecrets(config.webhooks.key), new WebhookSender())
+    : null;
+  webhooks?.start();
+  if (!webhooks) logger.info('Webhooks are not configured (no WOLF_WEBHOOK_KEY).');
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutting down');
     maintenance.stop();
@@ -61,6 +69,7 @@ async function main(): Promise<void> {
     alerts.stop();
     automations.stop();
     push?.stop();
+    webhooks?.stop();
     try {
       await app.close();
       await db.end();

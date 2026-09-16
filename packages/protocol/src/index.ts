@@ -7,6 +7,7 @@ export * from './input.js';
 export * from './terminal.js';
 export * from './files.js';
 export * from './alerts.js';
+export * from './webhooks.js';
 export * from './automations.js';
 export * from './configuration.js';
 export * from './signaling.js';

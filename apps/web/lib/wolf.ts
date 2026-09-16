@@ -291,7 +291,7 @@ export interface WolfNotification {
   id: string;
   ruleId: string | null;
   pcId: string | null;
-  kind: 'fired' | 'resolved' | 'automation';
+  kind: 'fired' | 'resolved' | 'automation' | 'webhook';
   automationId: string | null;
   severity: AlertSeverity;
   title: string;
@@ -504,3 +504,42 @@ export const previewRestore = (input: RestoreInput) =>
 
 export const restoreConfiguration = (input: RestoreInput) =>
   api<{ plan: RestorePlan; restoredAt: string }>('/api/v1/configuration/restore', { method: 'POST', body: input });
+
+/* ------------------------------------------------------------------------- */
+/* Webhooks                                                                   */
+/* ------------------------------------------------------------------------- */
+
+export type WebhookOutcome = 'delivered' | 'http-error' | 'redirect' | 'timeout' | 'network' | 'address-refused' | 'tls';
+
+/** A webhook as the API shows it: the host, never the URL, and never the secret. */
+export interface Webhook {
+  id: string;
+  name: string;
+  host: string;
+  minSeverity: AlertSeverity;
+  enabled: boolean;
+  disabledReason: string | null;
+  consecutiveFailures: number;
+  lastDeliveryAt: string | null;
+  lastOutcome: WebhookOutcome | null;
+  lastStatus: number | null;
+  createdAt: string;
+}
+
+export const listWebhooks = () =>
+  api<{ configured: boolean; webhooks: Webhook[]; limit: number }>('/api/v1/webhooks');
+
+export const createWebhook = (webhook: { name: string; url: string; minSeverity: AlertSeverity }) =>
+  api<{ webhook: Webhook; secret: string }>('/api/v1/webhooks', { method: 'POST', body: { webhook } });
+
+export const updateWebhook = (webhookId: string, patch: { name?: string; enabled?: boolean; minSeverity?: AlertSeverity }) =>
+  api<{ webhook: Webhook }>(`/api/v1/webhooks/${webhookId}`, { method: 'PATCH', body: patch });
+
+export const rotateWebhookSecret = (webhookId: string) =>
+  api<{ secret: string }>(`/api/v1/webhooks/${webhookId}/rotate-secret`, { method: 'POST' });
+
+export const testWebhook = (webhookId: string) =>
+  api<{ outcome: WebhookOutcome; status: number | null; detail: string }>(`/api/v1/webhooks/${webhookId}/test`, { method: 'POST' });
+
+export const deleteWebhook = (webhookId: string) =>
+  api<void>(`/api/v1/webhooks/${webhookId}`, { method: 'DELETE' });
