@@ -38,10 +38,12 @@ You need a **PowerShell window in the WOLF folder**. Most parts use it.
 
 ---
 
-## Part 1 — Finish the other session's unfinished work (5 minutes)
+## Part 1 — Finish the other session's unfinished work (already done)
 
-Another Claude session ("Give the web dashboard device proof-of-possession") changed four files and did not commit
-them. Until you decide, they sit there uncommitted.
+**Nothing to do:** that session committed its files on its own (`Device-key browser test run in Firefox`), and the
+roadmap has been updated. Kept here only in case it happens again with another session.
+
+Another Claude session changed files and did not commit them. Until you decide, they sit there uncommitted.
 
 1. In the PowerShell window, paste:
 

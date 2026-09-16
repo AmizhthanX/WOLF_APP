@@ -597,9 +597,9 @@ Everything blocked on elevation, built without weakening any Windows boundary.
   be a worse idea than an untested path. `WOLF_TEST_SERVICE_CONTROL=1` runs it elevated against
   the print spooler. The read-only half, the refusals, and the path through `advapi32` for start
   types *are* exercised against the real service control manager
-- **Delete, rename, move and new folders are not built.** They are mutations with real blast
-  radius and belong on the command path, where risk levels and confirmations live; putting them
-  on the data channel would route them around the machinery that makes them accountable
+- **Delete, rename, move and new folders — since built**, on the data channel by the owner's choice so no file
+  name reaches the cloud: delete to the Recycle Bin, nothing overwritten, and a path-free `file.activity` audit
+  record for every change. See *Since the milestones* below and [changing files](../architecture/file-manager.md#changing-files)
 - **No search, and no directory transfers.** One file at a time: recursion turns "did that
   work" into a report rather than an answer, and the naive recursive search is a session host
   reading every file on the machine
@@ -719,9 +719,8 @@ milestone 2 and is never persisted in cloud history.
   samples a day per rule per minute
 - Rule changes are audited under `automation`; editing a rule clears its state, because the old
   answers were to a different question
-- **In-app only.** Webhooks are an SSRF surface that needs egress controls first, e-mail needs a
-  provider and its secrets, push needs the Android client. None is implied to exist (push has since
-  arrived with Android, content-free)
+- **In-app only, at first.** Push has since arrived with Android, content-free; webhooks have since arrived
+  with the egress controls they needed (see *Since the milestones*); e-mail still needs a provider and its secrets
 
 **A real bug found on the way, in the previous slice**
 
@@ -802,6 +801,33 @@ milestone 2 and is never persisted in cloud history.
 
 **Milestone 5 is complete.** Every item it set out to build is built: rollups, alerts, GPU, process
 and storage intelligence, automations, and configuration backup.
+
+## Since the milestones
+
+**Done — Wake-on-LAN** ([Wake-on-LAN](../architecture/wake-on-lan.md))
+
+- A PC reports its wired adapter and whether Windows armed it, without administrator; the address is stored and
+  never returned. `power.wake` goes to another online PC, the API fills in the reported address, and the agent
+  broadcasts the magic packet on its own networks. Web and Android offer Wake on an offline PC.
+- Proven live with the real agent (six packets sent and received on udp/9). **Not proven:** a real sleeping PC
+  waking — see Part 3 of the [owner guide](owner-guide.md).
+
+**Done — webhooks** ([webhooks](../architecture/webhooks.md))
+
+- Signed HTTPS requests to public addresses only, the connection pinned to the checked address, no redirects,
+  the URL encrypted at rest and never returned; WOLF, Slack and Discord formats; retries and turning off after
+  twenty failures. Web settings page and the Android Alerts screen.
+- **Not proven:** a delivery to a real third-party service — Part 2e of the owner guide.
+
+**Done — resumable transfers, and changing files** ([the file manager](../architecture/file-manager.md))
+
+- An interrupted upload's part file waits 30 minutes for a new stream; downloads resume onto what arrived; a
+  whole-file checksum keeps a mismatched resume out of place. Proven live over three streams.
+- Delete (to the Recycle Bin), rename, move and new folder on the data channel, audited without paths. Proven
+  live from the emulator to the real agent.
+
+**Owner steps** — accounts, a second PC, administrator runs and deployment — are in the
+[owner guide](owner-guide.md).
 
 ## Web dashboard — device proof-of-possession
 
@@ -1028,11 +1054,11 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
   closed: see *Web dashboard — device proof-of-possession*
 
 **Still open for Android**
-- Push: an end-to-end delivery through a real Firebase project
-- Files: resuming an interrupted transfer; browsing without a stream (as on the web)
+- Push: an end-to-end delivery through a real Firebase project (owner guide, Part 4)
+- Files: browsing without a stream (as on the web); resuming after the app process has ended
 - Changing services, tasks and startup items against a machine with the privileged helper installed
-- Remote desktop: a display switch on a two-monitor PC; the first picture on a still desktop (a session host fix)
-- The release pipeline run on GitHub; Google Play publishing; per-ABI APKs
+- Remote desktop: a display switch on a two-monitor PC (owner guide, Part 9)
+- The release pipeline run on GitHub (owner guide, Parts 5–6); Google Play publishing; per-ABI APKs
 
 ## Infrastructure
 
