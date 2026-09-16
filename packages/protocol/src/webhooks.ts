@@ -73,9 +73,30 @@ export const webhookUrl = z
     }
   });
 
+/**
+ * The shape of what is sent. `wolf` is WOLF's own JSON, below. Slack's and Discord's incoming webhooks accept only
+ * their own shapes — a `text` or a `content` field — and refuse anything else, so for them WOLF sends a short
+ * message built from the same fields. Fixed formats, not templates: nothing the owner types is rendered into them.
+ */
+export const WEBHOOK_FORMATS = ['wolf', 'slack', 'discord'] as const;
+export type WebhookFormat = (typeof WEBHOOK_FORMATS)[number];
+
+/** The format a URL's host suggests. A suggestion for the form, not a rule. */
+export function suggestedWebhookFormat(url: string): WebhookFormat {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'hooks.slack.com') return 'slack';
+    if (host === 'discord.com' || host === 'discordapp.com' || host.endsWith('.discord.com')) return 'discord';
+  } catch {
+    // Not a URL yet: nothing to suggest.
+  }
+  return 'wolf';
+}
+
 export const webhookInput = z.object({
   name: z.string().trim().min(1).max(80),
   url: webhookUrl,
+  format: z.enum(WEBHOOK_FORMATS).default('wolf'),
   /** Only notifications at least this severe are sent. */
   minSeverity: z.enum(ALERT_SEVERITIES).default('warning'),
 });
@@ -107,6 +128,7 @@ export const webhook = z.object({
   name: z.string(),
   /** The host only. The full URL is never returned after it is saved. */
   host: z.string(),
+  format: z.enum(WEBHOOK_FORMATS),
   minSeverity: z.enum(ALERT_SEVERITIES),
   enabled: z.boolean(),
   /** Why it is off when WOLF turned it off, e.g. after too many failed deliveries. */
@@ -132,6 +154,30 @@ export interface WebhookBody {
     readonly detail: string;
     readonly pc: { readonly id: string; readonly name: string } | null;
   };
+}
+
+/**
+ * What goes on the wire for a format. Slack and Discord get one short message: severity, title, detail and the PC's
+ * name, cut to what each accepts. Markdown characters from a title or detail are escaped, so a PC named
+ * `*everyone*` stays text.
+ */
+export function webhookPayload(format: WebhookFormat, body: WebhookBody): unknown {
+  if (format === 'wolf') return body;
+
+  const escape = (text: string) => text.replace(/[\\*_~`|>@<]/g, (character) => `\\${character}`);
+  const { notification } = body;
+  const label = body.type === 'wolf.test' ? 'Test' : notification.severity.toUpperCase();
+  const lines = [
+    `${format === 'slack' ? '*' : '**'}[${label}] ${escape(notification.title)}${format === 'slack' ? '*' : '**'}`,
+    notification.detail ? escape(notification.detail) : null,
+    notification.pc ? `PC: ${escape(notification.pc.name)}` : null,
+  ].filter((line): line is string => line !== null);
+
+  const text = lines.join('\n');
+  return format === 'slack'
+    ? { text: text.slice(0, 3000) }
+    // Discord's limit is 2000 characters; mentions are switched off so a name cannot ping anybody.
+    : { content: text.slice(0, 2000), allowed_mentions: { parse: [] } };
 }
 
 /** The bytes a signature covers: the timestamp, a dot, and the exact body sent. */

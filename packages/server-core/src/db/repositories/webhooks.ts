@@ -1,5 +1,5 @@
 import { newId } from '@wolf/shared-types';
-import type { AlertSeverity, NotificationKind, WebhookDeliveryOutcome } from '@wolf/protocol';
+import type { AlertSeverity, NotificationKind, WebhookDeliveryOutcome, WebhookFormat } from '@wolf/protocol';
 import type { Database, DatabaseClient } from '../pool.js';
 
 export interface StoredWebhook {
@@ -9,6 +9,7 @@ export interface StoredWebhook {
   readonly host: string;
   readonly urlSealed: string;
   readonly secretSalt: string;
+  readonly format: WebhookFormat;
   readonly minSeverity: AlertSeverity;
   readonly enabled: boolean;
   readonly disabledReason: string | null;
@@ -42,6 +43,7 @@ interface WebhookRow {
   host: string;
   url_sealed: string;
   secret_salt: string;
+  format: WebhookFormat;
   min_severity: AlertSeverity;
   enabled: boolean;
   disabled_reason: string | null;
@@ -52,7 +54,7 @@ interface WebhookRow {
   created_at: Date;
 }
 
-const COLUMNS = `id, user_id, name, host, url_sealed, secret_salt, min_severity, enabled, disabled_reason,
+const COLUMNS = `id, user_id, name, host, url_sealed, secret_salt, format, min_severity, enabled, disabled_reason,
   consecutive_failures, last_delivery_at, last_outcome, last_status, created_at`;
 
 function toWebhook(row: WebhookRow): StoredWebhook {
@@ -63,6 +65,7 @@ function toWebhook(row: WebhookRow): StoredWebhook {
     host: row.host,
     urlSealed: row.url_sealed,
     secretSalt: row.secret_salt,
+    format: row.format,
     minSeverity: row.min_severity,
     enabled: row.enabled,
     disabledReason: row.disabled_reason,
@@ -92,13 +95,14 @@ export class WebhookRepository {
     readonly host: string;
     readonly urlSealed: string;
     readonly secretSalt: string;
+    readonly format: WebhookFormat;
     readonly minSeverity: AlertSeverity;
   }, client?: DatabaseClient): Promise<StoredWebhook> {
     const { rows } = await (client ?? this.db).query<WebhookRow>(
-      `INSERT INTO webhooks (id, user_id, name, host, url_sealed, secret_salt, min_severity)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO webhooks (id, user_id, name, host, url_sealed, secret_salt, format, min_severity)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING ${COLUMNS}`,
-      [input.id, input.userId, input.name, input.host, input.urlSealed, input.secretSalt, input.minSeverity],
+      [input.id, input.userId, input.name, input.host, input.urlSealed, input.secretSalt, input.format, input.minSeverity],
     );
     return toWebhook(rows[0]!);
   }
@@ -221,7 +225,7 @@ export class WebhookRepository {
           )
          RETURNING d.webhook_id, d.notification_id, d.attempts, d.created_at
        )
-       SELECT w.id, w.user_id, w.name, w.host, w.url_sealed, w.secret_salt, w.min_severity, w.enabled, w.disabled_reason,
+       SELECT w.id, w.user_id, w.name, w.host, w.url_sealed, w.secret_salt, w.format, w.min_severity, w.enabled, w.disabled_reason,
               w.consecutive_failures, w.last_delivery_at, w.last_outcome, w.last_status, w.created_at,
               t.attempts, t.created_at AS delivery_created_at, t.notification_id,
               n.kind AS n_kind, n.severity AS n_severity, n.title AS n_title, n.detail AS n_detail, n.occurred_at AS n_occurred_at,

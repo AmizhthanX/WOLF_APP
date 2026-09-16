@@ -3,6 +3,7 @@ import {
   WEBHOOK_FAILURES_BEFORE_DISABLE,
   WEBHOOK_MAX_AGE_MINUTES,
   WEBHOOK_MAX_ATTEMPTS,
+  webhookPayload,
   type WebhookBody,
 } from '@wolf/protocol';
 import type { ServerContext } from '../context.js';
@@ -140,7 +141,7 @@ export class WebhookJob {
       result = await this.sender.deliver({
         url,
         secret: this.secrets.signingSecret(webhook.id, webhook.secretSalt),
-        body: JSON.stringify(webhookBody(notification)),
+        body: JSON.stringify(webhookPayload(webhook.format, webhookBody(notification))),
         deliveryId: `${notification.id}.${webhook.id}`,
         now,
       });

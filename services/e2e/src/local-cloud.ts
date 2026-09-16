@@ -9,7 +9,16 @@ import { ClientLink } from '@wolf/realtime/client-link';
 import { AgentRegistry } from '@wolf/realtime/registry';
 import { ClientRegistry } from '@wolf/realtime/client-registry';
 import type { RealtimeContext } from '@wolf/realtime/context';
-import { PushJob, createPushSender, createRepositories, loadConfig, migrate } from '@wolf/server-core';
+import {
+  PushJob,
+  WebhookJob,
+  WebhookSecrets,
+  WebhookSender,
+  createPushSender,
+  createRepositories,
+  loadConfig,
+  migrate,
+} from '@wolf/server-core';
 // Test-only: an in-process Postgres. Kept behind its own export so a production import
 // graph can never reach it, and imported here rather than in any service for the same
 // reason — this file is development tooling, not a service.
@@ -44,6 +53,13 @@ const API_PORT = Number(process.env['WOLF_LOCAL_API_PORT'] ?? 8080);
 const REALTIME_PORT = Number(process.env['WOLF_LOCAL_REALTIME_PORT'] ?? 8081);
 const WEB_ORIGIN = process.env['WOLF_LOCAL_WEB_ORIGIN'] ?? 'http://localhost:3000';
 
+/**
+ * Where to listen. This machine only, unless the developer says otherwise — for example `0.0.0.0` so a second PC on
+ * the same home network can enrol an agent against this cloud, which is how Wake-on-LAN is tried with two PCs.
+ * Plain HTTP and an in-memory database: never on a network you do not trust, and with WOLF_OWNER_PASSWORD set.
+ */
+const LISTEN_HOST = process.env['WOLF_LOCAL_HOST'] ?? '127.0.0.1';
+
 const OWNER_EMAIL = process.env['WOLF_OWNER_EMAIL'] ?? 'owner@example.com';
 const OWNER_PASSWORD = process.env['WOLF_OWNER_PASSWORD'] ?? 'a-long-local-passphrase';
 
@@ -74,6 +90,8 @@ async function main(): Promise<void> {
     WOLF_PUSH_PROVIDER: process.env['WOLF_PUSH_PROVIDER'],
     WOLF_FCM_PROJECT_ID: process.env['WOLF_FCM_PROJECT_ID'],
     WOLF_FCM_CREDENTIALS_FILE: process.env['WOLF_FCM_CREDENTIALS_FILE'],
+    // Webhooks only when the developer sets a key; they then go to real public addresses, checked as in production.
+    WOLF_WEBHOOK_KEY: process.env['WOLF_WEBHOOK_KEY'],
   } as NodeJS.ProcessEnv);
 
   const repos = createRepositories(db);
@@ -115,7 +133,7 @@ async function main(): Promise<void> {
   });
 
   const app = await buildApp(apiContext);
-  await app.listen({ port: API_PORT, host: '127.0.0.1' });
+  await app.listen({ port: API_PORT, host: LISTEN_HOST });
 
   // One socket server, routed by path, exactly as the deployed relay does it.
   const wsServer: Server = createServer();
@@ -132,7 +150,7 @@ async function main(): Promise<void> {
     });
   });
 
-  await new Promise<void>((resolve) => wsServer.listen(REALTIME_PORT, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => wsServer.listen(REALTIME_PORT, LISTEN_HOST, resolve));
 
   // Command delivery. Deployed, the realtime service LISTENs on these channels through a Postgres
   // connection (`NotificationListener`), and an in-process engine has no server for that connection.
@@ -169,6 +187,12 @@ async function main(): Promise<void> {
   push?.start();
   if (!pushSender) logger.info('Push wake-ups are not configured (set WOLF_PUSH_PROVIDER=fcm to use a Firebase project).');
 
+  const webhooks = config.webhooks.key
+    ? new WebhookJob(apiContext, new WebhookSecrets(config.webhooks.key), new WebhookSender())
+    : null;
+  webhooks?.start();
+  if (!webhooks) logger.info('Webhooks are not configured (set WOLF_WEBHOOK_KEY to at least 32 characters to use them).');
+
   logger.info(
     {
       api: `http://127.0.0.1:${API_PORT}`,
@@ -184,6 +208,7 @@ async function main(): Promise<void> {
     logger.info('Shutting down.');
     clearInterval(sweep);
     push?.stop();
+    webhooks?.stop();
     await Promise.all(unsubscribe.map((stop) => stop()));
     realtime.agents.closeAll('local-cloud-shutdown');
     await app.close();

@@ -3,6 +3,26 @@
  * Plain data, no React, so it is tested under Node.
  */
 
+export type WebhookFormatCode = 'wolf' | 'slack' | 'discord';
+
+export const FORMAT_LABELS: Readonly<Record<WebhookFormatCode, string>> = {
+  slack: 'Slack incoming webhook',
+  discord: 'Discord channel webhook',
+  wolf: 'WOLF JSON (Home Assistant, your own service)',
+};
+
+/** Mirrors `suggestedWebhookFormat` in `packages/protocol`: a guess from the host, which the owner can change. */
+export function suggestFormat(url: string): WebhookFormatCode {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'hooks.slack.com') return 'slack';
+    if (host === 'discord.com' || host === 'discordapp.com' || host.endsWith('.discord.com')) return 'discord';
+  } catch {
+    // Not a URL yet.
+  }
+  return 'wolf';
+}
+
 export type WebhookOutcomeCode = 'delivered' | 'http-error' | 'redirect' | 'timeout' | 'network' | 'address-refused' | 'tls';
 
 export function outcomeText(outcome: WebhookOutcomeCode, status: number | null): string {

@@ -4,6 +4,7 @@ import {
   MAX_WEBHOOKS,
   webhookInput,
   webhookPatch,
+  webhookPayload,
   type Webhook,
   type WebhookBody,
 } from '@wolf/protocol';
@@ -35,6 +36,7 @@ function publicWebhook(webhook: StoredWebhook): Webhook {
     id: webhook.id,
     name: webhook.name,
     host: webhook.host,
+    format: webhook.format,
     minSeverity: webhook.minSeverity,
     enabled: webhook.enabled,
     disabledReason: webhook.disabledReason,
@@ -148,7 +150,7 @@ export async function registerWebhookRoutes(app: FastifyInstance, context: AppCo
       }
 
       const webhook = await context.repos.webhooks.create(
-        { id, userId: caller.userId, name: input.name, host, urlSealed: seal.encryptUrl(id, input.url), secretSalt: salt, minSeverity: input.minSeverity },
+        { id, userId: caller.userId, name: input.name, host, urlSealed: seal.encryptUrl(id, input.url), secretSalt: salt, format: input.format, minSeverity: input.minSeverity },
         client,
       );
 
@@ -163,7 +165,7 @@ export async function registerWebhookRoutes(app: FastifyInstance, context: AppCo
           requestId: request.id,
           sourceIp: request.ip ?? null,
           target: { kind: 'webhook', webhookId: id, host },
-          afterValue: { name: input.name, minSeverity: input.minSeverity },
+          afterValue: { name: input.name, format: input.format, minSeverity: input.minSeverity },
         },
         client,
       );
@@ -268,7 +270,7 @@ export async function registerWebhookRoutes(app: FastifyInstance, context: AppCo
     const result = await sender.deliver({
       url: seal.decryptUrl(webhook.id, webhook.urlSealed),
       secret: seal.signingSecret(webhook.id, webhook.secretSalt),
-      body: JSON.stringify(body),
+      body: JSON.stringify(webhookPayload(webhook.format, body)),
       deliveryId: `${body.id}.${webhook.id}`,
       now,
     });

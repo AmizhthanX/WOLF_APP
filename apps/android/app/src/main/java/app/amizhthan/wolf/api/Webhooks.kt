@@ -16,6 +16,8 @@ data class WebhookView(
     val name: String,
     /** The host only. The URL itself is never returned. */
     val host: String,
+    /** `wolf`, `slack` or `discord`. */
+    val format: String = "wolf",
     val minSeverity: String,
     val enabled: Boolean,
     val disabledReason: String? = null,
@@ -30,7 +32,7 @@ data class WebhookView(
 data class WebhookList(val configured: Boolean, val webhooks: List<WebhookView> = emptyList(), val limit: Int = 10)
 
 @Serializable
-data class WebhookInput(val name: String, val url: String, val minSeverity: String)
+data class WebhookInput(val name: String, val url: String, val format: String, val minSeverity: String)
 
 @Serializable
 data class CreateWebhookRequest(val webhook: WebhookInput)
@@ -55,14 +57,32 @@ class ShownSecret(val webhookName: String, val secret: String) {
 object Webhooks {
     val SEVERITIES = listOf("info" to "Everything", "warning" to "Warnings and critical", "critical" to "Critical only")
 
+    /** Slack and Discord accept only their own message shape; `wolf` is WOLF's JSON. */
+    val FORMATS = listOf("slack" to "Slack", "discord" to "Discord", "wolf" to "WOLF JSON")
+
+    /** Mirrors `suggestedWebhookFormat` in `packages/protocol`: a guess from the host. */
+    fun suggestedFormat(url: String): String {
+        val host = try {
+            URI(url.trim()).host?.lowercase() ?: return "wolf"
+        } catch (_: java.net.URISyntaxException) {
+            return "wolf"
+        }
+        return when {
+            host == "hooks.slack.com" -> "slack"
+            host == "discord.com" || host == "discordapp.com" || host.endsWith(".discord.com") -> "discord"
+            else -> "wolf"
+        }
+    }
+
     /**
      * What the phone checks before sending: https, a host, no user name or password, no fragment. Whether the
      * address is public is the server's to decide — it resolves the name — so the phone does not guess.
      */
-    fun input(name: String, url: String, minSeverity: String): WebhookInput {
+    fun input(name: String, url: String, minSeverity: String, format: String = suggestedFormat(url)): WebhookInput {
         val trimmedName = name.trim()
         require(trimmedName.length in 1..80) { "A webhook's name is 1 to 80 characters." }
         require(minSeverity in SEVERITIES.map { it.first }) { "Unknown severity $minSeverity." }
+        require(format in FORMATS.map { it.first }) { "Unknown format $format." }
         val trimmedUrl = url.trim()
         val parsed = try {
             URI(trimmedUrl)
@@ -74,7 +94,7 @@ object Webhooks {
         require(parsed.rawUserInfo == null) { "A webhook address cannot carry a user name or password." }
         require(parsed.rawFragment == null) { "A webhook address cannot have a #fragment." }
         require(trimmedUrl.length <= 2048) { "That address is too long." }
-        return WebhookInput(trimmedName, trimmedUrl, minSeverity)
+        return WebhookInput(trimmedName, trimmedUrl, format, minSeverity)
     }
 
     fun outcomeText(outcome: String, status: Int?): String = when (outcome) {

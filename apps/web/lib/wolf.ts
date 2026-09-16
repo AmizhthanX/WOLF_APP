@@ -509,6 +509,8 @@ export const restoreConfiguration = (input: RestoreInput) =>
 /* Webhooks                                                                   */
 /* ------------------------------------------------------------------------- */
 
+export type WebhookFormat = 'wolf' | 'slack' | 'discord';
+
 export type WebhookOutcome = 'delivered' | 'http-error' | 'redirect' | 'timeout' | 'network' | 'address-refused' | 'tls';
 
 /** A webhook as the API shows it: the host, never the URL, and never the secret. */
@@ -516,6 +518,7 @@ export interface Webhook {
   id: string;
   name: string;
   host: string;
+  format: WebhookFormat;
   minSeverity: AlertSeverity;
   enabled: boolean;
   disabledReason: string | null;
@@ -529,7 +532,7 @@ export interface Webhook {
 export const listWebhooks = () =>
   api<{ configured: boolean; webhooks: Webhook[]; limit: number }>('/api/v1/webhooks');
 
-export const createWebhook = (webhook: { name: string; url: string; minSeverity: AlertSeverity }) =>
+export const createWebhook = (webhook: { name: string; url: string; format: WebhookFormat; minSeverity: AlertSeverity }) =>
   api<{ webhook: Webhook; secret: string }>('/api/v1/webhooks', { method: 'POST', body: { webhook } });
 
 export const updateWebhook = (webhookId: string, patch: { name?: string; enabled?: boolean; minSeverity?: AlertSeverity }) =>

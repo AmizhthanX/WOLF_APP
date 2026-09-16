@@ -11,8 +11,9 @@ import {
   updateWebhook,
   type AlertSeverity,
   type Webhook,
+  type WebhookFormat,
 } from '@/lib/wolf';
-import { outcomeText, stateText } from '@/lib/webhooks';
+import { FORMAT_LABELS, outcomeText, stateText, suggestFormat } from '@/lib/webhooks';
 import { AppShell } from '@/components/AppShell';
 import { Empty, Panel, Problem } from '@/components/ui';
 import { useAuthority } from '@/components/use-authority';
@@ -49,6 +50,7 @@ function Webhooks() {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [minSeverity, setMinSeverity] = useState<AlertSeverity>('warning');
+  const [format, setFormat] = useState<WebhookFormat>('wolf');
 
   const { attempt, dialog } = useAuthority(setError);
 
@@ -85,7 +87,7 @@ function Webhooks() {
     attempt(
       'Add a webhook',
       async () => {
-        const created = await createWebhook({ name: name.trim(), url: url.trim(), minSeverity });
+        const created = await createWebhook({ name: name.trim(), url: url.trim(), format, minSeverity });
         setSecret({ name: created.webhook.name, value: created.secret });
         setName('');
         setUrl('');
@@ -163,13 +165,30 @@ function Webhooks() {
                 inputMode="url"
                 placeholder="https://"
                 value={url}
-                onChange={(event) => setUrl(event.target.value)}
+                onChange={(event) => {
+                  setUrl(event.target.value);
+                  setFormat(suggestFormat(event.target.value));
+                }}
                 autoComplete="off"
                 required
               />
               <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
                 A public https address. WOLF refuses private and local addresses, and after saving shows only its
                 host — addresses from Slack or Discord contain a password of their own.
+              </div>
+            </div>
+            <div>
+              <label htmlFor="webhook-format">Sends to</label>
+              <select id="webhook-format" value={format} onChange={(event) => setFormat(event.target.value as WebhookFormat)}>
+                {(Object.keys(FORMAT_LABELS) as WebhookFormat[]).map((id) => (
+                  <option key={id} value={id}>
+                    {FORMAT_LABELS[id]}
+                  </option>
+                ))}
+              </select>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                Slack and Discord accept only their own message shape, so WOLF sends them a short message. Chosen from
+                the address; change it if the guess is wrong.
               </div>
             </div>
             <div>
@@ -207,7 +226,7 @@ function Webhooks() {
                   <div key={webhook.id} className="stack" style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                     <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
                       <div>
-                        <strong>{webhook.name}</strong> <span className="muted">{webhook.host}</span>
+                        <strong>{webhook.name}</strong> <span className="muted">{webhook.host} · {FORMAT_LABELS[webhook.format]}</span>
                       </div>
                       <span className={TONE[state.tone]}>{state.text}</span>
                     </div>

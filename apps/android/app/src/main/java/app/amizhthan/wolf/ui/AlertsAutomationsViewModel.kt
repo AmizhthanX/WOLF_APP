@@ -346,9 +346,9 @@ class AlertsAutomationsViewModel(
 
     /* Webhooks. The URL is sent once and never shown again; a secret is shown once and kept only on screen. */
 
-    fun createWebhook(name: String, url: String, minSeverity: String) {
+    fun createWebhook(name: String, url: String, minSeverity: String, format: String) {
         val input = try {
-            Webhooks.input(name, url, minSeverity)
+            Webhooks.input(name, url, minSeverity, format)
         } catch (error: IllegalArgumentException) {
             _state.update { it.copy(problem = localProblem("webhook.invalid", error.message ?: "That webhook cannot be saved.")) }
             return

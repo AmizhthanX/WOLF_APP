@@ -195,7 +195,7 @@ private fun PushCard(push: PushState?, onPushChanged: () -> Unit) {
 
 /** What the webhooks section can ask for. */
 data class WebhookActions(
-    val create: (name: String, url: String, minSeverity: String) -> Unit,
+    val create: (name: String, url: String, minSeverity: String, format: String) -> Unit,
     val setEnabled: (WebhookView, Boolean) -> Unit,
     val setSeverity: (WebhookView, String) -> Unit,
     val test: (WebhookView) -> Unit,
@@ -211,6 +211,7 @@ private fun WebhooksSection(state: AlertsState, actions: WebhookActions) {
     // Not saved across process death: a URL may carry a credential of its own.
     var url by remember(state.webhooksCreated) { mutableStateOf("") }
     var severity by rememberSaveable(state.webhooksCreated) { mutableStateOf("warning") }
+    var format by remember(state.webhooksCreated) { mutableStateOf("wolf") }
     var deleting by remember { mutableStateOf<WebhookView?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -245,7 +246,7 @@ private fun WebhooksSection(state: AlertsState, actions: WebhookActions) {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(webhook.name, fontWeight = FontWeight.SemiBold)
-                            Text(webhook.host, style = MaterialTheme.typography.labelMedium)
+                            Text("${webhook.host} · ${Webhooks.FORMATS.firstOrNull { it.first == webhook.format }?.second ?: webhook.format}", style = MaterialTheme.typography.labelMedium)
                             Text(
                                 "${Webhooks.stateText(webhook)} · sends ${Webhooks.SEVERITIES.first { it.first == webhook.minSeverity }.second.lowercase(Locale.ROOT)}",
                                 style = MaterialTheme.typography.bodySmall,
@@ -274,7 +275,7 @@ private fun WebhooksSection(state: AlertsState, actions: WebhookActions) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text("Add a webhook", fontWeight = FontWeight.SemiBold)
                             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("https:// address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = url, onValueChange = { url = it; format = Webhooks.suggestedFormat(it) }, label = { Text("https:// address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                             Text(
                                 "A public https address. WOLF refuses private and local ones, and afterwards shows only the host. Sent: each " +
                                     "notification's title, detail, severity, time and which PC. Adding one needs your password.",
@@ -285,7 +286,12 @@ private fun WebhooksSection(state: AlertsState, actions: WebhookActions) {
                                     if (id == severity) Button(onClick = {}) { Text(label) } else OutlinedButton(onClick = { severity = id }) { Text(label) }
                                 }
                             }
-                            Button(onClick = { actions.create(name, url, severity) }, enabled = !state.busy && name.isNotBlank() && url.isNotBlank()) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Webhooks.FORMATS.forEach { (id, label) ->
+                                    if (id == format) Button(onClick = {}) { Text(label) } else OutlinedButton(onClick = { format = id }) { Text(label) }
+                                }
+                            }
+                            Button(onClick = { actions.create(name, url, severity, format) }, enabled = !state.busy && name.isNotBlank() && url.isNotBlank()) {
                                 Text("Add webhook")
                             }
                         }

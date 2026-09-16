@@ -100,6 +100,15 @@ class WebhooksTest {
     }
 
     @Test
+    fun the_format_follows_the_host_and_is_sent() {
+        assertEquals("slack", Webhooks.suggestedFormat("https://hooks.slack.com/services/T/B/x"))
+        assertEquals("discord", Webhooks.suggestedFormat("https://discord.com/api/webhooks/1/x"))
+        assertEquals("wolf", Webhooks.suggestedFormat("https://hooks.slack.com.evil.example/x"))
+        assertEquals("discord", Webhooks.input("x", "https://discord.com/api/webhooks/1/x", "warning").format)
+        assertEquals("wolf", Webhooks.input("x", "https://discord.com/api/webhooks/1/x", "warning", format = "wolf").format)
+    }
+
+    @Test
     fun a_secret_on_screen_never_prints_itself() {
         assertFalse(ShownSecret("Team chat", "whsec_supersecret").toString().contains("whsec"))
     }

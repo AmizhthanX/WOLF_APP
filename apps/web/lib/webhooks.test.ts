@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { outcomeText, stateText } from './webhooks.js';
+import { outcomeText, stateText, suggestFormat } from './webhooks.js';
+
+test('the format is suggested from the host, the same way the protocol does', () => {
+  assert.equal(suggestFormat('https://hooks.slack.com/services/T/B/x'), 'slack');
+  assert.equal(suggestFormat('https://discord.com/api/webhooks/1/x'), 'discord');
+  assert.equal(suggestFormat('https://hooks.slack.com.evil.example/x'), 'wolf');
+  assert.equal(suggestFormat('half typed'), 'wolf');
+});
 
 test('every delivery outcome has words, and a refused address is not called a network failure', () => {
   assert.equal(outcomeText('delivered', 204), 'Delivered (204)');

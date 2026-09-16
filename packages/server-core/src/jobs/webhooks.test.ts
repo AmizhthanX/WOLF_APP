@@ -40,7 +40,12 @@ function job(sender: RecordingSender): WebhookJob {
   return new WebhookJob({ config, db, repos, logger: pino({ level: 'silent' }), now: () => clock }, secrets, sender as unknown as WebhookSender);
 }
 
-async function webhook(owner: string, minSeverity: 'info' | 'warning' | 'critical', url = 'https://hooks.example.com/in/secret-token') {
+async function webhook(
+  owner: string,
+  minSeverity: 'info' | 'warning' | 'critical',
+  url = 'https://hooks.example.com/in/secret-token',
+  format: 'wolf' | 'slack' | 'discord' = 'wolf',
+) {
   const id = newId();
   return repos.webhooks.create({
     id,
@@ -49,6 +54,7 @@ async function webhook(owner: string, minSeverity: 'info' | 'warning' | 'critica
     host: new URL(url).host,
     urlSealed: secrets.encryptUrl(id, url),
     secretSalt: secrets.newSalt(),
+    format,
     minSeverity,
   });
 }
@@ -198,4 +204,21 @@ test('a webhook that keeps failing turns itself off, says so in the inbox, and i
   const on = await repos.webhooks.update(hook.id, userId, { enabled: true });
   assert.equal(on?.disabledReason, null);
   assert.equal(on?.consecutiveFailures, 0);
+});
+
+test('a Slack or Discord webhook is sent the message shape it accepts, signed like any other', async () => {
+  await webhook(userId, 'info', 'https://hooks.slack.com/services/T/B/x', 'slack');
+  await webhook(userId, 'info', 'https://discord.com/api/webhooks/1/x', 'discord');
+  const sender = new RecordingSender();
+  await notify(userId, 'critical');
+
+  await job(sender).runOnce();
+
+  const bodies = sender.calls.map((call) => JSON.parse(call.body) as Record<string, unknown>);
+  const slack = bodies.find((body) => 'text' in body)!;
+  const discord = bodies.find((body) => 'content' in body)!;
+  assert.equal(slack['text'], '*[CRITICAL] A critical thing*\ndetail');
+  assert.equal(discord['content'], '**[CRITICAL] A critical thing**\ndetail');
+  assert.deepEqual(discord['allowed_mentions'], { parse: [] }, 'a message cannot ping anybody');
+  assert.ok(sender.calls.every((call) => call.secret.startsWith('whsec_')));
 });

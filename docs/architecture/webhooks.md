@@ -115,6 +115,17 @@ deliveries to them fail and they have to be made again.
 }
 ```
 
+That is the `wolf` format. Slack's and Discord's incoming webhooks refuse anything but their own shape, so a
+webhook has a **format** — `wolf`, `slack` or `discord` — suggested from the address's host and changeable:
+
+- `slack`: `{ "text": "*[CRITICAL] Disk almost full on Tower*\nC: is at 97%.\nPC: Tower" }`, at most 3000 characters.
+- `discord`: `{ "content": "**[CRITICAL] …**\n…", "allowed_mentions": { "parse": [] } }`, at most 2000 characters, with
+  mentions switched off so a PC named `@everyone` pings nobody.
+
+Markdown characters from a title, detail or PC name are escaped. These are fixed formats, not templates: nothing
+the owner types is rendered into a request. The signature header is sent with every format. Found while writing
+the owner's setup guide — a first webhook pointed at Discord would otherwise have failed with 400.
+
 What the inbox shows, and nothing else about the account — never a metric history, a command result, or anything
 from a terminal, file or clipboard (none of which reaches a notification in the first place). A test delivery is
 `"type": "wolf.test"`. Each webhook has a minimum severity: everything, warnings and critical, or critical only.
@@ -167,8 +178,7 @@ the owner has not chosen, so it is left to the owner's first webhook and its Sen
 ## Not built
 
 - E-mail. It needs a provider, its credentials in secret management, and bounce handling.
-- Per-webhook payload templates (Slack's and Discord's own message formats). The body is WOLF's; a receiver that
-  needs another shape needs a small adapter of its own. Adding templates means rendering owner-written text into
-  a request, which is its own design.
+- Templates the owner writes. The three fixed formats cover Slack, Discord and anything that takes JSON; rendering
+  owner-written text into requests is its own design.
 - An egress proxy with its own allow-list. The application check is enforced; the network rule is a deployment
   step.
