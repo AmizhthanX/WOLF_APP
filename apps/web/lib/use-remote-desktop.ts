@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { REALTIME_URL, WolfApiError } from './client';
 import { getIceServers } from './wolf';
 import {
+  FileRefusal,
   RemoteDesktopStream,
   type ClipboardEvent,
   type AgentStats,
@@ -95,6 +96,7 @@ export interface RemoteDesktopView {
     final: boolean;
     overwrite: boolean;
     totalBytes: number;
+    fileSha256?: string | null;
   }): Promise<FileWritten>;
   cancelTransfer(transferId: string): Promise<void>;
   /**
@@ -308,8 +310,12 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
    * Rejecting with the same error the client uses keeps one shape for the panel to handle,
    * rather than a null it has to remember to check.
    */
+  // An interruption, not a refusal: a transfer that meets this can carry on once there is a
+  // stream again.
   const noStream = () =>
-    Promise.reject(new Error('There is no connection to this PC right now.'));
+    Promise.reject(
+      new FileRefusal('interrupted', 'There is no connection to this PC right now.', false),
+    );
 
   const listFiles = useCallback(
     (path: string | null) => stream.current?.listFiles(path) ?? noStream(),
@@ -333,6 +339,7 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
       final: boolean;
       overwrite: boolean;
       totalBytes: number;
+      fileSha256?: string | null;
     }) => stream.current?.writeFile(options) ?? noStream(),
     [],
   );

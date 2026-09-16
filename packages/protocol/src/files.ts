@@ -57,6 +57,15 @@ export const MAX_CONCURRENT_TRANSFERS = 4;
  */
 export const MAX_TRANSFER_BYTES = 8 * 1024 * 1024 * 1024;
 
+/**
+ * How long an interrupted upload's part file waits for a new stream to finish it.
+ *
+ * The stream ending or the file lease lapsing is an interruption, not a decision to stop, so the
+ * part file is kept this long — `file.stat` reports how far it got — and removed if nobody resumes
+ * it. Stopping a transfer with `file.cancel` removes it at once.
+ */
+export const PARTIAL_UPLOAD_KEPT_SECONDS = 30 * 60;
+
 export const FILE_ENTRY_KINDS = ['file', 'directory', 'drive'] as const;
 export const fileEntryKind = z.enum(FILE_ENTRY_KINDS);
 export type FileEntryKind = z.infer<typeof fileEntryKind>;
@@ -137,6 +146,14 @@ export const fileWrite = z.object({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
   /** The last chunk. The part file is verified and renamed into place. */
   final: z.boolean().default(false),
+  /**
+   * On the final chunk: SHA-256 of the whole file as the client has it, lowercase hex.
+   *
+   * When given, a file whose assembled bytes do not match is not put in place. Worth sending on a
+   * resumed upload above all, where the first part was written by an earlier stream and a mismatch
+   * would otherwise be found only once the file was already where the owner expects it.
+   */
+  fileSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable().default(null),
   /**
    * Whether an existing file at the destination may be replaced.
    *

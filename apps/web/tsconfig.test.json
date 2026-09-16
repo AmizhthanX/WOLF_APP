@@ -16,6 +16,8 @@
   "include": [
     "lib/remote-desktop.ts",
     "lib/remote-desktop.test.ts",
+    "lib/file-transfer.ts",
+    "lib/file-transfer.test.ts",
     "lib/input-capture.ts",
     "lib/input-capture.test.ts",
     "lib/terminal-render.ts",

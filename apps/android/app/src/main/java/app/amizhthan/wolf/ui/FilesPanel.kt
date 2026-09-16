@@ -30,23 +30,33 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.amizhthan.wolf.api.PcTools
 import app.amizhthan.wolf.remote.FileEntry
 import app.amizhthan.wolf.remote.FileMessages
+import app.amizhthan.wolf.remote.InterruptedDownload
+import app.amizhthan.wolf.remote.InterruptedUpload
 import app.amizhthan.wolf.remote.RemoteDesktopController
 
 /**
  * This PC's files, from the phone.
  *
- * Nothing here goes through the cloud, contents or names. A fetched file goes straight into a document the
- * owner picks; a sent file is read from one they pick. The app keeps neither.
+ * Nothing here goes through the cloud, contents or names. A fetched file goes into a document the owner picks
+ * once it is whole; a sent file is read from one they pick. The app keeps neither — except, inside its own cache,
+ * the part of a download a lost connection interrupted, until it is resumed or discarded.
  */
 @Composable
 fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier: Modifier = Modifier) {
     val files by controller.files.collectAsStateWithLifecycle()
     var saving by remember { mutableStateOf<FileEntry?>(null) }
+    var savingResumed by remember { mutableStateOf(false) }
 
     val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         val entry = saving
+        val resumed = savingResumed
         saving = null
-        if (uri != null && entry != null) controller.download(entry, uri)
+        savingResumed = false
+        when {
+            uri == null -> Unit
+            resumed -> controller.resumeDownload(uri)
+            entry != null -> controller.download(entry, uri)
+        }
     }
     val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) controller.upload(uri)
@@ -54,6 +64,7 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
 
     val holds = files.control?.granted == true
     val progress = files.progress
+    val interrupted = files.interrupted
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (!holds) {
@@ -75,12 +86,41 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                 TextButton(onClick = { controller.browse(files.folder) }, enabled = !files.busy) { Text(if (files.busy) "Reading…" else "Refresh") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { openLauncher.launch(arrayOf("*/*")) }, enabled = files.folder != null && progress == null) { Text("Send a file here") }
+                OutlinedButton(
+                    onClick = { openLauncher.launch(arrayOf("*/*")) },
+                    enabled = files.folder != null && progress == null && interrupted == null,
+                ) { Text("Send a file here") }
                 TextButton(onClick = controller::releaseFiles) { Text("Give up file access") }
             }
         }
 
         files.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        if (interrupted != null && progress == null) {
+            Text(
+                "${if (interrupted is InterruptedUpload) "Sending" else "Fetching"} ${interrupted.name} stopped at " +
+                    "${FileMessages.readableSize(interrupted.done)} of ${FileMessages.readableSize(interrupted.total)}",
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        when (interrupted) {
+                            is InterruptedUpload -> controller.resumeUpload()
+                            is InterruptedDownload -> {
+                                // Where it goes is chosen again: the document chosen before was removed so half a
+                                // file never sat among the owner's files.
+                                savingResumed = true
+                                saveLauncher.launch(interrupted.name)
+                            }
+                        }
+                    },
+                    enabled = holds,
+                ) { Text("Resume") }
+                TextButton(onClick = controller::discardInterrupted) { Text("Discard") }
+            }
+            if (!holds) Text("Resuming needs file access to this PC again.", style = MaterialTheme.typography.bodySmall)
+        }
 
         if (progress != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -142,7 +182,7 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                                         saving = entry
                                         saveLauncher.launch(entry.name)
                                     },
-                                    enabled = progress == null,
+                                    enabled = progress == null && interrupted == null,
                                 ) { Text("Fetch") }
                             }
                         }

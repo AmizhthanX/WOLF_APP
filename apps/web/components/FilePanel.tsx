@@ -3,7 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Empty, Panel } from '@/components/ui';
 import type { useRemoteDesktop } from '@/lib/use-remote-desktop';
-import { MAX_FILE_CHUNK, type FileEntry } from '@/lib/remote-desktop';
+import type { FileEntry } from '@/lib/remote-desktop';
+import {
+  downloadFile,
+  PARTIAL_UPLOAD_KEPT_MINUTES,
+  resumeDownload,
+  resumeUpload,
+  TransferInterrupted,
+  uploadFile,
+  type InterruptedTransfer,
+} from '@/lib/file-transfer';
 import { newId } from '@wolf/shared-types';
 
 /**
@@ -16,6 +25,9 @@ import { newId } from '@wolf/shared-types';
  *
  * A download is assembled in this tab and handed to the browser's own save dialog. It is
  * never uploaded anywhere on the way, and closing the tab is the end of it.
+ *
+ * A transfer the connection interrupted can be resumed once this session holds file access
+ * again — see `lib/file-transfer.ts`. One stopped with Stop cannot, by design.
  */
 
 /** Progress for one transfer, which is all this panel keeps about it. */
@@ -24,7 +36,6 @@ interface Progress {
   readonly direction: 'download' | 'upload';
   readonly done: number;
   readonly total: number;
-  readonly transferId: string | null;
 }
 
 function readableSize(bytes: number | null): string {
@@ -51,6 +62,19 @@ function parentOf(folder: string): string | null {
   return cut === 2 ? `${trimmed.slice(0, 2)}\\` : trimmed.slice(0, cut);
 }
 
+/** Hand what arrived to the browser's own save dialog. */
+function save(name: string, parts: readonly Uint8Array[]): void {
+  // Assembled here. It was never uploaded anywhere on the way, and closing this tab is the
+  // end of it.
+  const blob = new Blob(parts as unknown as BlobPart[]);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> }) {
   const [folder, setFolder] = useState<string | null>(null);
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
@@ -58,6 +82,7 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [interrupted, setInterrupted] = useState<InterruptedTransfer | null>(null);
 
   const upload = useRef<HTMLInputElement | null>(null);
   const cancelled = useRef(false);
@@ -90,59 +115,52 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
     if (holdsLease && entries === null) void browse(null);
   }, [holdsLease, entries, browse]);
 
+  /**
+   * What every transfer does when it ends early: an interruption is kept for Resume, anything
+   * else is the PC's own words.
+   */
+  const failed = useCallback((error: unknown, fallback: string) => {
+    if (error instanceof TransferInterrupted) {
+      setInterrupted(error.record);
+      setNotice(
+        error.record.kind === 'upload'
+          ? `${error.message} What reached the PC waits there for ${PARTIAL_UPLOAD_KEPT_MINUTES} minutes; once this session has file access again, resume it.`
+          : `${error.message} What arrived is kept in this tab; once this session has file access again, resume it.`,
+      );
+      return;
+    }
+
+    setNotice(error instanceof Error ? error.message : fallback);
+  }, []);
+
   /* --------------------------------------------------------------------- */
   /* Off the PC                                                             */
   /* --------------------------------------------------------------------- */
 
   const download = useCallback(
     async (entry: FileEntry) => {
-      const path = pathOf(folder, entry);
       cancelled.current = false;
       setNotice(null);
-      setProgress({ name: entry.name, direction: 'download', done: 0, total: entry.sizeBytes ?? 0, transferId: null });
-
-      const parts: Uint8Array[] = [];
-      let offset = 0;
+      setProgress({ name: entry.name, direction: 'download', done: 0, total: entry.sizeBytes ?? 0 });
 
       try {
-        for (;;) {
-          if (cancelled.current) return;
+        const result = await downloadFile(view, {
+          path: pathOf(folder, entry),
+          name: entry.name,
+          modifiedAt: entry.modifiedAt ?? null,
+          cancelled: () => cancelled.current,
+          onProgress: (done, total) =>
+            setProgress({ name: entry.name, direction: 'download', done, total }),
+        });
 
-          const chunk = await view.readFile(path, offset, MAX_FILE_CHUNK);
-          parts.push(chunk.bytes);
-          offset += chunk.bytes.length;
-
-          setProgress({
-            name: entry.name,
-            direction: 'download',
-            done: offset,
-            total: chunk.totalBytes,
-            transferId: null,
-          });
-
-          if (chunk.eof) break;
-
-          // A file that never reports the end would otherwise loop forever on a chunk of
-          // nothing, which is a browser tab that stops responding rather than an error.
-          if (chunk.bytes.length === 0) throw new Error('The PC stopped sending that file.');
-        }
-
-        // Assembled here and handed to the browser's own save dialog. It was never uploaded
-        // anywhere on the way, and closing this tab is the end of it.
-        const blob = new Blob(parts as BlobPart[]);
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = entry.name;
-        link.click();
-        URL.revokeObjectURL(url);
+        if (result.outcome === 'fetched') save(entry.name, result.parts);
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : 'That file could not be fetched.');
+        failed(error, 'That file could not be fetched.');
       } finally {
         setProgress(null);
       }
     },
-    [folder, view],
+    [failed, folder, view],
   );
 
   /* --------------------------------------------------------------------- */
@@ -157,70 +175,127 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
       }
 
       const destination = folder.endsWith('\\') ? folder + file.name : `${folder}\\${file.name}`;
-      const transferId = newId();
 
       cancelled.current = false;
       setNotice(null);
-      setProgress({ name: file.name, direction: 'upload', done: 0, total: file.size, transferId });
+      setProgress({ name: file.name, direction: 'upload', done: 0, total: file.size });
 
       try {
-        let offset = 0;
+        const result = await uploadFile(view, {
+          file,
+          name: file.name,
+          destination,
+          transferId: newId(),
+          cancelled: () => cancelled.current,
+          onProgress: (done, total) =>
+            setProgress({ name: file.name, direction: 'upload', done, total }),
+        });
 
-        while (offset < file.size || file.size === 0) {
-          if (cancelled.current) {
-            await view.cancelTransfer(transferId);
-            return;
-          }
-
-          const end = Math.min(offset + MAX_FILE_CHUNK, file.size);
-          const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
-          const final = end >= file.size;
-
-          const written = await view.writeFile({
-            transferId,
-            path: destination,
-            offset,
-            bytes,
-            final,
-            // Never by default. An operator replacing somebody's file should have said so.
-            overwrite: false,
-            totalBytes: file.size,
-          });
-
-          // The PC says where it actually is, which is how a chunk that arrived out of order
-          // corrects itself instead of leaving a hole.
-          offset = written.bytesWritten;
-
-          setProgress({
-            name: file.name,
-            direction: 'upload',
-            done: offset,
-            total: file.size,
-            transferId,
-          });
-
-          if (written.complete) break;
-          if (file.size === 0) break;
+        if (result.outcome === 'written') {
+          setNotice(`${file.name} was written to the PC.`);
+          await browse(folder);
         }
-
-        setNotice(`${file.name} was written to the PC.`);
-        await browse(folder);
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : 'That file could not be sent.');
-        await view.cancelTransfer(transferId).catch(() => {});
+        failed(error, 'That file could not be sent.');
       } finally {
         setProgress(null);
       }
     },
-    [browse, folder, view],
+    [browse, failed, folder, view],
   );
 
   /* --------------------------------------------------------------------- */
+  /* After an interruption                                                  */
+  /* --------------------------------------------------------------------- */
+
+  const resume = useCallback(async () => {
+    const record = interrupted;
+    if (record === null) return;
+
+    const total = record.kind === 'upload' ? record.file.size : record.total;
+    const onProgress = (done: number, of: number) =>
+      setProgress({ name: record.name, direction: record.kind, done, total: of });
+
+    cancelled.current = false;
+    setInterrupted(null);
+    setNotice(null);
+    onProgress(record.done, total);
+
+    try {
+      if (record.kind === 'download') {
+        const result = await resumeDownload(view, record, {
+          cancelled: () => cancelled.current,
+          onProgress,
+        });
+        if (result.outcome === 'fetched') save(record.name, result.parts);
+        return;
+      }
+
+      const result = await resumeUpload(view, record, {
+        transferId: newId(),
+        cancelled: () => cancelled.current,
+        onProgress,
+      });
+
+      if (result.outcome === 'written') {
+        setNotice(
+          result.checkedWholeFile
+            ? `${record.name} was written to the PC, and matches the file sent.`
+            : // Every chunk was still checked. What is missing is the comparison of the whole,
+              // which the browser cannot compute for a file this large without holding all of it.
+              `${record.name} was written to the PC. Every part was checked as it arrived, but a file this large is not compared end to end after a resume — check it on the PC before relying on it.`,
+        );
+        if (folder !== null) await browse(folder);
+      }
+    } catch (error) {
+      failed(error, 'That transfer could not be resumed.');
+    } finally {
+      setProgress(null);
+    }
+  }, [browse, failed, folder, interrupted, view]);
+
+  /* --------------------------------------------------------------------- */
+
+  const interruptedPanel =
+    interrupted && progress === null ? (
+      <div className="notice">
+        <strong>
+          {interrupted.kind === 'upload' ? 'Sending' : 'Fetching'} {interrupted.name} stopped at{' '}
+          {readableSize(interrupted.done)} of{' '}
+          {readableSize(interrupted.kind === 'upload' ? interrupted.file.size : interrupted.total)}
+        </strong>
+        <div style={{ marginTop: 6 }}>
+          <button type="button" onClick={() => void resume()} disabled={!holdsLease}>
+            Resume
+          </button>{' '}
+          <button
+            type="button"
+            onClick={() => {
+              // Nothing to tell the PC: the transfer there already ended with the stream, and
+              // its part file is removed when its time is up.
+              setNotice(
+                interrupted.kind === 'upload'
+                  ? `The part of ${interrupted.name} already on the PC is removed within ${PARTIAL_UPLOAD_KEPT_MINUTES} minutes.`
+                  : null,
+              );
+              setInterrupted(null);
+            }}
+          >
+            Discard
+          </button>
+          {!holdsLease ? <span className="muted"> Resuming needs file access to this PC again.</span> : null}
+        </div>
+      </div>
+    ) : null;
 
   if (!view.active) {
     return (
       <Panel title="Files">
-        <Empty>Browsing this PC&rsquo;s files needs a running stream to it.</Empty>
+        <div className="stack">
+          {notice ? <div className="notice">{notice}</div> : null}
+          {interruptedPanel}
+          <Empty>Browsing this PC&rsquo;s files needs a running stream to it.</Empty>
+        </div>
       </Panel>
     );
   }
@@ -237,7 +312,7 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
             <button
               type="button"
               onClick={() => upload.current?.click()}
-              disabled={folder === null || progress !== null}
+              disabled={folder === null || progress !== null || interrupted !== null}
             >
               Send a file
             </button>
@@ -267,6 +342,8 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
         ) : null}
 
         {notice ? <div className="notice">{notice}</div> : null}
+
+        {interruptedPanel}
 
         {progress ? (
           <div className="notice">
@@ -353,7 +430,7 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
                         <button
                           type="button"
                           onClick={() => void download(entry)}
-                          disabled={progress !== null}
+                          disabled={progress !== null || interrupted !== null}
                         >
                           Fetch
                         </button>

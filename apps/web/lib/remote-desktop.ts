@@ -642,6 +642,8 @@ export class RemoteDesktopStream {
     final: boolean;
     overwrite: boolean;
     totalBytes: number;
+    /** On the final chunk: SHA-256 of the whole file, so a mismatch is never put in place. */
+    fileSha256?: string | null;
   }): Promise<FileWritten> {
     const answer = await this.askFiles({
       kind: 'file.write',
@@ -653,6 +655,7 @@ export class RemoteDesktopStream {
       final: options.final,
       overwrite: options.overwrite,
       totalBytes: options.totalBytes,
+      fileSha256: options.fileSha256 ?? null,
     });
 
     return {
@@ -662,7 +665,12 @@ export class RemoteDesktopStream {
     };
   }
 
-  /** Abandon a transfer. The part file on the PC goes with it. */
+  /**
+   * Stop a transfer. The part file on the PC goes with it.
+   *
+   * Only for a transfer somebody decided to stop. One the connection interrupted is left alone,
+   * and its part file waits on the PC to be resumed.
+   */
   async cancelTransfer(transferId: string): Promise<void> {
     await this.askFiles({ kind: 'file.cancel', transferId });
   }
@@ -682,7 +690,7 @@ export class RemoteDesktopStream {
 
     if (this.control?.readyState !== 'open') {
       return Promise.reject(
-        new FileRefusal('failed', 'The connection to this PC is not ready.', false),
+        new FileRefusal('interrupted', 'The connection to this PC is not ready.', false),
       );
     }
 
@@ -783,7 +791,9 @@ export class RemoteDesktopStream {
     // Nothing is coming back for these. Left hanging they would be promises the caller awaits
     // forever, which is a file manager that shows a spinner until the tab is closed.
     for (const pending of this.pendingFiles.values()) {
-      pending.reject(new FileRefusal('failed', 'The connection to this PC ended.', false));
+      // "interrupted", not "failed": nothing on the PC went wrong, and a transfer can carry on
+      // from where it was once there is a connection again.
+      pending.reject(new FileRefusal('interrupted', 'The connection to this PC ended.', false));
     }
     this.pendingFiles.clear();
   }

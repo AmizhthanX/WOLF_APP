@@ -60,6 +60,9 @@ public sealed class FileChannel : IDisposable
     private readonly ConcurrentDictionary<string, Upload> _uploads = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
+    private readonly PartialUploads _partials;
+    private readonly Func<DateTimeOffset> _clock;
+
     private string? _holderSessionId;
     private DateTimeOffset _leaseExpiresAt = DateTimeOffset.MinValue;
     private bool _disposed;
@@ -71,11 +74,21 @@ public sealed class FileChannel : IDisposable
     /// speaks when spoken to — so there is no sender to hold, and a client that stops asking
     /// stops hearing.
     /// </summary>
-    public FileChannel(string streamId, bool allowed, ILoggerFactory loggers)
+    public FileChannel(
+        string streamId,
+        bool allowed,
+        ILoggerFactory loggers,
+        PartialUploads? partialUploads = null,
+        Func<DateTimeOffset>? clock = null)
     {
         _streamId = streamId;
         _allowed = allowed;
         _logger = loggers.CreateLogger<FileChannel>();
+        _partials = partialUploads ?? PartialUploads.ForCurrentUser(loggers);
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
+
+        // A stream starting is when a part file left by an earlier one is either resumed or past waiting for.
+        _partials.Sweep(_clock());
     }
 
     /// <summary>An upload in progress, and the part file it is accumulating into.</summary>
@@ -113,9 +126,10 @@ public sealed class FileChannel : IDisposable
     /// <summary>
     /// Apply the cloud's decision about who may touch this PC's files.
     ///
-    /// Losing the lease abandons every transfer in flight, and the part files go with them.
-    /// Leaving them would put half a file on somebody's disk with nothing to finish it and
-    /// nothing to explain it.
+    /// Losing the lease puts every transfer in flight aside. Their part files are kept for
+    /// <see cref="PartialUploads.KeptFor"/> so a new stream can finish them, and removed if none
+    /// does: an interruption is not a decision to stop, and half a file left indefinitely, with
+    /// nothing to finish it, is worse than none.
     /// </summary>
     public void ApplyControl(bool granted, string? holderSessionId, DateTimeOffset? expiresAt)
     {
@@ -135,6 +149,7 @@ public sealed class FileChannel : IDisposable
 
         if (granted)
         {
+            _partials.Sweep(_clock());
             _logger.LogInformation(
                 "Stream {Stream}: file access granted to session {Session} until {Expiry:o}.",
                 _streamId,
@@ -144,7 +159,7 @@ public sealed class FileChannel : IDisposable
         }
 
         _logger.LogInformation("Stream {Stream}: the file lease was released.", _streamId);
-        AbandonAll();
+        SuspendAll();
     }
 
     /// <summary>Handle one file message. Returns what to send back, or null when nothing does.</summary>
@@ -555,7 +570,7 @@ public sealed class FileChannel : IDisposable
             };
         }
 
-        return Finish(requestId, transferId, upload);
+        return Finish(requestId, transferId, upload, Text(message, "fileSha256"));
     }
 
     /// <summary>
@@ -630,16 +645,17 @@ public sealed class FileChannel : IDisposable
             // Resuming reuses the part file; starting fresh truncates it. Which of the two is
             // decided by the offset the client asked to write at, because the client is the
             // one that asked for the part file's length before it began.
+            // Read as well as write: a resumed transfer hashes the part it already has through this
+            // same handle, because a second handle could not open a file this one holds exclusively.
             var stream = new FileStream(
                 partPath,
                 offset > 0 ? FileMode.OpenOrCreate : FileMode.Create,
-                FileAccess.Write,
+                FileAccess.ReadWrite,
                 FileShare.None);
 
             if (offset > 0 && offset <= stream.Length)
             {
                 stream.SetLength(offset);
-                stream.Seek(offset, SeekOrigin.Begin);
             }
             else if (offset > 0)
             {
@@ -649,24 +665,26 @@ public sealed class FileChannel : IDisposable
 
             var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-            // A resumed transfer cannot re-hash what it did not send, so the whole-file digest
-            // is only meaningful for one that ran start to finish. Reported as such rather
-            // than as a number that looks like a verification and is not.
+            // A resumed transfer hashes the part already on disk first, so the digest reported at
+            // the end covers the whole file as it now sits on this PC, not just what this stream
+            // sent — which is what lets a client's own whole-file checksum be compared against it.
             if (offset > 0)
             {
                 try
                 {
-                    using var existing = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    stream.Seek(0, SeekOrigin.Begin);
                     var buffer = new byte[MaxChunkBytes];
                     long remaining = offset;
 
                     while (remaining > 0)
                     {
-                        int read = existing.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
-                        if (read <= 0) break;
+                        int read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+                        if (read <= 0) throw new IOException("The partial file is shorter than it was.");
                         digest.AppendData(buffer.AsSpan(0, read));
                         remaining -= read;
                     }
+
+                    stream.Seek(offset, SeekOrigin.Begin);
                 }
                 catch (IOException)
                 {
@@ -693,6 +711,9 @@ public sealed class FileChannel : IDisposable
                 upload = null;
                 return Refuse(requestId, "rejected", "A transfer with that id is already running.");
             }
+
+            // Started or resumed: the part file is this transfer's again, not waiting to be cleared.
+            _partials.Claim(partPath);
 
             _logger.LogInformation(
                 "Stream {Stream}: began a {Bytes}-byte transfer onto this PC{Resume}.",
@@ -723,8 +744,13 @@ public sealed class FileChannel : IDisposable
     /// mean a half-finished transfer looks exactly like a finished one, and somebody
     /// double-clicking a 40%-complete installer is a worse outcome than a transfer they have
     /// to start again.
+    ///
+    /// When the client sends its own whole-file checksum, a file that does not match is not put
+    /// in place at all. That matters most for a resumed upload, whose first part was written by an
+    /// earlier stream: a mismatch found after the rename is found with the wrong file already where
+    /// the owner expects the right one.
     /// </summary>
-    private JsonNode Finish(string requestId, string transferId, Upload upload)
+    private JsonNode Finish(string requestId, string transferId, Upload upload, string? expectedWholeFile)
     {
         string digest = Hex(upload.Digest.GetHashAndReset());
 
@@ -739,6 +765,15 @@ public sealed class FileChannel : IDisposable
                     requestId,
                     "corrupt",
                     $"The transfer ended at {upload.Written} bytes but was declared as {upload.TotalBytes}. Nothing was kept.");
+            }
+
+            if (expectedWholeFile is not null && !string.Equals(expectedWholeFile, digest, StringComparison.OrdinalIgnoreCase))
+            {
+                Abandon(transferId);
+                return Refuse(
+                    requestId,
+                    "corrupt",
+                    "The file put together on this PC does not match the one sent, so it was not put in place. Send it again from the start.");
             }
 
             File.Move(upload.PartPath, upload.DestinationPath, overwrite: upload.Overwrite);
@@ -795,6 +830,7 @@ public sealed class FileChannel : IDisposable
         try
         {
             if (File.Exists(partPath)) File.Delete(partPath);
+            _partials.Claim(partPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -804,10 +840,21 @@ public sealed class FileChannel : IDisposable
         }
     }
 
-    /// <summary>Abandon everything — the lease lapsed, or the stream ended.</summary>
-    public void AbandonAll()
+    /// <summary>
+    /// Put every transfer in flight aside — the lease lapsed, or the stream ended.
+    ///
+    /// Interrupted, not stopped: the handles close, and the part files stay for
+    /// <see cref="PartialUploads.KeptFor"/> so a new stream can finish them. Stopping a transfer is
+    /// <c>file.cancel</c>, which removes its part file at once.
+    /// </summary>
+    public void SuspendAll()
     {
-        foreach (string id in _uploads.Keys) Abandon(id);
+        foreach (string id in _uploads.Keys)
+        {
+            if (!_uploads.TryRemove(id, out Upload? upload)) continue;
+            upload.Dispose();
+            _partials.Keep(upload.PartPath, _clock());
+        }
     }
 
     /* --------------------------------------------------------------------- */
@@ -854,6 +901,6 @@ public sealed class FileChannel : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        AbandonAll();
+        SuspendAll();
     }
 }

@@ -205,9 +205,9 @@ class StreamSession(
      * sent without the file lease.
      */
     fun askFiles(message: JsonObject, reply: (Result<JsonObject>) -> Unit) {
-        if (closed) return reply(Result.failure(fileFailure("failed", "The connection to this PC ended.")))
+        if (closed) return reply(Result.failure(fileFailure(FileMessages.INTERRUPTED, "The connection to this PC ended.")))
         if (!hasFiles) return reply(Result.failure(fileFailure("not-permitted", "This session does not hold this PC's files.")))
-        val link = peer ?: return reply(Result.failure(fileFailure("failed", "The connection to this PC is not ready.")))
+        val link = peer ?: return reply(Result.failure(fileFailure(FileMessages.INTERRUPTED, "The connection to this PC is not ready.")))
 
         val requestId = Ulid.next()
         lateinit var timeout: Cancellable
@@ -241,7 +241,7 @@ class StreamSession(
 
     private fun sendFile(link: PeerLink, requestId: String, text: String) {
         if (!link.sendControl(text)) {
-            settleFile(requestId, Result.failure(fileFailure("failed", "The connection to this PC is not ready.")))
+            settleFile(requestId, Result.failure(fileFailure(FileMessages.INTERRUPTED, "The connection to this PC is not ready.")))
         }
     }
 
@@ -634,12 +634,13 @@ class StreamSession(
         peer?.close()
         peer = null
 
-        // Nothing is coming back for these; left waiting they would never be answered.
+        // Nothing is coming back for these; left waiting they would never be answered. An interruption rather than
+        // a failure: nothing on the PC went wrong, and a transfer can carry on once there is a stream again.
         val waiting = pendingFiles.values.toList()
         pendingFiles.clear()
         waiting.forEach {
             it.timeout.cancel()
-            it.reply(Result.failure(fileFailure("failed", "The connection to this PC ended.")))
+            it.reply(Result.failure(fileFailure(FileMessages.INTERRUPTED, "The connection to this PC ended.")))
         }
     }
 

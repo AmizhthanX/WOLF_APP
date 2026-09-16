@@ -27,11 +27,14 @@ public sealed class FileChannelTests : IDisposable
 {
     private readonly ITestOutputHelper _output;
     private readonly string _root;
+    private readonly string _registry;
+    private PartialUploads? _partials;
 
     public FileChannelTests(ITestOutputHelper output)
     {
         _output = output;
         _root = Path.Combine(Path.GetTempPath(), $"wolf-files-{Guid.NewGuid():N}");
+        _registry = Path.Combine(Path.GetTempPath(), $"wolf-partials-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_root);
     }
 
@@ -40,6 +43,7 @@ public sealed class FileChannelTests : IDisposable
         try
         {
             if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+            if (Directory.Exists(_registry)) Directory.Delete(_registry, recursive: true);
         }
         catch (IOException)
         {
@@ -52,8 +56,11 @@ public sealed class FileChannelTests : IDisposable
     private const string RequestId = "01J9ZQK7T0000000000000000R";
     private const string TransferId = "01J9ZQK7T0000000000000000X";
 
-    private static FileChannel Channel(bool allowed = true, ILoggerFactory? loggers = null) =>
-        new(StreamId, allowed, loggers ?? NullLoggerFactory.Instance);
+    /// <summary>This test's own record of unfinished uploads, never the signed-in user's.</summary>
+    private PartialUploads Partials => _partials ??= new PartialUploads(_registry, NullLogger.Instance);
+
+    private FileChannel Channel(bool allowed = true, ILoggerFactory? loggers = null, Func<DateTimeOffset>? clock = null) =>
+        new(StreamId, allowed, loggers ?? NullLoggerFactory.Instance, Partials, clock);
 
     private static void Grant(FileChannel channel, int seconds = 300) =>
         channel.ApplyControl(true, SessionId, DateTimeOffset.UtcNow.AddSeconds(seconds));
@@ -459,16 +466,12 @@ public sealed class FileChannelTests : IDisposable
         Send(first, destination, contents[..FileChannel.MaxChunkBytes], 0, final: false, total: contents.Length);
         first.Dispose();
 
-        // Disposal abandons the transfer *and* its part file, which is the honest behaviour:
-        // an abandoned transfer leaves nothing behind. So a resume starts over, and the test
-        // says so rather than pretending otherwise.
-        Assert.False(System.IO.File.Exists(destination + FileChannel.PartSuffix));
+        // The stream ending is an interruption: the part file stays for a new stream to finish.
+        Assert.True(System.IO.File.Exists(destination + FileChannel.PartSuffix));
 
-        // Second attempt, from the beginning.
+        // A new stream asks how far it got and carries on from there, without the first chunk again.
         FileChannel second = Channel();
         Grant(second);
-
-        Send(second, destination, contents[..FileChannel.MaxChunkBytes], 0, final: false, total: contents.Length);
 
         JsonNode? stat = second.Handle("file.stat", Message(new { requestId = RequestId, path = destination }));
         long partial = stat!["partialBytes"]!.GetValue<long>();
@@ -656,9 +659,9 @@ public sealed class FileChannelTests : IDisposable
     }
 
     [Fact]
-    public void Losing_the_lease_abandons_every_transfer_in_flight()
+    public void Losing_the_lease_puts_transfers_aside_and_their_part_files_wait_to_be_resumed()
     {
-        string destination = Path.Combine(_root, "abandoned.bin");
+        string destination = Path.Combine(_root, "interrupted.bin");
 
         FileChannel channel = Channel();
         Grant(channel);
@@ -667,11 +670,122 @@ public sealed class FileChannelTests : IDisposable
 
         channel.ApplyControl(granted: false, null, null);
 
-        // Half a file on somebody's disk, with nothing to finish it and nothing to explain
-        // it, is worse than none.
+        // Nothing is in flight any more and the real file does not exist, but the part file is
+        // still there: losing the lease is an interruption, not a decision to stop.
         Assert.Equal(0, channel.ActiveTransfers);
-        Assert.False(System.IO.File.Exists(destination + FileChannel.PartSuffix));
         Assert.False(System.IO.File.Exists(destination));
+        Assert.True(System.IO.File.Exists(destination + FileChannel.PartSuffix));
+    }
+
+    [Fact]
+    public void A_part_file_nobody_resumes_is_removed_once_its_time_is_up()
+    {
+        string destination = Path.Combine(_root, "forgotten.bin");
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        FileChannel first = Channel(clock: () => now);
+        Grant(first);
+        Send(first, destination, "started"u8.ToArray(), 0, final: false, total: 1000);
+        first.Dispose();
+
+        // A new stream shortly afterwards leaves it for whoever means to finish it.
+        now += TimeSpan.FromMinutes(10);
+        Channel(clock: () => now).Dispose();
+        Assert.True(System.IO.File.Exists(destination + FileChannel.PartSuffix));
+
+        // Past the window, the next stream to start clears it.
+        now += PartialUploads.KeptFor;
+        Channel(clock: () => now).Dispose();
+        Assert.False(System.IO.File.Exists(destination + FileChannel.PartSuffix));
+    }
+
+    [Fact]
+    public void A_resumed_part_file_is_not_cleared_out_from_under_its_transfer()
+    {
+        var contents = new byte[FileChannel.MaxChunkBytes + 300];
+        new Random(17).NextBytes(contents);
+        string destination = Path.Combine(_root, "claimed.bin");
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        int split = FileChannel.MaxChunkBytes + 100;
+
+        FileChannel first = Channel(clock: () => now);
+        Grant(first);
+        Send(first, destination, contents[..FileChannel.MaxChunkBytes], 0, final: false, total: contents.Length);
+        first.Dispose();
+
+        FileChannel second = Channel(clock: () => now);
+        Grant(second);
+        Send(second, destination, contents[FileChannel.MaxChunkBytes..split], FileChannel.MaxChunkBytes, final: false, total: contents.Length);
+
+        // The window passes while the resumed transfer is still running. Another stream starting
+        // must not remove the part file it is writing.
+        now += PartialUploads.KeptFor + TimeSpan.FromMinutes(1);
+        Channel(clock: () => now).Dispose();
+        Assert.True(System.IO.File.Exists(destination + FileChannel.PartSuffix));
+
+        JsonNode? done = Send(second, destination, contents[split..], split, final: true, total: contents.Length);
+        Assert.True(done!["complete"]!.GetValue<bool>());
+        Assert.Equal(contents, System.IO.File.ReadAllBytes(destination));
+        second.Dispose();
+    }
+
+    [Fact]
+    public void Clearing_old_uploads_removes_part_files_and_nothing_else()
+    {
+        string notAPart = File("precious.docx", "keep me"u8.ToArray());
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // A record naming something other than a part file — however it got there — is dropped,
+        // and the file it names is left exactly where it is.
+        Partials.Keep(notAPart, now);
+        DateTimeOffset later = now + PartialUploads.KeptFor + TimeSpan.FromMinutes(1);
+        Channel(clock: () => later).Dispose();
+
+        Assert.True(System.IO.File.Exists(notAPart));
+    }
+
+    [Fact]
+    public void A_whole_file_checksum_that_does_not_match_keeps_the_file_out_of_place()
+    {
+        byte[] contents = "the whole of it"u8.ToArray();
+        string destination = Path.Combine(_root, "checked.bin");
+
+        FileChannel channel = Channel();
+        Grant(channel);
+
+        JsonNode? refused = channel.Handle("file.write", Message(new
+        {
+            requestId = RequestId,
+            transferId = TransferId,
+            path = destination,
+            offset = 0,
+            data = Convert.ToBase64String(contents),
+            sha256 = Sha(contents),
+            final = true,
+            totalBytes = contents.Length,
+            fileSha256 = Sha("something else"u8.ToArray()),
+        }));
+
+        Assert.Equal("file.refused", Kind(refused));
+        Assert.Equal("corrupt", Reason(refused));
+        Assert.False(System.IO.File.Exists(destination));
+        Assert.False(System.IO.File.Exists(destination + FileChannel.PartSuffix));
+
+        JsonNode? accepted = channel.Handle("file.write", Message(new
+        {
+            requestId = RequestId,
+            transferId = "01J9ZQK7T0000000000000000Y",
+            path = destination,
+            offset = 0,
+            data = Convert.ToBase64String(contents),
+            sha256 = Sha(contents),
+            final = true,
+            totalBytes = contents.Length,
+            fileSha256 = Sha(contents),
+        }));
+
+        Assert.True(accepted!["complete"]!.GetValue<bool>());
+        Assert.Equal(contents, System.IO.File.ReadAllBytes(destination));
     }
 
     /* --------------------------------------------------------------------- */

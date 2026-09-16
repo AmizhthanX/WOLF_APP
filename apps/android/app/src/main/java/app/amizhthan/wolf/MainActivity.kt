@@ -25,6 +25,7 @@ import app.amizhthan.wolf.push.PushTokens
 import app.amizhthan.wolf.push.WakeHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.amizhthan.wolf.api.WolfApi
+import app.amizhthan.wolf.remote.InterruptedTransfers
 import app.amizhthan.wolf.remote.RemoteDesktopController
 import app.amizhthan.wolf.security.KeystoreDeviceIdentity
 import app.amizhthan.wolf.security.KeystoreLockCipher
@@ -66,6 +67,7 @@ class MainActivity : FragmentActivity() {
                             graph.session,
                             graph.http,
                             ContentResolverDocuments(applicationContext.contentResolver),
+                            graph.interruptedTransfers,
                         )
                     }
             }
@@ -184,6 +186,9 @@ class AppGraph private constructor(context: Context) {
     val pushRegistrar = PushRegistrar(api, session, pushTokens, PrefsRegistrationStore(context))
 
     val wakeHandler = WakeHandler(api, session, AndroidNotifier(context), PrefsSeenStore(context))
+
+    /** Transfers a lost connection interrupted, one per PC, outliving the remote desktop that was interrupted. */
+    val interruptedTransfers = InterruptedTransfers(context.cacheDir)
 
     companion object {
         @Volatile

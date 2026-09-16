@@ -29,7 +29,10 @@ import org.webrtc.AudioTrack
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -71,6 +74,8 @@ data class FilesUiState(
     val busy: Boolean = false,
     val notice: String? = null,
     val progress: TransferProgress? = null,
+    /** A transfer to this PC the connection interrupted, waiting to be resumed or discarded. */
+    val interrupted: InterruptedTransfer? = null,
 )
 
 /**
@@ -92,6 +97,7 @@ class RemoteDesktopController(
     session: SessionManager,
     private val http: OkHttpClient,
     private val documents: DocumentStore,
+    private val interruptedTransfers: InterruptedTransfers,
     private val clipboard: PhoneClipboard = PhoneClipboard(context),
 ) {
     private val appContext = context.applicationContext
@@ -103,8 +109,13 @@ class RemoteDesktopController(
     private val _state = MutableStateFlow(RemoteDesktopUiState())
     val state: StateFlow<RemoteDesktopUiState> = _state.asStateFlow()
 
-    private val _files = MutableStateFlow(FilesUiState())
+    private val _files = MutableStateFlow(FilesUiState(interrupted = interruptedTransfers[pcId]))
     val files: StateFlow<FilesUiState> = _files.asStateFlow()
+
+    init {
+        // Download parts nothing will resume — from a stream that ended some other way, or an app process that did.
+        scope.launch { interruptedTransfers.sweep() }
+    }
 
     @Volatile
     private var transferStopped = false
@@ -235,7 +246,7 @@ class RemoteDesktopController(
     fun releaseFiles() {
         transferStopped = true
         post { stream?.releaseFiles() }
-        _files.update { FilesUiState(control = it.control?.copy(granted = false, reason = "released")) }
+        _files.update { FilesUiState(control = it.control?.copy(granted = false, reason = "released"), interrupted = it.interrupted) }
     }
 
     fun browse(path: String?) {
@@ -263,33 +274,72 @@ class RemoteDesktopController(
     }
 
     /**
-     * Fetch a file into a document the owner chose. If it does not arrive whole, the document is removed, so a
-     * partial copy never sits on the phone looking like the real file.
+     * Fetch a file into a document the owner chose.
+     *
+     * It is put together in this app's cache first and copied into the document only once it is whole, so a
+     * partial copy never sits among the owner's files looking like the real one. If the connection ends partway,
+     * what arrived stays in the cache to be resumed, and the document is removed until then.
      */
     fun download(entry: FileEntry, destination: Uri) {
         val path = FileMessages.pathOf(_files.value.folder, entry)
         transferStopped = false
         _files.update { it.copy(notice = null, progress = TransferProgress(entry.name, true, 0, entry.sizeBytes ?: 0)) }
-        scope.launch {
-            var complete = false
-            try {
-                documents.openOutput(destination).use { sink ->
-                    transfer.download(path, sink, cancelled = { transferStopped }) { done, total ->
-                        _files.update { it.copy(progress = TransferProgress(entry.name, true, done, total)) }
-                    }
+        scope.launch { fetch(entry.name, path, entry.modifiedAt, destination, resuming = null) }
+    }
+
+    /** Carry on with the interrupted download, into a document the owner chose again. */
+    fun resumeDownload(destination: Uri) {
+        val record = interruptedTransfers[pcId] as? InterruptedDownload ?: return
+        transferStopped = false
+        _files.update { it.copy(notice = null, progress = TransferProgress(record.name, true, record.done, record.total)) }
+        scope.launch { fetch(record.name, record.path, record.modifiedAt, destination, resuming = record) }
+    }
+
+    private suspend fun fetch(name: String, path: String, modifiedAt: String?, destination: Uri, resuming: InterruptedDownload?) {
+        val part = resuming?.part ?: newPart()
+        if (resuming != null) interruptedTransfers.take(pcId)
+        var delivered = false
+        var keptForResume = false
+        val progress = { done: Long, total: Long -> _files.update { it.copy(progress = TransferProgress(name, true, done, total)) } }
+
+        try {
+            if (resuming == null) {
+                FileOutputStream(part).use { sink -> transfer.download(path, sink, cancelled = { transferStopped }, onProgress = progress) }
+            } else {
+                // What is really on disk decides, not the record: the cache may have been trimmed since.
+                val from = minOf(part.length(), resuming.done)
+                RandomAccessFile(part, "rw").use { it.setLength(from) }
+                FileOutputStream(part, true).use { sink ->
+                    transfer.resumeDownload(path, sink, from, resuming.total, modifiedAt, cancelled = { transferStopped }, onProgress = progress)
                 }
-                complete = true
-                _files.update { it.copy(notice = "${entry.name} was saved to this phone.") }
-            } catch (error: FileRefusalException) {
-                _files.update { it.copy(notice = words(error.refusal)) }
-            } catch (_: TransferCancelledException) {
-                _files.update { it.copy(notice = "Stopped. The partial copy on this phone was removed.") }
-            } catch (error: IOException) {
-                _files.update { it.copy(notice = "That file could not be saved on this phone: ${error.message ?: "the storage provider refused"}.") }
-            } finally {
-                if (!complete) withContext(NonCancellable) { documents.delete(destination) }
-                _files.update { it.copy(progress = null) }
             }
+
+            documents.openOutput(destination).use { sink -> part.inputStream().use { it.copyTo(sink, FileMessages.MAX_CHUNK) } }
+            delivered = true
+            _files.update { it.copy(notice = "$name was saved to this phone.") }
+        } catch (interrupted: TransferInterruptedException) {
+            interruptedTransfers.keep(pcId, InterruptedDownload(name, path, modifiedAt, part, interrupted.done, interrupted.total))
+            keptForResume = true
+            _files.update {
+                it.copy(notice = "Fetching $name was interrupted when the connection to the PC ended. What arrived is kept inside this app, not among your files; once this session has file access again, resume it.")
+            }
+        } catch (error: FileRefusalException) {
+            // Cut off again before a byte moved — while asking the PC about the file. The record stands as it was.
+            if (error.isInterruption && resuming != null) {
+                interruptedTransfers.keep(pcId, resuming)
+                keptForResume = true
+            }
+            _files.update { it.copy(notice = words(error.refusal)) }
+        } catch (_: TransferCancelledException) {
+            _files.update { it.copy(notice = "Stopped. The partial copy on this phone was removed.") }
+        } catch (error: IOException) {
+            _files.update { it.copy(notice = "That file could not be saved on this phone: ${error.message ?: "the storage provider refused"}.") }
+        } finally {
+            withContext(NonCancellable) {
+                if (!delivered) documents.delete(destination)
+                if (!keptForResume) part.delete()
+            }
+            _files.update { it.copy(progress = null, interrupted = interruptedTransfers[pcId]) }
         }
     }
 
@@ -302,33 +352,89 @@ class RemoteDesktopController(
         }
         transferStopped = false
         _files.update { it.copy(notice = null) }
-        scope.launch {
-            var name = "That file"
-            try {
-                val document = documents.openInput(source)
-                name = document.name
-                document.stream.use { input ->
-                    val size = document.sizeBytes ?: throw FileRefusalException(
-                        FileRefusal("unsupported", "This phone could not tell how large that file is, and the PC needs to know before it accepts one.", false),
+        scope.launch { send(source, folder, resuming = null) }
+    }
+
+    /** Carry on with the interrupted upload, from wherever the PC says its part file got to. */
+    fun resumeUpload() {
+        val record = interruptedTransfers[pcId] as? InterruptedUpload ?: return
+        transferStopped = false
+        _files.update { it.copy(notice = null, progress = TransferProgress(record.name, false, record.done, record.total)) }
+        scope.launch { send(Uri.parse(record.source), folder = null, resuming = record) }
+    }
+
+    private suspend fun send(source: Uri, folder: String?, resuming: InterruptedUpload?) {
+        if (resuming != null) interruptedTransfers.take(pcId)
+        var name = resuming?.name ?: "That file"
+        var destination = resuming?.destination
+        try {
+            val document = documents.openInput(source)
+            name = document.name
+            document.stream.use { input ->
+                val total = document.sizeBytes ?: throw FileRefusalException(
+                    FileRefusal("unsupported", "This phone could not tell how large that file is, and the PC needs to know before it accepts one.", false),
+                )
+                if (resuming != null && total != resuming.total) {
+                    throw FileRefusalException(
+                        FileRefusal("changed", "$name has changed on this phone since it was being sent, so it was not joined to the part on the PC. Send it again.", false),
                     )
-                    _files.update { it.copy(progress = TransferProgress(document.name, false, 0, size)) }
-                    transfer.upload(FileMessages.childPath(folder, document.name), size, input, cancelled = { transferStopped }) { done, total ->
-                        _files.update { it.copy(progress = TransferProgress(document.name, false, done, total)) }
-                    }
                 }
-                _files.update { it.copy(notice = "$name was written to the PC.", progress = null) }
-                browse(folder)
-            } catch (error: FileRefusalException) {
-                _files.update { it.copy(notice = words(error.refusal)) }
-            } catch (_: TransferCancelledException) {
-                _files.update { it.copy(notice = "Stopped. The PC removed the part it had received.") }
-            } catch (error: IOException) {
-                _files.update { it.copy(notice = "$name could not be read on this phone: ${error.message ?: "the storage provider refused"}.") }
-            } finally {
-                _files.update { it.copy(progress = null) }
+                val target = destination ?: FileMessages.childPath(folder!!, document.name)
+                destination = target
+                val progress = { done: Long, of: Long -> _files.update { it.copy(progress = TransferProgress(name, false, done, of)) } }
+                _files.update { it.copy(progress = TransferProgress(name, false, resuming?.done ?: 0, total)) }
+
+                if (resuming == null) {
+                    transfer.upload(target, total, input, cancelled = { transferStopped }, onProgress = progress)
+                    _files.update { it.copy(notice = "$name was written to the PC.") }
+                } else {
+                    transfer.resumeUpload(target, total, input, cancelled = { transferStopped }, onProgress = progress)
+                    _files.update { it.copy(notice = "$name was written to the PC, and matches the file on this phone.") }
+                }
             }
+            browse(FileMessages.parentOf(destination!!))
+        } catch (interrupted: TransferInterruptedException) {
+            interruptedTransfers.keep(pcId, InterruptedUpload(name, source.toString(), destination!!, interrupted.done, interrupted.total))
+            _files.update {
+                it.copy(
+                    notice = "Sending $name was interrupted when the connection to the PC ended. What reached the PC waits there for " +
+                        "${FileMessages.PARTIAL_UPLOAD_KEPT_MINUTES} minutes; once this session has file access again, resume it.",
+                )
+            }
+        } catch (error: FileRefusalException) {
+            // Cut off again before a byte moved — while asking the PC how far it got. The record stands as it was.
+            if (error.isInterruption && resuming != null) interruptedTransfers.keep(pcId, resuming)
+            _files.update { it.copy(notice = words(error.refusal)) }
+        } catch (_: TransferCancelledException) {
+            _files.update { it.copy(notice = "Stopped. The PC removed the part it had received.") }
+        } catch (error: IOException) {
+            _files.update { it.copy(notice = "$name could not be read on this phone: ${error.message ?: "the storage provider refused"}.") }
+        } catch (_: SecurityException) {
+            // The permission to read a chosen document lasts only so long; an app restart ends it.
+            _files.update { it.copy(notice = "This phone no longer lets WOLF read $name. Choose it again to send it.") }
+        } finally {
+            _files.update { it.copy(progress = null, interrupted = interruptedTransfers[pcId]) }
         }
     }
+
+    /** Forget the interrupted transfer. What reached the PC is removed there when its time is up. */
+    fun discardInterrupted() {
+        val record = interruptedTransfers[pcId] ?: return
+        interruptedTransfers.discard(pcId)
+        _files.update {
+            it.copy(
+                interrupted = null,
+                notice = if (record is InterruptedUpload) {
+                    "The part of ${record.name} already on the PC is removed there within ${FileMessages.PARTIAL_UPLOAD_KEPT_MINUTES} minutes."
+                } else {
+                    "What arrived of ${record.name} was removed from this phone."
+                },
+            )
+        }
+    }
+
+    private fun newPart(): File =
+        File(interruptedTransfers.partsDirectory.apply { mkdirs() }, Ulid.next() + InterruptedTransfers.PART_SUFFIX)
 
     /** Bind the picture. Called when the view exists; the track may arrive before or after. */
     fun attachRenderer(view: SurfaceViewRenderer) {
@@ -369,7 +475,7 @@ class RemoteDesktopController(
         }
         pcSession.close()
         executor.shutdown()
-        _files.value = FilesUiState()
+        _files.value = FilesUiState(interrupted = interruptedTransfers[pcId])
         _state.update { it.copy(clipboardFromPc = null) }
     }
 
@@ -377,7 +483,7 @@ class RemoteDesktopController(
         post {
             val current = stream
             if (current == null) {
-                continuation.resumeWithException(FileRefusalException(FileRefusal("failed", "The stream to this PC is not running.", false)))
+                continuation.resumeWithException(FileRefusalException(FileRefusal(FileMessages.INTERRUPTED, "The stream to this PC is not running.", false)))
             } else {
                 current.askFiles(message) { result ->
                     result.fold({ continuation.resume(it) }, { continuation.resumeWithException(it) })
@@ -419,7 +525,7 @@ class RemoteDesktopController(
             } else {
                 // Losing the lease ends what was shown: the listing belonged to a permission this session no longer has.
                 transferStopped = true
-                _files.update { FilesUiState(control = control) }
+                _files.update { FilesUiState(control = control, interrupted = it.interrupted) }
             }
         }
     }

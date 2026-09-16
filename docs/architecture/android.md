@@ -198,16 +198,26 @@ The web dashboard's file manager ([the file manager](file-manager.md)), on the r
   hidden file or under a Windows-owned location. A truncated folder says so. The PC's refusals are shown in
   its words, with Windows' refusals marked as Windows'.
 - **Fetch** into a document the owner picks. Chunks are requested at exact offsets, each chunk's SHA-256 is
-  verified **before any of it is written**, and a transfer that does not finish — stopped, refused, a bad
-  chunk, a dropped stream — **removes the document**, so a partial copy never sits on the phone looking like
-  the file.
+  verified **before any of it is written**, into a part file in the app's cache; only a whole file is copied
+  into the document. A transfer that does not finish **removes the document**, so a partial copy never sits
+  among the owner's files looking like the file. (The copy means a large file briefly takes twice its size.)
 - **Send** a document the owner picks into the folder shown. Never overwrites: the PC refuses `exists` and
   the owner is told. The phone reads the file in order, so an answer from the PC that is not exactly past
   what was sent ends the transfer rather than being guessed at, and the PC's whole-file checksum at the end
-  is compared with the phone's. Stopping or failing cancels the transfer on the PC, and its part file goes.
+  is compared with the phone's — and sent with the last chunk, so the PC refuses to put a mismatched file in
+  place. Stopping or failing cancels the transfer on the PC, and its part file goes.
   A document whose size the provider will not state is refused, because the PC must know the size first.
 - **Always answered.** Requests are matched to answers by id, never by order, and each is answered exactly
-  once: the PC's answer, its refusal, a 30-second timeout, or the stream ending.
+  once: the PC's answer, its refusal, a 30-second timeout, or the stream ending — the last reported as
+  `interrupted`, not `failed`.
+- **Resume.** A transfer the stream ending cut off is kept, one per PC, in `InterruptedTransfers` — memory
+  only, outliving the controller, since every remote desktop builds a new one. On the next stream, with file
+  access, **Resume** carries an upload on from what the PC says it kept (the phone re-reads the part it does
+  not send, to checksum the whole file), or a download on from the part in the cache after checking the file
+  on the PC is unchanged; the owner picks where a resumed download is saved, because the document chosen the
+  first time was removed. **Discard** forgets it; the PC clears its part within 30 minutes, and cache parts no
+  record refers to are swept whenever remote desktop opens. A source document the phone no longer lets the
+  app read is said so, not retried.
 
 **A finding from the first live run:** the lease can be granted while the PC's data channel is still
 opening — the stream was connected, access granted, and the first listing failed with "not ready". File
@@ -215,8 +225,7 @@ requests now wait for the channel to open, still bounded by their timeout; the A
 does.
 
 Not built, as on the web: delete, rename, move and new folders (they belong on the command path); search;
-folder transfers; resuming an interrupted transfer (the protocol supports it; neither client uses it yet);
-browsing without a stream.
+folder transfers; browsing without a stream. A resume does not survive the app process ending.
 
 ## Services, scheduled tasks and startup items
 
@@ -484,6 +493,10 @@ key custody: [deployment](../deployment/README.md#android-app).
   overwritten; the file fetched back into memory and through the document store into a real file, identical
   byte for byte; a stopped upload leaving neither a file nor a part file. WOLF cannot delete, so the runner
   removes the one file the test writes.
+- **Live resumed transfers** (`LiveResumeTransferTest`), over three real streams to the development PC: a
+  400 KB upload whose stream is stopped after two chunks ends interrupted, not cancelled; a second stream finds
+  the PC kept 131072 bytes, resumes from there, and the PC's checksum and a fetch back match byte for byte; a
+  download stopped partway carries on over a third stream onto what had arrived. The runner removes the file.
 - **Live remote desktop extras** (`LiveRemoteDesktopExtrasTest`), against a local cloud and the running agent,
   holding no `input` at all, on the full 2560×1440 profile again since the still-desktop fix: the displays listed
   by the real command; a stream asking for sound, negotiated as Opus, with audio packets arriving (about 270 in
@@ -523,7 +536,7 @@ AndroidX Test (Apache-2.0).
 
 ## Not built yet
 
-- Files: resuming an interrupted transfer, and browsing without a running stream (as on the web).
+- Files: browsing without a running stream (as on the web), and resuming after the app process has ended.
 - Push: a delivery through Google proven end to end, which needs a Firebase project; phones without
   Google Play services receive no wake-ups.
 - Changing a service, task or startup item from the phone has not run against a machine with the

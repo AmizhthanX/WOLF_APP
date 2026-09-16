@@ -364,7 +364,7 @@ class StreamSessionTest {
 
         stream.stop()
 
-        assertEquals("failed", (result!!.exceptionOrNull() as FileRefusalException).refusal.reason)
+        assertEquals("interrupted", (result!!.exceptionOrNull() as FileRefusalException).refusal.reason)
         assertFalse(stream.holdsFiles)
     }
 

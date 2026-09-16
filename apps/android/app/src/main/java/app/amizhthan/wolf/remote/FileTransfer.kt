@@ -59,6 +59,18 @@ class FileRefusalException(val refusal: FileRefusal) : Exception(refusal.detail)
 
 class TransferCancelledException : Exception("The transfer was stopped.")
 
+/**
+ * The connection to the PC ended partway through a transfer — not a refusal and not a decision to stop.
+ *
+ * [done] is how far it had got by this phone's count. An upload's part file waits on the PC for
+ * [FileMessages.PARTIAL_UPLOAD_KEPT_MINUTES] minutes; the PC's own count, asked for when resuming, is the one
+ * that decides where it carries on.
+ */
+class TransferInterruptedException(val done: Long, val total: Long) : Exception("The connection to the PC ended partway through.")
+
+/** The stream going away, as the stream reports it. */
+val FileRefusalException.isInterruption: Boolean get() = refusal.reason == FileMessages.INTERRUPTED
+
 private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
 private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
@@ -75,6 +87,12 @@ object FileMessages {
     /** Sized for the data channel's message limit, not for throughput. */
     const val MAX_CHUNK = 64 * 1024
     const val MAX_TRANSFER_BYTES = 8L * 1024 * 1024 * 1024
+
+    /** Mirrors `PARTIAL_UPLOAD_KEPT_SECONDS` in `packages/protocol`. */
+    const val PARTIAL_UPLOAD_KEPT_MINUTES = 30
+
+    /** This app's reason for a request the stream could not carry because it ended. Never sent by the PC. */
+    const val INTERRUPTED = "interrupted"
 
     fun list(path: String?): JsonObject = buildJsonObject {
         put("kind", "file.list")
@@ -97,10 +115,25 @@ object FileMessages {
         }
     }
 
-    /** One chunk, with the checksum of exactly these bytes so the PC can refuse it before it reaches the disk. */
-    fun write(transferId: String, path: String, offset: Long, bytes: ByteArray, final: Boolean, overwrite: Boolean, totalBytes: Long): JsonObject {
+    /**
+     * One chunk, with the checksum of exactly these bytes so the PC can refuse it before it reaches the disk.
+     *
+     * [fileSha256] goes on the final chunk: this phone's checksum of the whole file, so a file the PC put
+     * together differently — above all one resumed onto a part an earlier stream wrote — is not put in place.
+     */
+    fun write(
+        transferId: String,
+        path: String,
+        offset: Long,
+        bytes: ByteArray,
+        final: Boolean,
+        overwrite: Boolean,
+        totalBytes: Long,
+        fileSha256: String? = null,
+    ): JsonObject {
         require(bytes.size <= MAX_CHUNK) { "A chunk is at most $MAX_CHUNK bytes." }
         require(totalBytes in 0..MAX_TRANSFER_BYTES) { "WOLF moves files up to 8 GB." }
+        require(fileSha256 == null || final) { "The whole file's checksum goes with the last chunk." }
         return buildJsonObject {
             put("kind", "file.write")
             put("transferId", transferId)
@@ -111,6 +144,7 @@ object FileMessages {
             put("final", final)
             put("overwrite", overwrite)
             put("totalBytes", totalBytes)
+            if (fileSha256 != null) put("fileSha256", fileSha256)
         }
     }
 
@@ -213,40 +247,78 @@ class FileTransfer(private val ask: suspend (JsonObject) -> JsonObject) {
     suspend fun stat(path: String): FileInfo = FileMessages.info(ask(FileMessages.stat(path)))
 
     /**
-     * Fetch a file into [sink]. Each chunk's checksum is verified before any of it is written, and the chunks
-     * must arrive at the offsets asked for. Returns the number of bytes written.
+     * Fetch a file into [sink], from [startOffset]. Each chunk's checksum is verified before any of it is written,
+     * and the chunks must arrive at the offsets asked for. Returns the number of bytes the file has reached.
+     *
+     * When [expectedTotal] is given — a resumed download — a file whose size is no longer that is refused
+     * rather than joined onto the part already fetched. The connection ending throws
+     * [TransferInterruptedException] with how far it got; everything in [sink] up to there is good.
      */
     suspend fun download(
         path: String,
         sink: OutputStream,
         cancelled: () -> Boolean = { false },
+        startOffset: Long = 0,
+        expectedTotal: Long? = null,
         onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
     ): Long {
-        var offset = 0L
-        while (true) {
-            if (cancelled()) throw TransferCancelledException()
-            val chunk = FileMessages.chunk(ask(FileMessages.read(path, offset)))
-            if (chunk.offset != offset) {
-                throw FileRefusalException(FileRefusal("failed", "The PC sent a different part of that file than the one asked for.", false))
+        var offset = startOffset
+        var total = expectedTotal ?: 0
+        try {
+            while (true) {
+                if (cancelled()) throw TransferCancelledException()
+                val chunk = FileMessages.chunk(ask(FileMessages.read(path, offset)))
+                if (chunk.offset != offset) {
+                    throw FileRefusalException(FileRefusal("failed", "The PC sent a different part of that file than the one asked for.", false))
+                }
+                if (expectedTotal != null && chunk.totalBytes != expectedTotal) throw changed()
+                sink.write(chunk.bytes)
+                offset += chunk.bytes.size
+                total = chunk.totalBytes
+                onProgress(offset, total)
+                if (chunk.eof) return offset
+                // A file that never reports its end would otherwise be read forever, a chunk of nothing at a time.
+                if (chunk.bytes.isEmpty()) throw FileRefusalException(FileRefusal("failed", "The PC stopped sending that file.", false))
             }
-            sink.write(chunk.bytes)
-            offset += chunk.bytes.size
-            onProgress(offset, chunk.totalBytes)
-            if (chunk.eof) return offset
-            // A file that never reports its end would otherwise be read forever, a chunk of nothing at a time.
-            if (chunk.bytes.isEmpty()) throw FileRefusalException(FileRefusal("failed", "The PC stopped sending that file.", false))
+        } catch (error: FileRefusalException) {
+            if (error.isInterruption) throw TransferInterruptedException(offset, total)
+            throw error
         }
     }
 
     /**
-     * Send [totalBytes] from [source] to [destination] on the PC.
+     * Carry on fetching a file the connection interrupted, into [sink] which already holds its first
+     * [startOffset] bytes — if it is still the same file: the same size and the same modification time.
+     */
+    suspend fun resumeDownload(
+        path: String,
+        sink: OutputStream,
+        startOffset: Long,
+        expectedTotal: Long,
+        modifiedAt: String?,
+        cancelled: () -> Boolean = { false },
+        onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
+    ): Long {
+        val entry = stat(path).entry
+            ?: throw FileRefusalException(FileRefusal("not-found", "That file is no longer on the PC.", false))
+        if (entry.sizeBytes != expectedTotal || entry.modifiedAt != modifiedAt) throw changed()
+        return download(path, sink, cancelled, startOffset, expectedTotal, onProgress)
+    }
+
+    /**
+     * Send [totalBytes] from [source] to [destination] on the PC, from [startOffset].
      *
      * The PC writes into a part file and renames it into place only on the last chunk, so an interrupted
      * upload never looks like the real file. It is never told to overwrite unless [overwrite] says so. The
      * PC's answer says where it is: [source] is read in order, so an answer that is not exactly past what
-     * was sent cannot be repaired by seeking back, and ends the transfer. The whole-file checksum the PC
-     * reports at the end is compared with this phone's. Anything that stops the transfer cancels it on the
-     * PC, and the part file goes with it.
+     * was sent cannot be repaired by seeking back, and ends the transfer.
+     *
+     * A resumed upload still reads — and checksums — the part it does not send, so the last chunk carries this
+     * phone's checksum of the whole file and the PC refuses to put in place a file that does not match. The
+     * checksum the PC reports back is compared too, for a PC too old to do that.
+     *
+     * Stopping or a refusal cancels the transfer on the PC, and the part file goes with it. The connection
+     * ending does not: it throws [TransferInterruptedException], and the part file waits to be resumed.
      */
     suspend fun upload(
         destination: String,
@@ -255,16 +327,29 @@ class FileTransfer(private val ask: suspend (JsonObject) -> JsonObject) {
         overwrite: Boolean = false,
         transferId: String = Ulid.next(),
         cancelled: () -> Boolean = { false },
+        startOffset: Long = 0,
         onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
     ): FileWritten {
         if (totalBytes !in 0..FileMessages.MAX_TRANSFER_BYTES) {
             throw FileRefusalException(FileRefusal("too-large", "WOLF moves files up to 8 GB.", false))
         }
+        require(startOffset in 0..totalBytes) { "A resume point lies within the file." }
 
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(FileMessages.MAX_CHUNK)
         var offset = 0L
         var cancelledOnPc = false
+
+        // The part already on the PC, read past and counted into the checksum, not sent again.
+        while (offset < startOffset) {
+            val wanted = minOf(FileMessages.MAX_CHUNK.toLong(), startOffset - offset).toInt()
+            val count = readUpTo(source, buffer, wanted)
+            if (count < wanted) {
+                throw FileRefusalException(FileRefusal("failed", "The file on this phone ended before its stated size.", false))
+            }
+            digest.update(buffer, 0, count)
+            offset += count
+        }
 
         try {
             while (true) {
@@ -282,18 +367,21 @@ class FileTransfer(private val ask: suspend (JsonObject) -> JsonObject) {
                 val chunk = buffer.copyOf(count)
                 val final = offset + count >= totalBytes
 
-                val written = FileMessages.written(ask(FileMessages.write(transferId, destination, offset, chunk, final, overwrite, totalBytes)))
+                digest.update(chunk)
+                val sent = if (final) FileMessages.hex(digest.digest()) else null
+
+                val written = FileMessages.written(
+                    ask(FileMessages.write(transferId, destination, offset, chunk, final, overwrite, totalBytes, fileSha256 = sent)),
+                )
                 if (written.bytesWritten != offset + count) {
                     throw FileRefusalException(FileRefusal("failed", "The PC's copy did not line up with what was sent.", false))
                 }
 
-                digest.update(chunk)
                 offset = written.bytesWritten
                 onProgress(offset, totalBytes)
 
                 if (final) {
                     if (!written.complete) throw FileRefusalException(FileRefusal("failed", "The PC did not confirm the file was complete.", false))
-                    val sent = FileMessages.hex(digest.digest())
                     if (written.sha256 != null && written.sha256.lowercase(Locale.ROOT) != sent) {
                         throw FileRefusalException(
                             FileRefusal("corrupt", "The file the PC put together does not match the one sent. It was written, so check or replace it.", false),
@@ -303,10 +391,40 @@ class FileTransfer(private val ask: suspend (JsonObject) -> JsonObject) {
                 }
             }
         } catch (error: Throwable) {
+            // Not cancelled on the PC: that would delete exactly the part a resume needs.
+            if (error is FileRefusalException && error.isInterruption) throw TransferInterruptedException(offset, totalBytes)
             if (!cancelledOnPc && error !is TransferCancelledException) withContext(NonCancellable) { cancelQuietly(transferId) }
             throw error
         }
     }
+
+    /**
+     * Carry on with an upload the connection interrupted, with [source] opened again from its start.
+     *
+     * The PC is asked how much of the part file it still has, because only it knows: the last chunk sent may or
+     * may not have landed, and the part file may have been cleared since. At least the last byte is sent again,
+     * so there is always a final chunk for the PC to check the whole file against. Returns where it resumed from
+     * with the PC's answer.
+     */
+    suspend fun resumeUpload(
+        destination: String,
+        totalBytes: Long,
+        source: InputStream,
+        transferId: String = Ulid.next(),
+        cancelled: () -> Boolean = { false },
+        onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
+    ): Pair<Long, FileWritten> {
+        val info = stat(destination)
+        if (info.entry != null) {
+            throw FileRefusalException(FileRefusal("exists", "A file with that name is already in that folder on the PC, so this one was not sent over it.", false))
+        }
+        val from = if (totalBytes == 0L) 0L else minOf(info.partialBytes ?: 0L, totalBytes - 1)
+        return from to upload(destination, totalBytes, source, false, transferId, cancelled, from, onProgress)
+    }
+
+    private fun changed() = FileRefusalException(
+        FileRefusal("changed", "That file has changed on the PC since it was being fetched, so the part that arrived was discarded. Fetch it again.", false),
+    )
 
     private suspend fun cancelQuietly(transferId: String) {
         runCatching { ask(FileMessages.cancel(transferId)) }
