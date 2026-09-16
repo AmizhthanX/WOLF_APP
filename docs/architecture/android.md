@@ -530,7 +530,7 @@ AndroidX Test (Apache-2.0).
   privileged helper installed; the development PC runs the agent interactively without it. The same is
   true of those changes from the web (see the roadmap's Milestone 4).
 - Remote desktop: a display switch proven live on a PC with two monitors; profile changes mid-stream; a
-  hardware keyboard's shortcuts. A first picture on a still desktop waits on a session host fix (above).
+  hardware keyboard's shortcuts.
 - The release pipeline run for real: it needs the repository on GitHub, the `android-release` environment and an
   upload key. Publishing to Google Play, and per-ABI APKs (x86 and x86_64, for emulators only, are over half of
   the 50 MB universal APK).
