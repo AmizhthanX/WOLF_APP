@@ -168,9 +168,9 @@ Wake-on-LAN is built and is described in [Wake-on-LAN](wake-on-lan.md): a sleepi
 another of the owner's PCs on the same network, at the address it reported for its own wired adapter.
 Waking across the internet, through an always-on device on the LAN, is not.
 
-The file manager is built and is described in [the file manager](file-manager.md). Delete,
-rename and move are not: they are mutations that belong on the command path, where risk levels
-and confirmations live.
+The file manager is built and is described in [the file manager](file-manager.md), including
+delete (to the Recycle Bin), rename, move and new folder. They ride the stream's data channel so no
+file name reaches the cloud; the PC reports each to the audit trail without a path.
 
 The terminal is built and is described in [the terminal](terminal.md). What is *not* built
 there is `terminal-admin`, the elevated shell: it needs a token the session host does not

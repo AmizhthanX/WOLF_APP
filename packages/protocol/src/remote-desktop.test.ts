@@ -11,6 +11,7 @@ import {
 } from './remote-desktop.js';
 import {
   AGENT_TO_CLIENT_PAYLOADS,
+  AGENT_TO_RELAY_PAYLOADS,
   CLIENT_TO_AGENT_PAYLOADS,
   isAgentToClient,
   isClientToAgent,
@@ -280,8 +281,14 @@ test('direction is part of the contract, not a convention', () => {
  */
 const RELAY_AUTHORED: readonly string[] = ['input.control', 'terminal.control', 'file.control'];
 
+test('file activity goes from an agent to the relay and to no client, and no client may send it', () => {
+  assert.deepEqual([...AGENT_TO_RELAY_PAYLOADS], ['file.activity']);
+  assert.equal(CLIENT_TO_AGENT_PAYLOADS.includes('file.activity'), false);
+  assert.equal(AGENT_TO_CLIENT_PAYLOADS.includes('file.activity'), false);
+});
+
 test('every payload type has a declared direction, or is one only the relay may author', () => {
-  const declared = new Set([...CLIENT_TO_AGENT_PAYLOADS, ...AGENT_TO_CLIENT_PAYLOADS]);
+  const declared = new Set([...CLIENT_TO_AGENT_PAYLOADS, ...AGENT_TO_CLIENT_PAYLOADS, ...AGENT_TO_RELAY_PAYLOADS]);
   const options = signalPayload.options.map((option) => option.shape.type.value);
 
   for (const type of options) {

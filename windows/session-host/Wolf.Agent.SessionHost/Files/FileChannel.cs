@@ -35,7 +35,7 @@ namespace Wolf.Agent.SessionHost.Files;
 /// from. What is logged is the operation, the outcome, and how many bytes.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class FileChannel : IDisposable
+public sealed partial class FileChannel : IDisposable
 {
     /// <summary>Matches the protocol. A larger chunk is refused rather than truncated.</summary>
     public const int MaxChunkBytes = 64 * 1024;
@@ -62,6 +62,7 @@ public sealed class FileChannel : IDisposable
 
     private readonly PartialUploads _partials;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly Action<FileActivity>? _onActivity;
 
     private string? _holderSessionId;
     private DateTimeOffset _leaseExpiresAt = DateTimeOffset.MinValue;
@@ -79,13 +80,15 @@ public sealed class FileChannel : IDisposable
         bool allowed,
         ILoggerFactory loggers,
         PartialUploads? partialUploads = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        Action<FileActivity>? onActivity = null)
     {
         _streamId = streamId;
         _allowed = allowed;
         _logger = loggers.CreateLogger<FileChannel>();
         _partials = partialUploads ?? PartialUploads.ForCurrentUser(loggers);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _onActivity = onActivity;
 
         // A stream starting is when a part file left by an earlier one is either resumed or past waiting for.
         _partials.Sweep(_clock());
@@ -186,7 +189,7 @@ public sealed class FileChannel : IDisposable
             "file.read" => Read(message, requestId),
             "file.write" => Write(message, requestId),
             "file.cancel" => Cancel(message, requestId),
-            _ => null,
+            _ => Change(kind, message, requestId),
         };
     }
 
@@ -446,6 +449,9 @@ public sealed class FileChannel : IDisposable
             int read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
 
             byte[] chunk = read == buffer.Length ? buffer : buffer[..read];
+
+            // The last chunk of a download, for the audit trail: that a file of this size left the PC.
+            if (offset + read >= total && read > 0) Report("download", "completed", null, total);
 
             return new JsonObject
             {
@@ -785,6 +791,7 @@ public sealed class FileChannel : IDisposable
                 "Stream {Stream}: completed a {Bytes}-byte transfer onto this PC.",
                 _streamId,
                 upload.Written);
+            Report("upload", "completed", null, upload.Written);
 
             return new JsonObject
             {

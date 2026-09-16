@@ -95,7 +95,8 @@ public sealed class ControlChannel
 
             // Same again for files: one place that checks the capability, the lease and the
             // path before it looks at anything else in the message.
-            "file.list" or "file.stat" or "file.read" or "file.write" or "file.cancel" =>
+            "file.list" or "file.stat" or "file.read" or "file.write" or "file.cancel"
+                or "file.delete" or "file.rename" or "file.move" or "file.create-folder" =>
                 _files.Handle(kind, message),
 
             _ => null,

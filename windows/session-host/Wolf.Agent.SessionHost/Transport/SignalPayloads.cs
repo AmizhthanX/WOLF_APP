@@ -52,6 +52,9 @@ public static class SignalTypes
     public const string StreamState = "stream.state";
     public const string StreamStats = "stream.stats";
     public const string StreamError = "stream.error";
+
+    /// <summary>Agent -> relay only: a file operation, with no path, for the audit trail.</summary>
+    public const string FileActivity = "file.activity";
 }
 
 /// <summary>

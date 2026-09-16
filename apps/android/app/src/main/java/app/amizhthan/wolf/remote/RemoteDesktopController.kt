@@ -264,6 +264,21 @@ class RemoteDesktopController(
         }
     }
 
+    /** Delete to the Recycle Bin, rename, move within a drive, or make a folder — then list the folder again. */
+    fun change(message: JsonObject, done: String) {
+        val folder = _files.value.folder
+        _files.update { it.copy(busy = true, notice = null) }
+        scope.launch {
+            try {
+                transfer.change(message)
+                browse(folder)
+                _files.update { it.copy(notice = done) }
+            } catch (error: FileRefusalException) {
+                _files.update { it.copy(notice = words(error.refusal), busy = false) }
+            }
+        }
+    }
+
     fun up() {
         val folder = _files.value.folder ?: return
         browse(FileMessages.parentOf(folder))

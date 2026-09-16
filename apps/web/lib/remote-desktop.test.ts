@@ -1482,6 +1482,42 @@ test('a write carries a checksum the PC can check', async () => {
   stream.stop();
 });
 
+test('file changes go to the PC on the data channel with only what each needs, and resolve when it is done', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const cases: [Parameters<typeof stream.changeFile>[0], Record<string, unknown>][] = [
+    [{ kind: 'delete', path: 'C:\Users\me\old.txt' }, { kind: 'file.delete', path: 'C:\Users\me\old.txt' }],
+    [{ kind: 'rename', path: 'C:\Users\me\a.txt', newName: 'b.txt' }, { kind: 'file.rename', path: 'C:\Users\me\a.txt', newName: 'b.txt' }],
+    [
+      { kind: 'move', path: 'C:\Users\me\a.txt', destinationFolder: 'C:\Users\me\Archive' },
+      { kind: 'file.move', path: 'C:\Users\me\a.txt', destinationFolder: 'C:\Users\me\Archive' },
+    ],
+    [{ kind: 'create-folder', path: 'C:\Users\me\New' }, { kind: 'file.create-folder', path: 'C:\Users\me\New' }],
+  ];
+
+  for (const [change, expected] of cases) {
+    const before = sentOnChannel.length;
+    const pending = stream.changeFile(change);
+    const sent = await sentFileRequest(before);
+    const { requestId, ...rest } = sent;
+    assert.ok(requestId);
+    assert.deepEqual(rest, expected);
+    answerFile({ kind: 'file.done', operation: change.kind });
+    await pending;
+  }
+
+  // A refusal is thrown with the PC's words, and nothing waits forever.
+  const before = sentOnChannel.length;
+  const refused = stream.changeFile({ kind: 'rename', path: 'C:\a.txt', newName: 'b.txt' });
+  await sentFileRequest(before);
+  answerFile({ kind: 'file.refused', reason: 'exists', detail: 'Something in that folder already has that name.', limitation: false });
+  await assert.rejects(refused, /already has that name/);
+
+  stream.stop();
+});
+
 test('a refusal from the PC becomes an error the caller cannot ignore', async () => {
   const { stream } = makeStream();
   await connectWithControlChannel(stream);

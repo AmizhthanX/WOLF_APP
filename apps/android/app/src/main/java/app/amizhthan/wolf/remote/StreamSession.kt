@@ -551,7 +551,7 @@ class StreamSession(
                 listener.onInputRefused(response.str("reason") ?: "The PC refused that input.", response["limitation"].bool() == true)
             }
             // Handed to whoever asked and nowhere else; nothing here keeps a listing or a chunk.
-            "file.listing", "file.info", "file.chunk", "file.written" -> settleFile(message.str("requestId"), Result.success(message))
+            "file.listing", "file.info", "file.chunk", "file.written", "file.done" -> settleFile(message.str("requestId"), Result.success(message))
             "file.refused" -> settleFile(message.str("requestId"), Result.failure(FileRefusalException(FileMessages.refusal(message))))
             "clipboard.content" -> {
                 val text = message.str("text") ?: return

@@ -1194,3 +1194,47 @@ test('a client cannot grant itself access to a PC\'s files', async () => {
     'a client forged a file grant',
   );
 });
+
+test('a file change on the PC reaches the audit trail without a path, and is forwarded to nobody', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'file-transfer']);
+  const { client, sessionId, streamId } = await openControlledStream(sessionToken);
+  // The stream record is written as the request is relayed; give it a moment.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const before = client.received.length;
+  agentA.sendSignal(sessionId, streamId, { type: 'file.activity', operation: 'delete', outcome: 'completed', reason: null, bytes: null });
+  agentA.sendSignal(sessionId, streamId, { type: 'file.activity', operation: 'rename', outcome: 'refused', reason: 'exists', bytes: null });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  assert.equal(client.received.length, before, 'file activity is for the audit trail, not for any client');
+
+  const { rows } = await db.query<{ action: string; outcome: string; session_id: string; error_code: string | null; target: unknown }>(
+    `SELECT action, outcome, session_id, error_code, target FROM audit_logs WHERE category = 'file' ORDER BY occurred_at`,
+  );
+  const mine = rows.filter((row) => row.session_id === sessionId);
+  // Two messages handled at once can be recorded in either order; what matters is that both are there.
+  assert.deepEqual(
+    mine.map((row) => [row.action, row.outcome, row.error_code]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    [
+      ['file.delete', 'success', null],
+      ['file.rename', 'denied', 'exists'],
+    ],
+  );
+  assert.ok(JSON.stringify(mine).includes(streamId));
+});
+
+test('an agent cannot put file activity on a stream that is not its own, and a client cannot send it at all', async () => {
+  const sessionToken = await openSession(pcA, ['screen', 'file-transfer']);
+  const { client, sessionId } = await openControlledStream(sessionToken);
+  const count = async () => Number((await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM audit_logs WHERE category = 'file'`)).rows[0]!.n);
+
+  const before = await count();
+  agentA.sendSignal(sessionId, newId(), { type: 'file.activity', operation: 'delete', outcome: 'completed', reason: null, bytes: null });
+
+  const agentSignals = agentA.signalsReceived.length;
+  client.sendSignal(sessionId, newId(), { type: 'file.activity', operation: 'delete', outcome: 'completed', reason: null, bytes: null });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  assert.equal(await count(), before, 'neither a made-up stream nor a client adds to the audit trail');
+  assert.equal(agentA.signalsReceived.slice(agentSignals).some((e) => e.payload.type === 'file.activity'), false);
+});

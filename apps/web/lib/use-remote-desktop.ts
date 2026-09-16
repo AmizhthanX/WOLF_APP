@@ -19,6 +19,7 @@ import {
   type StreamSurface,
   type TerminalEvent,
   type TerminalShell,
+  type FileChange,
   type FileChunk,
   type FileInfo,
   type FileListing,
@@ -99,6 +100,8 @@ export interface RemoteDesktopView {
     fileSha256?: string | null;
   }): Promise<FileWritten>;
   cancelTransfer(transferId: string): Promise<void>;
+  /** Delete to the Recycle Bin, rename, move within a drive, or make a folder. */
+  changeFile(change: FileChange): Promise<void>;
   /**
    * The last thing the PC put on its clipboard, waiting for the operator to take it.
    *
@@ -344,6 +347,11 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     [],
   );
 
+  const changeFile = useCallback(
+    (change: FileChange) => stream.current?.changeFile(change) ?? noStream(),
+    [],
+  );
+
   const cancelTransfer = useCallback(
     (transferId: string) => stream.current?.cancelTransfer(transferId) ?? Promise.resolve(),
     [],
@@ -383,6 +391,7 @@ export function useRemoteDesktop(pcId: string, sessionToken: string | null): Rem
     readFile,
     writeFile,
     cancelTransfer,
+    changeFile,
     clipboardFromPc,
     clipboardNotice,
     sendClipboard,

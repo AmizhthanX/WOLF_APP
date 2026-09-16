@@ -195,11 +195,57 @@ Both learned the same thing about the channel: the file lease can be granted whi
 is still opening. A client that sends the first listing the moment access is granted can find the channel
 not ready; the Android client holds requests until the channel opens, bounded by their timeout.
 
+## Changing files
+
+Delete, rename, move and new folder (`file.delete`, `file.rename`, `file.move`,
+`file.create-folder`) ride the data channel like everything else here.
+
+**Why not the command path.** The command path is where risk levels, confirmations and the audit
+trail live, and it was the first plan. But a command is stored in the cloud: its payload in the
+command table, its target in the audit record. A delete command would put
+`Divorce settlement.docx` into both — the one thing this whole feature is routed to avoid. The
+owner chose the data channel, and what the command path would have given comes from elsewhere:
+
+- **The audit trail, without names.** After every change, and every refused one, the session host
+  sends `file.activity` to the relay: the operation, `completed` or `refused`, the refusal's code,
+  and for transfers the size. Never a path, and never a refusal's detail, which can name one. The
+  relay checks the stream is this PC's and belongs to that session, writes an audit record under
+  `file` (`file.delete`, `file.rename`, …) with the session and stream, and forwards it to nobody.
+  A client cannot send it. Uploads and downloads are recorded the same way, so the audit trail now
+  says that a transfer of some size happened, as this document always claimed.
+- **Delete is the Recycle Bin.** Through the shell's own delete with undo, no confirmation and no
+  error dialogs — so the owner can restore it at the PC. Only on a fixed drive; a removable drive
+  has no Recycle Bin and WOLF refuses rather than delete permanently. If an item is too large for
+  the Recycle Bin, Windows' own warning appears **at the PC** and nothing happens unless the person
+  there agrees; the remote side is told that after twenty seconds, and the outcome is reported
+  when Windows finishes.
+- **Nothing is replaced.** A rename or a move onto a name that is taken is refused `exists`. A
+  change of case in place is allowed.
+- **Refused outright:** Windows' own folders as a source or destination (the same list reads
+  mark), drive roots, a move to another drive (a copy and a delete, which leaves two or none if it
+  fails halfway — fetch and send instead), a folder into itself, a name Windows would not allow
+  (separators, reserved characters, a trailing space or dot), and anything an upload in flight is
+  writing.
+- **Asked first, in the clients.** The dashboard and the app show what will happen — "Move to the
+  Recycle Bin? It can be restored at the PC" — before sending.
+
+A link is acted on as the link, once where it points has passed the same gate reads use.
+
+**Proven:** on this PC's disk, renames, moves, new folders and every refusal above, with each test
+checking that what would be reported names no path; a delete found in this machine's actual Recycle
+Bin by the record Windows keeps of where it came from. Through the relay: activity audited without
+a path and forwarded to no client, activity for another stream or from a client refused. **Live**,
+from the Android emulator over a real stream to the real agent: a folder made, a file sent into it,
+renamed, a taken name refused, moved into a second folder, a Windows file refused, and the folder
+sent to the Recycle Bin; the nine audit records read back through the API carried operations and
+outcomes and no path. The runner removed the test folder from the Recycle Bin.
+
 ## What is not built
 
-- **Delete, rename, move, and new folders.** They are mutations with real blast radius, they
-  belong on the command path where risk levels and confirmations live, and putting them on
-  this channel would route them around the machinery that exists to make them accountable.
+- **Permanent delete.** Deliberately. The Recycle Bin at the PC is the undo; a remote permanent
+  delete has none.
+- **Copy.** A move within a drive is a rename to the filesystem; a copy is a transfer, and belongs
+  with fetch and send.
 - **Search.** A recursive search across somebody's disks is a different feature with different
   costs, and the obvious naive version is a session host reading every file on the machine.
 - **Directory transfers.** One file at a time. Recursion turns "did that work" into a report

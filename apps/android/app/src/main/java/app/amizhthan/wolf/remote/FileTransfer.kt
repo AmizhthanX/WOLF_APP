@@ -148,6 +148,38 @@ object FileMessages {
         }
     }
 
+    /** To the Recycle Bin on the PC. WOLF never deletes permanently. */
+    fun delete(path: String): JsonObject = buildJsonObject {
+        put("kind", "file.delete")
+        put("path", path)
+    }
+
+    fun rename(path: String, newName: String): JsonObject {
+        require(validName(newName)) { "That is not a name Windows allows." }
+        return buildJsonObject {
+            put("kind", "file.rename")
+            put("path", path)
+            put("newName", newName)
+        }
+    }
+
+    fun move(path: String, destinationFolder: String): JsonObject = buildJsonObject {
+        put("kind", "file.move")
+        put("path", path)
+        put("destinationFolder", destinationFolder)
+    }
+
+    fun createFolder(path: String): JsonObject = buildJsonObject {
+        put("kind", "file.create-folder")
+        put("path", path)
+    }
+
+    /** The protocol's rule for a name: no separators or reserved characters, not `.` or `..`, no trailing space or dot. */
+    fun validName(name: String): Boolean =
+        name.isNotEmpty() && name.length <= 255 && name != "." && name != ".." &&
+            !name.endsWith(' ') && !name.endsWith('.') &&
+            name.none { it.code < 32 || it in "\\/:*?\"<>|" }
+
     fun cancel(transferId: String): JsonObject = buildJsonObject {
         put("kind", "file.cancel")
         put("transferId", transferId)
@@ -245,6 +277,17 @@ class FileTransfer(private val ask: suspend (JsonObject) -> JsonObject) {
     suspend fun list(path: String?): FileListing = FileMessages.listing(ask(FileMessages.list(path)))
 
     suspend fun stat(path: String): FileInfo = FileMessages.info(ask(FileMessages.stat(path)))
+
+    /**
+     * Change something on the PC and wait until it is done. A refusal is thrown in the PC's words. The PC tells the cloud
+     * a change happened; never what it was called.
+     */
+    suspend fun change(message: JsonObject) {
+        val answer = ask(message)
+        if ((answer["kind"] as? JsonPrimitive)?.contentOrNull != "file.done") {
+            throw FileRefusalException(FileRefusal("failed", "The PC answered in a way this app does not understand.", false))
+        }
+    }
 
     /**
      * Fetch a file into [sink], from [startOffset]. Each chunk's checksum is verified before any of it is written,

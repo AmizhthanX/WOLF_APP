@@ -140,6 +140,13 @@ export interface FileChunk {
   readonly totalBytes: number;
 }
 
+/** A change to make on the PC. */
+export type FileChange =
+  | { readonly kind: 'delete'; readonly path: string }
+  | { readonly kind: 'rename'; readonly path: string; readonly newName: string }
+  | { readonly kind: 'move'; readonly path: string; readonly destinationFolder: string }
+  | { readonly kind: 'create-folder'; readonly path: string };
+
 export interface FileWritten {
   readonly bytesWritten: number;
   readonly sha256: string | null;
@@ -673,6 +680,28 @@ export class RemoteDesktopStream {
    */
   async cancelTransfer(transferId: string): Promise<void> {
     await this.askFiles({ kind: 'file.cancel', transferId });
+  }
+
+  /**
+   * Change something on the PC: to the Recycle Bin, a new name, another folder on the same drive, or a new
+   * folder. Resolves when the PC has done it; a refusal is thrown with the PC's words. The PC tells the cloud
+   * that it happened, never what it was called.
+   */
+  async changeFile(change: FileChange): Promise<void> {
+    switch (change.kind) {
+      case 'delete':
+        await this.askFiles({ kind: 'file.delete', path: change.path });
+        return;
+      case 'rename':
+        await this.askFiles({ kind: 'file.rename', path: change.path, newName: change.newName });
+        return;
+      case 'move':
+        await this.askFiles({ kind: 'file.move', path: change.path, destinationFolder: change.destinationFolder });
+        return;
+      case 'create-folder':
+        await this.askFiles({ kind: 'file.create-folder', path: change.path });
+        return;
+    }
   }
 
   /**
@@ -1220,7 +1249,8 @@ export class RemoteDesktopStream {
       case 'file.listing':
       case 'file.info':
       case 'file.chunk':
-      case 'file.written': {
+      case 'file.written':
+      case 'file.done': {
         // Handed to whoever asked and nowhere else. Nothing here keeps a copy of a listing or
         // a chunk: the browser holds a transfer only while it is running.
         const pending = this.pendingFiles.get(String(message['requestId'] ?? ''));

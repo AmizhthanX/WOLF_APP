@@ -232,8 +232,14 @@ opening — the stream was connected, access granted, and the first listing fail
 requests now wait for the channel to open, still bounded by their timeout; the Android peer reports when it
 does.
 
-Not built, as on the web: delete, rename, move and new folders (they belong on the command path); search;
-folder transfers; browsing without a stream. A resume does not survive the app process ending.
+- **Change.** "More" on a file or folder offers Rename, Move and Delete; "New folder" sits beside "Send a file
+  here". Delete says what happens — to the Recycle Bin at the PC, restorable there — before anything is sent. A name
+  Windows would not allow is refused on the phone first. The PC's refusal (taken, in use, a Windows folder, another
+  drive) is shown in its words, and the folder is listed again after each change. See
+  [changing files](file-manager.md#changing-files).
+
+Not built, as on the web: search; folder transfers; browsing without a stream; permanent delete. A resume does not
+survive the app process ending.
 
 ## Services, scheduled tasks and startup items
 

@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -62,6 +64,10 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
         if (uri != null) controller.upload(uri)
     }
 
+    // A change being asked about: what it is, and the entry it is for (none for a new folder).
+    var changing by remember { mutableStateOf<Pair<String, FileEntry?>?>(null) }
+    var answer by remember { mutableStateOf("") }
+
     val holds = files.control?.granted == true
     val progress = files.progress
     val interrupted = files.interrupted
@@ -90,6 +96,13 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                     onClick = { openLauncher.launch(arrayOf("*/*")) },
                     enabled = files.folder != null && progress == null && interrupted == null,
                 ) { Text("Send a file here") }
+                TextButton(
+                    onClick = {
+                        answer = ""
+                        changing = "create-folder" to null
+                    },
+                    enabled = files.folder != null && !files.busy && progress == null,
+                ) { Text("New folder") }
                 TextButton(onClick = controller::releaseFiles) { Text("Give up file access") }
             }
         }
@@ -185,9 +198,104 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                                     enabled = progress == null && interrupted == null,
                                 ) { Text("Fetch") }
                             }
+                            if (entry.kind != "drive" && !entry.protectedLocation) {
+                                TextButton(
+                                    onClick = {
+                                        answer = entry.name
+                                        changing = "menu" to entry
+                                    },
+                                    enabled = !files.busy && progress == null,
+                                ) { Text("More") }
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    changing?.let { (kind, entry) ->
+        val folder = files.folder
+        val close = { changing = null }
+        when {
+            folder == null -> close()
+            kind == "menu" && entry != null -> AlertDialog(
+                onDismissRequest = close,
+                title = { Text(entry.name) },
+                text = { Text("Change it on the PC. The cloud is told that a change happened, never what it was called.") },
+                confirmButton = {
+                    Column {
+                        TextButton(onClick = { answer = entry.name; changing = "rename" to entry }) { Text("Rename") }
+                        TextButton(onClick = { answer = folder; changing = "move" to entry }) { Text("Move") }
+                        TextButton(onClick = { changing = "delete" to entry }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                    }
+                },
+                dismissButton = { TextButton(onClick = close) { Text("Cancel") } },
+            )
+            kind == "delete" && entry != null -> AlertDialog(
+                onDismissRequest = close,
+                title = { Text("Move ${entry.name} to the Recycle Bin?") },
+                text = {
+                    Text(
+                        (if (entry.kind == "directory") "The folder and everything in it go. " else "") +
+                            "It can be restored from the Recycle Bin at the PC. WOLF does not delete anything permanently; if it is too " +
+                            "large for the Recycle Bin, Windows asks the person at the PC instead.",
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        controller.change(FileMessages.delete(FileMessages.pathOf(folder, entry)), "${entry.name} was moved to the Recycle Bin on the PC.")
+                        close()
+                    }) { Text("Move to Recycle Bin") }
+                },
+                dismissButton = { TextButton(onClick = close) { Text("Cancel") } },
+            )
+            else -> {
+                val valid = when (kind) {
+                    "move" -> answer.isNotBlank()
+                    else -> FileMessages.validName(answer.trim())
+                }
+                AlertDialog(
+                    onDismissRequest = close,
+                    title = {
+                        Text(
+                            when (kind) {
+                                "rename" -> "Rename ${entry?.name}"
+                                "move" -> "Move ${entry?.name}"
+                                else -> "New folder"
+                            },
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedTextField(
+                                value = answer,
+                                onValueChange = { answer = it },
+                                label = { Text(if (kind == "move") "Into the folder" else "Name") },
+                                singleLine = true,
+                            )
+                            if (kind == "move") Text("A folder on the same drive. Nothing already there is replaced.", style = MaterialTheme.typography.bodySmall)
+                            if (kind != "move" && answer.isNotEmpty() && !valid) {
+                                Text("Windows does not allow that name.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            enabled = valid,
+                            onClick = {
+                                val value = answer.trim()
+                                when (kind) {
+                                    "rename" -> controller.change(FileMessages.rename(FileMessages.pathOf(folder, entry!!), value), "${entry.name} was renamed.")
+                                    "move" -> controller.change(FileMessages.move(FileMessages.pathOf(folder, entry!!), value), "${entry.name} was moved.")
+                                    else -> controller.change(FileMessages.createFolder(FileMessages.childPath(folder, value)), "The folder $value was made.")
+                                }
+                                close()
+                            },
+                        ) { Text(if (kind == "rename") "Rename" else if (kind == "move") "Move" else "Make folder") }
+                    },
+                    dismissButton = { TextButton(onClick = close) { Text("Cancel") } },
+                )
             }
         }
     }

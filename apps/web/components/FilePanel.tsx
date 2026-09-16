@@ -28,7 +28,17 @@ import { newId } from '@wolf/shared-types';
  *
  * A transfer the connection interrupted can be resumed once this session holds file access
  * again — see `lib/file-transfer.ts`. One stopped with Stop cannot, by design.
+ *
+ * Rename, move, delete and new folder go the same way, and each is asked about here first. Delete is
+ * the Recycle Bin. The PC tells the cloud a change happened, and never what it was called.
  */
+
+/** A change the owner has started to make, waiting for their confirmation or a name. */
+type PendingChange =
+  | { readonly kind: 'delete'; readonly entry: FileEntry }
+  | { readonly kind: 'rename'; readonly entry: FileEntry }
+  | { readonly kind: 'move'; readonly entry: FileEntry }
+  | { readonly kind: 'create-folder' };
 
 /** Progress for one transfer, which is all this panel keeps about it. */
 interface Progress {
@@ -83,6 +93,8 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [interrupted, setInterrupted] = useState<InterruptedTransfer | null>(null);
+  const [pending, setPending] = useState<PendingChange | null>(null);
+  const [answer, setAnswer] = useState('');
 
   const upload = useRef<HTMLInputElement | null>(null);
   const cancelled = useRef(false);
@@ -205,6 +217,53 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
   );
 
   /* --------------------------------------------------------------------- */
+  /* Changing files                                                         */
+  /* --------------------------------------------------------------------- */
+
+  const begin = (change: PendingChange) => {
+    setNotice(null);
+    setPending(change);
+    setAnswer(change.kind === 'rename' ? change.entry.name : change.kind === 'move' ? (folder ?? '') : '');
+  };
+
+  const change = useCallback(async () => {
+    if (!pending || folder === null) return;
+    setBusy(true);
+    setNotice(null);
+
+    try {
+      let said: string;
+      switch (pending.kind) {
+        case 'delete':
+          await view.changeFile({ kind: 'delete', path: pathOf(folder, pending.entry) });
+          said = `${pending.entry.name} was moved to the Recycle Bin on the PC, where it can be restored.`;
+          break;
+        case 'rename':
+          await view.changeFile({ kind: 'rename', path: pathOf(folder, pending.entry), newName: answer.trim() });
+          said = `${pending.entry.name} was renamed.`;
+          break;
+        case 'move':
+          await view.changeFile({ kind: 'move', path: pathOf(folder, pending.entry), destinationFolder: answer.trim() });
+          said = `${pending.entry.name} was moved.`;
+          break;
+        case 'create-folder':
+          await view.changeFile({ kind: 'create-folder', path: folder.endsWith('\\') ? folder + answer.trim() : `${folder}\\${answer.trim()}` });
+          said = `The folder ${answer.trim()} was made.`;
+          break;
+      }
+      setPending(null);
+      setBusy(false);
+      // Listed again first: listing clears the notice, and this one should stay.
+      await browse(folder);
+      setNotice(said);
+    } catch (error) {
+      // The PC's own words: taken, in use, not allowed, or a Windows folder WOLF does not change.
+      setNotice(error instanceof Error ? error.message : 'That could not be changed.');
+      setBusy(false);
+    }
+  }, [answer, browse, folder, pending, view]);
+
+  /* --------------------------------------------------------------------- */
   /* After an interruption                                                  */
   /* --------------------------------------------------------------------- */
 
@@ -316,6 +375,13 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
             >
               Send a file
             </button>
+            <button
+              type="button"
+              onClick={() => begin({ kind: 'create-folder' })}
+              disabled={folder === null || busy || progress !== null}
+            >
+              New folder
+            </button>
             <button type="button" onClick={() => view.releaseFiles()}>
               Give up file access
             </button>
@@ -344,6 +410,65 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
         {notice ? <div className="notice">{notice}</div> : null}
 
         {interruptedPanel}
+
+        {pending ? (
+          <div className="notice">
+            <form
+              className="stack"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void change();
+              }}
+            >
+              {pending.kind === 'delete' ? (
+                <div>
+                  <strong>Move {pending.entry.name} to the Recycle Bin?</strong>
+                  <div style={{ marginTop: 6 }}>
+                    {pending.entry.kind === 'directory' ? 'The folder and everything in it go. ' : ''}
+                    It can be restored from the Recycle Bin at the PC. WOLF does not delete anything permanently; if
+                    it is too large for the Recycle Bin, Windows asks the person at the PC instead.
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label htmlFor="file-change-answer">
+                    {pending.kind === 'rename'
+                      ? `New name for ${pending.entry.name}`
+                      : pending.kind === 'move'
+                        ? `Move ${pending.entry.name} into the folder`
+                        : 'Name of the new folder'}
+                  </label>
+                  <input
+                    id="file-change-answer"
+                    value={answer}
+                    onChange={(event) => setAnswer(event.target.value)}
+                    autoFocus
+                    required
+                  />
+                  {pending.kind === 'move' ? (
+                    <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      A folder on the same drive, e.g. C:\Users\you\Documents. Nothing already there is replaced.
+                    </div>
+                  ) : null}
+                </div>
+              )}
+              <div className="row">
+                <button type="submit" className={pending.kind === 'delete' ? 'button-danger' : undefined} disabled={busy}>
+                  {pending.kind === 'delete'
+                    ? 'Move to Recycle Bin'
+                    : pending.kind === 'rename'
+                      ? 'Rename'
+                      : pending.kind === 'move'
+                        ? 'Move'
+                        : 'Make folder'}
+                </button>
+                <button type="button" onClick={() => setPending(null)} disabled={busy}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
 
         {progress ? (
           <div className="notice">
@@ -426,15 +551,35 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
                       {entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : ''}
                     </td>
                     <td>
-                      {entry.kind === 'file' ? (
-                        <button
-                          type="button"
-                          onClick={() => void download(entry)}
-                          disabled={progress !== null || interrupted !== null}
-                        >
-                          Fetch
-                        </button>
-                      ) : null}
+                      <div className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+                        {entry.kind === 'file' ? (
+                          <button
+                            type="button"
+                            onClick={() => void download(entry)}
+                            disabled={progress !== null || interrupted !== null}
+                          >
+                            Fetch
+                          </button>
+                        ) : null}
+                        {entry.kind !== 'drive' && !entry.protectedLocation ? (
+                          <>
+                            <button type="button" onClick={() => begin({ kind: 'rename', entry })} disabled={busy || progress !== null}>
+                              Rename
+                            </button>
+                            <button type="button" onClick={() => begin({ kind: 'move', entry })} disabled={busy || progress !== null}>
+                              Move
+                            </button>
+                            <button
+                              type="button"
+                              className="button-danger"
+                              onClick={() => begin({ kind: 'delete', entry })}
+                              disabled={busy || progress !== null}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}

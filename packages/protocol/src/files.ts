@@ -26,11 +26,22 @@ import { wolfId } from '@wolf/validation';
  * than one that fails: nobody notices until they try to use it, and by then the source may
  * be gone.
  *
- * ## What is not here
+ * ## Changing files, on the same channel
  *
- * Delete, rename and move. They are mutations with real blast radius, they belong on the
- * command path where risk levels and confirmations live, and putting them on this channel
- * would route them around the very machinery that exists to make them accountable.
+ * Delete, rename, move and new folder ride the data channel too, for the same reason browsing
+ * does: they name files, and a command queued through the cloud would store those names in its
+ * command and audit records. The accountability the command path would have given comes instead
+ * from three things:
+ *
+ * - **The PC reports each one to the cloud, without a path.** `file.activity` says which operation
+ *   ran on which stream and how it ended; the relay writes it to the audit trail and forwards it
+ *   nowhere. The audit trail says "a file was deleted on this PC in this session", never which.
+ * - **Delete goes to the Recycle Bin.** Only on a drive that has one; WOLF does not delete
+ *   permanently. The owner can undo it at the PC.
+ * - **The clients ask first**, and nothing overwrites: a rename or move onto an existing name is
+ *   refused, not replaced.
+ *
+ * Windows' own folders, drive roots and moves between drives are refused outright.
  */
 
 /**
@@ -173,9 +184,58 @@ export const fileCancel = z.object({
   transferId: wolfId,
 });
 
+/** Move a file or folder to the Recycle Bin. Never a permanent delete. */
+export const fileDelete = z.object({
+  kind: z.literal('file.delete'),
+  requestId: wolfId,
+  path: z.string().max(4096),
+});
+
+/** A name, not a path: no separators, no `..`, nothing Windows would read as a device or stream. */
+export const fileName = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((name) => !/[\\/:*?"<>|\u0000-\u001f]/.test(name), 'A name cannot contain \\ / : * ? " < > | or control characters.')
+  .refine((name) => name !== '.' && name !== '..', 'That is not a name.')
+  .refine((name) => !/[ .]$/.test(name), 'Windows does not allow a name ending in a space or a dot.');
+
+/** Rename in place. Refused when something already has the new name. */
+export const fileRename = z.object({
+  kind: z.literal('file.rename'),
+  requestId: wolfId,
+  path: z.string().max(4096),
+  newName: fileName,
+});
+
+/** Move into another folder on the same drive, keeping the name. Refused when the name is taken there. */
+export const fileMove = z.object({
+  kind: z.literal('file.move'),
+  requestId: wolfId,
+  path: z.string().max(4096),
+  destinationFolder: z.string().max(4096),
+});
+
+/** Make a folder. Its parent must exist. */
+export const fileCreateFolder = z.object({
+  kind: z.literal('file.create-folder'),
+  requestId: wolfId,
+  path: z.string().max(4096),
+});
+
+export const FILE_OPERATIONS = ['delete', 'rename', 'move', 'create-folder', 'upload', 'download'] as const;
+export type FileOperation = (typeof FILE_OPERATIONS)[number];
+
 /* --------------------------------------------------------------------------- */
 /* PC -> client                                                                 */
 /* --------------------------------------------------------------------------- */
+
+/** A change was made. The client lists the folder again to see it. */
+export const fileDone = z.object({
+  kind: z.literal('file.done'),
+  requestId: wolfId,
+  operation: z.enum(['delete', 'rename', 'move', 'create-folder']),
+});
 
 export const fileListing = z.object({
   kind: z.literal('file.listing'),
@@ -269,6 +329,10 @@ export const fileClientMessage = z.discriminatedUnion('kind', [
   fileRead,
   fileWrite,
   fileCancel,
+  fileDelete,
+  fileRename,
+  fileMove,
+  fileCreateFolder,
 ]);
 export type FileClientMessage = z.infer<typeof fileClientMessage>;
 
@@ -278,5 +342,6 @@ export const fileAgentMessage = z.discriminatedUnion('kind', [
   fileChunk,
   fileWritten,
   fileRefused,
+  fileDone,
 ]);
 export type FileAgentMessage = z.infer<typeof fileAgentMessage>;

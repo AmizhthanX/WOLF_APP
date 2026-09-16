@@ -7,6 +7,7 @@ import {
   agentMessage,
   challengeSigningPayload,
   isAgentToClient,
+  isAgentToRelay,
   type AgentMessage,
   type CloudMessage,
   type SignalEnvelope,
@@ -185,6 +186,11 @@ export class AgentLink implements AgentLinkHandle {
    * that is watching a different machine.
    */
   private async handleSignal(envelope: SignalEnvelope): Promise<void> {
+    if (isAgentToRelay(envelope.payload.type)) {
+      await this.recordFileActivity(envelope);
+      return;
+    }
+
     if (!isAgentToClient(envelope.payload.type)) {
       this.logger.warn(
         { pcId: this.pcId, type: envelope.payload.type },
@@ -230,6 +236,42 @@ export class AgentLink implements AgentLinkHandle {
 
     await this.recordStreamProgress(envelope);
     client.deliverSignal(envelope);
+  }
+
+  /**
+   * A file operation on the PC, into the audit trail and nowhere else.
+   *
+   * Only for a stream of this PC: the stream record says whose session it was, so an agent cannot put activity on
+   * another PC's or another owner's record. The payload has no path to leak, and none is added here.
+   */
+  private async recordFileActivity(envelope: SignalEnvelope): Promise<void> {
+    if (envelope.payload.type !== 'file.activity') return;
+    const activity = envelope.payload;
+
+    const stream = await this.context.repos.remoteDesktop.findStream(envelope.streamId);
+    if (!stream || stream.pcId !== this.pcId || stream.sessionId !== envelope.sessionId) {
+      this.logger.warn({ pcId: this.pcId, streamId: envelope.streamId }, 'Agent reported file activity for a stream that is not its own');
+      await this.context.repos.audit.recordSecurityEvent({
+        type: 'unauthorized-command',
+        pcId: this.pcId,
+        sourceIp: this.remoteAddress,
+        detail: { action: 'file.activity', reason: 'stream-mismatch' },
+      });
+      return;
+    }
+
+    await this.context.repos.audit.record({
+      category: 'file',
+      action: `file.${activity.operation}`,
+      outcome: activity.outcome === 'completed' ? 'success' : 'denied',
+      riskLevel: activity.operation === 'delete' || activity.operation === 'move' ? 'medium' : 'low',
+      userId: stream.userId,
+      deviceId: stream.deviceId,
+      pcId: this.pcId,
+      sessionId: stream.sessionId,
+      target: { kind: 'stream', streamId: stream.id, ...(activity.bytes !== null ? { bytes: activity.bytes } : {}) },
+      errorCode: activity.reason,
+    });
   }
 
   /** Keep the stream record in step with what the agent reports. Metadata only. */

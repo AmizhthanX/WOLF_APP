@@ -243,6 +243,21 @@ export const signalFileControl = z.object({
     .default(null),
 });
 
+/**
+ * A file operation happened on the PC, for the audit trail: which, how it ended, and never a path.
+ *
+ * Agent to relay only. The relay records it and forwards it nowhere.
+ */
+export const signalFileActivity = z.object({
+  type: z.literal('file.activity'),
+  operation: z.enum(['delete', 'rename', 'move', 'create-folder', 'upload', 'download']),
+  outcome: z.enum(['completed', 'refused']),
+  /** The refusal's code (`access-denied`, `exists`, …) — never its detail, which can name a path. */
+  reason: z.string().max(32).nullable().default(null),
+  /** For a transfer, its size. */
+  bytes: z.number().int().min(0).nullable().default(null),
+});
+
 export const signalError = z.object({
   type: z.literal('stream.error'),
   code: z.string().max(64),
@@ -260,6 +275,7 @@ export const signalPayload = z.discriminatedUnion('type', [
   signalCandidate,
   signalCandidatesDone,
   signalStreamState,
+  signalFileActivity,
   signalStreamStats,
   signalStreamStop,
   signalSetProfile,
@@ -318,6 +334,18 @@ export const CLIENT_TO_AGENT_PAYLOADS: readonly SignalPayloadType[] = [
   'file.request',
   'file.release',
 ];
+
+/**
+ * Sent by an agent for the relay alone, and forwarded to nobody.
+ *
+ * `file.activity` is how the audit trail learns that a file was changed or moved without learning which: the
+ * operation and its outcome, never a path.
+ */
+export const AGENT_TO_RELAY_PAYLOADS: readonly SignalPayloadType[] = ['file.activity'];
+
+export function isAgentToRelay(type: SignalPayloadType): boolean {
+  return AGENT_TO_RELAY_PAYLOADS.includes(type);
+}
 
 export const AGENT_TO_CLIENT_PAYLOADS: readonly SignalPayloadType[] = [
   'stream.ready',

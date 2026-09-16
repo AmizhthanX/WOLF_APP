@@ -414,7 +414,17 @@ public sealed class StreamSession : IDisposable
         // Refuses everything until the cloud grants the file lease, and refuses everything
         // forever when this session was not granted the capability. Built either way, so an
         // early message is answered with the reason rather than dropped.
-        _files = new Files.FileChannel(_streamId, _filesAllowed, _loggers);
+        _files = new Files.FileChannel(
+            _streamId,
+            _filesAllowed,
+            _loggers,
+            onActivity: activity => Fire(_send(SignalTypes.FileActivity, new
+            {
+                operation = activity.Operation,
+                outcome = activity.Outcome,
+                reason = activity.Reason,
+                bytes = activity.Bytes,
+            })));
 
         _control = new ControlChannel(
             _streamId,
