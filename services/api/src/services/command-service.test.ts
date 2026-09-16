@@ -29,6 +29,8 @@ interface Harness {
   setPc(patch: Partial<{ status: string; remoteAccessEnabled: boolean }>): void;
   setSupportedCommands(commands: string[] | null): void;
   setGrant(valid: boolean): void;
+  /** Another of the user's PCs, with the wake address it reported, if any. */
+  addPc(pc: { id: string; name: string; status: string; remoteAccessEnabled?: boolean; registrationState?: string }, wakeAddress: string | null): void;
 }
 
 function createHarness(): Harness {
@@ -46,6 +48,8 @@ function createHarness(): Harness {
   };
   let supportedCommands: string[] | null = [...ALL_COMMAND_TYPES];
   let grantValid = true;
+  const otherPcs = new Map<string, Record<string, unknown>>();
+  const wakeAddresses = new Map<string, string | null>();
 
   const fakeClient = {
     query: async () => ({ rows: [], rowCount: 0 }),
@@ -71,7 +75,8 @@ function createHarness(): Harness {
 
   const repos = {
     pcs: {
-      findById: async () => ({ ...pc }),
+      findById: async (id: string) => (id === PC ? { ...pc } : otherPcs.has(id) ? { ...otherPcs.get(id) } : null),
+      wakeAddress: async (id: string) => wakeAddresses.get(id) ?? null,
       getCapabilities: async () =>
         supportedCommands === null ? null : { supportedCommands },
     },
@@ -126,6 +131,10 @@ function createHarness(): Harness {
     setGrant(valid) {
       grantValid = valid;
     },
+    addPc(other, wakeAddress) {
+      otherPcs.set(other.id, { userId: USER, registrationState: 'active', remoteAccessEnabled: true, ...other });
+      wakeAddresses.set(other.id, wakeAddress);
+    },
   };
 }
 
@@ -175,6 +184,95 @@ async function expectRejection(promise: Promise<unknown>, code: string): Promise
     assert.equal(error.code, code);
   }
 }
+
+/* ------------------------------------------------------------------------- */
+/* Wake-on-LAN                                                               */
+/* ------------------------------------------------------------------------- */
+
+const ASLEEP = newId();
+
+function wakeInput(targetPcId: string, extra: Record<string, unknown> = {}) {
+  return dispatchInput({
+    command: { type: 'power.wake', payload: { targetPcId, ...extra } },
+    confirmedRiskLevel: 'medium',
+  });
+}
+
+test('a wake goes to an online PC, addressed with what the sleeping PC reported', async () => {
+  const harness = createHarness();
+  harness.addPc({ id: ASLEEP, name: 'Tower', status: 'offline' }, 'd8:bb:c1:0a:2b:3c');
+
+  await new CommandService(harness.context).dispatch(wakeInput(ASLEEP));
+
+  const created = harness.inserted[0] as { pcId: string; payload: { payload: Record<string, unknown> } };
+  assert.equal(created.pcId, PC, 'sent to the PC that is awake');
+  assert.deepEqual(created.payload.payload, { targetPcId: ASLEEP, macAddress: 'd8:bb:c1:0a:2b:3c' });
+});
+
+test('an address a client puts in a wake is replaced, never used', async () => {
+  const harness = createHarness();
+  harness.addPc({ id: ASLEEP, name: 'Tower', status: 'offline' }, 'd8:bb:c1:0a:2b:3c');
+
+  await new CommandService(harness.context).dispatch(wakeInput(ASLEEP, { macAddress: '02:00:00:00:00:99' }));
+
+  const created = harness.inserted[0] as { payload: { payload: { macAddress: string } } };
+  assert.equal(created.payload.payload.macAddress, 'd8:bb:c1:0a:2b:3c');
+});
+
+test('a wake is refused before anything is queued when it cannot be addressed', async () => {
+  const cases: [string, (harness: Harness) => string, string, string][] = [
+    ['a PC that is not the caller’s', () => newId(), 'resource.not_found', 'wake-target-unknown'],
+    ['the sending PC itself', () => PC, 'resource.conflict', 'wake-self'],
+    [
+      'a PC already online',
+      (harness) => {
+        harness.addPc({ id: ASLEEP, name: 'Tower', status: 'online' }, 'd8:bb:c1:0a:2b:3c');
+        return ASLEEP;
+      },
+      'resource.conflict',
+      'wake-target-online',
+    ],
+    [
+      'a PC with remote access switched off',
+      (harness) => {
+        harness.addPc({ id: ASLEEP, name: 'Tower', status: 'offline', remoteAccessEnabled: false }, 'd8:bb:c1:0a:2b:3c');
+        return ASLEEP;
+      },
+      'pc.remote_access_disabled',
+      'kill-switch',
+    ],
+    [
+      'a PC that never reported a wired adapter',
+      (harness) => {
+        harness.addPc({ id: ASLEEP, name: 'Laptop', status: 'offline' }, null);
+        return ASLEEP;
+      },
+      'pc.wake_address_unknown',
+      'wake-address-unknown',
+    ],
+  ];
+
+  for (const [label, target, code, audited] of cases) {
+    const harness = createHarness();
+    const targetId = target(harness);
+    await expectRejection(new CommandService(harness.context).dispatch(wakeInput(targetId)), code);
+    assert.equal(harness.inserted.length, 0, `${label}: nothing queued`);
+    assert.equal(harness.audits.at(-1)?.errorCode, audited, label);
+  }
+});
+
+test('a wake still needs the confirmation its risk level asks for', async () => {
+  const harness = createHarness();
+  harness.addPc({ id: ASLEEP, name: 'Tower', status: 'offline' }, 'd8:bb:c1:0a:2b:3c');
+
+  await expectRejection(
+    new CommandService(harness.context).dispatch(
+      dispatchInput({ command: { type: 'power.wake', payload: { targetPcId: ASLEEP } } }),
+    ),
+    'command.confirmation_required',
+  );
+  assert.equal(harness.inserted.length, 0);
+});
 
 test('a low-risk read dispatches without confirmation', async () => {
   const harness = createHarness();

@@ -20,6 +20,7 @@ import { RemoteDesktopPanel } from '@/components/RemoteDesktopPanel';
 import { ServicesPanel } from '@/components/ServicesPanel';
 import { AutorunPanel } from '@/components/AutorunPanel';
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
+import { WakePanel } from '@/components/WakePanel';
 import {
   ConfirmDialog,
   Empty,
@@ -412,7 +413,9 @@ function Capabilities({ pc }: { pc: Pc }) {
     {
       label: 'Wake-on-LAN',
       available: capabilities.wakeOnLanCapable,
-      note: 'Not detected on this PC.',
+      note: capabilities.wakeAddressKnown
+        ? 'A wired adapter is known, but Windows has not allowed it to wake this PC.'
+        : 'No wired network adapter has been reported.',
     },
   ];
 
@@ -751,6 +754,8 @@ function Power({
           </p>
         ) : null}
       </Panel>
+
+      {pc.status !== 'online' ? <WakePanel pc={pc} /> : null}
 
       <Panel title="Kill switch">
         <div className="stack">

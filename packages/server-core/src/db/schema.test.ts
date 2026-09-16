@@ -176,6 +176,35 @@ test('capabilities and hardware upsert rather than duplicate', async () => {
   assert.deepEqual(capabilities?.videoEncoders, ['h264-hardware', 'h264-software']);
 });
 
+test('a wake address is kept, never cleared by a report without one, and only whether it is known is exposed', async () => {
+  const pcId = await createPc('Wakeable');
+  const base = {
+    hardwareVideoEncoders: [],
+    preferredVideoCodec: null,
+    displayCount: 1,
+    audioCaptureAvailable: false,
+    wakeOnLanCapable: true,
+    privilegedHelperAvailable: false,
+    secureDesktopCaptureAvailable: false,
+    remoteUnlockProvisioned: false,
+    gpuVendors: [],
+    windowsBuild: null,
+    supportedCommands: ['power.wake'],
+    remoteDesktopAvailable: false,
+    remoteDesktopUnavailableReason: null,
+    videoEncoders: [],
+  };
+  await repos.pcs.upsertCapabilities(pcId, base);
+  assert.equal((await repos.pcs.getCapabilities(pcId))?.wakeAddressKnown, false);
+
+  await repos.pcs.recordWakeAddress(pcId, 'd8:bb:c1:0a:2b:3c');
+  await repos.pcs.recordWakeAddress(pcId, null);
+
+  assert.equal((await repos.pcs.getCapabilities(pcId))?.wakeAddressKnown, true);
+  assert.equal(await repos.pcs.wakeAddress(pcId, userId), 'd8:bb:c1:0a:2b:3c');
+  assert.equal(await repos.pcs.wakeAddress(pcId, '01J9ZQK7T0000000000000ZZZZ'), null, 'another user is not told it');
+});
+
 test('a PC with encoders but no way to capture is not reported as able to stream', async () => {
   const pcId = await createPc('EncoderNoCapture');
 

@@ -101,6 +101,14 @@ session manager's usual "401 means refresh and retry" would count one typo twice
 lockout — so password re-entry goes through a call with no retry. A test asserts one attempt, no refresh
 and no command.
 
+**Wake** ([Wake-on-LAN](wake-on-lan.md)). An offline PC's screen lists the owner's other PCs that are online and
+can send a wake, with the same words as the web about why one on the same network has to be chosen, and why a PC
+with no wired adapter, or one Windows has not armed, may not wake. Pressing "Wake from" opens a session holding
+`power` alone on that PC, sends `power.wake` naming only the PC to wake, confirms it at the level the server names
+— the confirmation goes through the sending PC's session, not the open one — and ends that session when done. The
+notice says how many packets were sent on how many networks, never that the PC woke. The phone never sees the
+address.
+
 Power actions are never sent forced (forcing is critical and closes unsaved work). Terminating a process
 carries the name as well as the PID, so a recycled PID is refused by the agent. Protected system
 processes show no terminate button, and the server would classify them critical if asked.

@@ -55,14 +55,33 @@ export const powerPendingCommand = z.object({
 });
 
 /**
- * Wake-on-LAN. Dispatched to a peer agent on the same LAN or to an always-on LAN relay,
- * never to the sleeping PC itself.
+ * A network adapter's hardware address, as WOLF writes it: six lowercase hex pairs joined by colons.
+ *
+ * Only a unicast address is one: a group address (the low bit of the first octet set) names many
+ * machines, and the all-zero address names none. A wake packet for either would be a broadcast
+ * with extra steps.
+ */
+export const wakeMacAddress = z
+  .string()
+  .regex(/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/, 'A MAC address is six lowercase hex pairs joined by colons.')
+  .refine((mac) => (parseInt(mac.slice(0, 2), 16) & 1) === 0, 'A group address cannot be woken.')
+  .refine((mac) => mac !== '00:00:00:00:00:00', 'The all-zero address is not an adapter.');
+
+/**
+ * Wake-on-LAN, sent to a PC that is **online** — never to the sleeping PC, which cannot hear a
+ * command — so that it broadcasts a magic packet on its own local networks.
+ *
+ * A client names only the PC to wake. The address to wake it at is the one that PC reported for
+ * its own wired adapter, and the API fills it in: a `macAddress` a client sends is replaced, never
+ * used, so nobody can point a PC at a machine WOLF does not know.
  */
 export const powerWakeCommand = z.object({
   type: z.literal('power.wake'),
   payload: z.object({
-    /** PC to wake. The MAC address is resolved on the sending side from stored PC config. */
+    /** PC to wake: one of the caller's own, offline, and not the PC sending the packet. */
     targetPcId: z.string().min(1).max(64),
+    /** Filled in by the API from what the target reported. The agent refuses a wake without one. */
+    macAddress: wakeMacAddress.optional(),
   }),
 });
 

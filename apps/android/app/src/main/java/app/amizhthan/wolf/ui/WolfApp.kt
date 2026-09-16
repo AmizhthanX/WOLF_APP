@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.amizhthan.wolf.api.LatestTelemetry
 import app.amizhthan.wolf.api.PcSummary
 import app.amizhthan.wolf.api.ProcessRow
+import app.amizhthan.wolf.api.Wake
 import app.amizhthan.wolf.api.WolfProblem
 import app.amizhthan.wolf.remote.StreamProfile
 import java.time.Duration
@@ -118,6 +119,7 @@ fun WolfApp(
                             onRemoteDesktop = viewModel::openRemoteDesktop,
                             onServices = viewModel::openServices,
                             onAutorun = viewModel::openAutorun,
+                            onWake = viewModel::wake,
                         )
                     }
                     is Screen.PcServices -> {
@@ -453,6 +455,45 @@ private fun PcListScreen(
     }
 }
 
+/** Waking an offline PC through another of the owner's PCs on the same network. */
+@Composable
+private fun WakeCard(pc: PcSummary, pcs: List<PcSummary>, busy: Boolean, onWake: (String) -> Unit) {
+    val readiness = Wake.readiness(pc)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Wake", fontWeight = FontWeight.SemiBold)
+            Text(
+                "${pc.name} is not connected. Another of your PCs that is online on the same local network can send it a wake packet. " +
+                    "WOLF does not know which of your PCs share a network, so choose one that does.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            when (readiness) {
+                Wake.Readiness.SWITCHED_OFF -> Text("Remote access to ${pc.name} is switched off, so WOLF does not wake it.", style = MaterialTheme.typography.bodySmall)
+                Wake.Readiness.NO_ADDRESS -> Text(
+                    "${pc.name} has never reported a wired network adapter, so there is no address to wake it at. Wake-on-LAN needs Ethernet.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Wake.Readiness.NOT_ARMED -> Text(
+                    "The last time ${pc.name} connected, Windows had not allowed its wired adapter to wake the PC, so a wake packet may do nothing.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                else -> Unit
+            }
+            if (readiness == Wake.Readiness.READY || readiness == Wake.Readiness.NOT_ARMED) {
+                val senders = Wake.senders(pc, pcs)
+                if (senders.isEmpty()) {
+                    Text("None of your other PCs is online with a WOLF version that can send a wake packet.", style = MaterialTheme.typography.bodySmall)
+                }
+                senders.forEach { sender ->
+                    OutlinedButton(onClick = { onWake(sender.id) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Wake from ${sender.name}")
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun PcScreen(
     pc: PcSummary?,
@@ -464,6 +505,7 @@ private fun PcScreen(
     onRemoteDesktop: (StreamProfile, Boolean) -> Unit,
     onServices: () -> Unit,
     onAutorun: () -> Unit,
+    onWake: (senderId: String) -> Unit,
 ) {
     val online = pc?.status == "online" && pc.remoteAccessEnabled
     // Off unless the owner turns it on: starting to watch a PC is not a decision to start listening to it.
@@ -543,6 +585,10 @@ private fun PcScreen(
                     if (!online) Text("Power actions need the PC to be online with remote access on.", style = MaterialTheme.typography.bodySmall)
                 }
             }
+        }
+
+        if (pc != null && pc.status != "online") {
+            item { WakeCard(pc, state.pcs.orEmpty(), busy = state.busy, onWake = onWake) }
         }
 
         item {

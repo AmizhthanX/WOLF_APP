@@ -232,8 +232,19 @@ test('the agent connects, authenticates, and reports its capabilities', async ()
     url: agentUrl,
     pcId,
     keys: agentKeys,
-    supportedCommands: ['system.info', 'process.list', 'process.terminate', 'power.action'],
+    supportedCommands: ['system.info', 'process.list', 'process.terminate', 'power.action', 'power.wake'],
     onCommand: (type, payload) => {
+      if (type === 'power.wake') {
+        return {
+          targetPcId: (payload as { targetPcId: string }).targetPcId,
+          method: 'lan-broadcast',
+          packetsSent: 6,
+          networks: 1,
+          sentAt: new Date().toISOString(),
+          confirmationPending: true,
+        };
+      }
+
       if (type === 'process.list') {
         return {
           sampledAt: new Date().toISOString(),
@@ -545,6 +556,75 @@ test('every action is recorded in the audit log without payload secrets', async 
     (event) => event.action === 'process.terminate' && event.outcome === 'success',
   );
   assert.deepEqual(terminate?.target, { kind: 'process', pid: 4821, name: 'notepad.exe' });
+});
+
+test('a PC that reported a wired adapter and went offline is woken through another, at the address it reported', async () => {
+  const towerKeys = generateIdentityKeyPair();
+  const tokenResponse = await app.inject({
+    method: 'POST',
+    url: '/api/v1/pcs/enrollment-tokens',
+    headers: { authorization: `Bearer ${accessToken}` },
+    payload: { label: 'Tower' },
+  });
+  const enrolled = await app.inject({
+    method: 'POST',
+    url: '/api/v1/agents/enroll',
+    payload: {
+      enrollmentToken: String((await json(tokenResponse))['enrollmentToken']),
+      name: 'Tower',
+      hostname: 'TOWER',
+      agentVersion: '0.1.0-e2e',
+      publicKey: towerKeys.publicKey,
+    },
+  });
+  assert.equal(enrolled.statusCode, 201);
+  const towerId = String((await json(enrolled))['pcId']);
+
+  // The tower connects once, reporting its wired adapter, and goes to sleep.
+  const tower = new FakeAgent({
+    url: agentUrl,
+    pcId: towerId,
+    keys: towerKeys,
+    supportedCommands: ['system.info'],
+    capabilities: { wakeOnLanCapable: true, wakeMacAddress: '02:00:5e:77:00:01' },
+  });
+  await tower.connect();
+  tower.close();
+  await waitFor(async () => {
+    const response = await app.inject({ method: 'GET', url: `/api/v1/pcs/${towerId}`, headers: { authorization: `Bearer ${accessToken}` } });
+    return ((await json(response))['pc'] as unknown as { status: string }).status !== 'online';
+  });
+
+  const listed = await app.inject({ method: 'GET', url: `/api/v1/pcs/${towerId}`, headers: { authorization: `Bearer ${accessToken}` } });
+  const asleep = (await json(listed))['pc'] as unknown as { capabilities: Record<string, unknown> };
+  assert.equal(asleep.capabilities['wakeAddressKnown'], true);
+  assert.equal(asleep.capabilities['wakeOnLanCapable'], true);
+  assert.ok(!listed.payload.includes('02:00:5e:77:00:01'), 'the address itself never reaches a client');
+
+  const sessionToken = await openSession(['power']);
+
+  // A PC cannot wake itself.
+  const self = await dispatchCommand(sessionToken, { type: 'power.wake', payload: { targetPcId: pcId } }, { confirmedRiskLevel: 'medium' });
+  assert.equal(self.statusCode, 409);
+
+  // An address a client supplies is replaced with the one the tower reported.
+  const woken = await dispatchCommand(
+    sessionToken,
+    { type: 'power.wake', payload: { targetPcId: towerId, macAddress: '02:00:00:00:00:99' } },
+    { confirmedRiskLevel: 'medium' },
+  );
+  assert.equal(woken.statusCode, 202, woken.payload);
+  await registry.get(pcId)?.deliverPending();
+  const command = await waitForCommand(String(((await json(woken))['command'] as unknown as { id: string }).id));
+
+  assert.equal(command.status, 'completed');
+  assert.equal((command.result as { confirmationPending: boolean }).confirmationPending, true);
+  const received = agent.received.find((entry) => entry.type === 'power.wake');
+  assert.deepEqual(received?.payload, { targetPcId: towerId, macAddress: '02:00:5e:77:00:01' });
+
+  const { rows } = await db.query<Record<string, unknown>>(`SELECT * FROM audit_logs WHERE action = 'power.wake'`);
+  assert.ok(rows.length >= 2, 'the wake and the refused self-wake are both audited');
+  assert.ok(!JSON.stringify(rows).includes('02:00:5e:77:00:01'), 'the audit trail names the PC, not its address');
 });
 
 test('the kill switch stops commands and cannot be released remotely', async () => {

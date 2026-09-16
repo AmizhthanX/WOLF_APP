@@ -248,9 +248,29 @@ export class PcRepository {
     );
   }
 
+  /**
+   * The address another PC sends a wake packet for, as this PC last reported it for its wired adapter.
+   *
+   * Kept when a later report has none — a laptop that connected over Wi-Fi today is still woken at the
+   * adapter it has. Never returned to clients: they are told only whether one is known.
+   */
+  async recordWakeAddress(pcId: string, macAddress: string | null): Promise<void> {
+    if (macAddress === null) return;
+    await this.db.query('UPDATE pcs SET wake_mac_address = $2, updated_at = now() WHERE id = $1', [pcId, macAddress]);
+  }
+
+  /** The wake address of one of this user's PCs, for the API to put in a wake command. */
+  async wakeAddress(pcId: string, userId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ wake_mac_address: string | null }>(
+      'SELECT wake_mac_address FROM pcs WHERE id = $1 AND user_id = $2',
+      [pcId, userId],
+    );
+    return rows[0]?.wake_mac_address ?? null;
+  }
+
   async getCapabilities(
     pcId: string,
-  ): Promise<(PcCapabilities & { supportedCommands: string[] }) | null> {
+  ): Promise<(PcCapabilities & { supportedCommands: string[]; wakeAddressKnown: boolean }) | null> {
     const { rows } = await this.db.query<{
       hardware_video_encoders: string[];
       preferred_video_codec: string | null;
@@ -266,7 +286,13 @@ export class PcRepository {
       remote_desktop_available: boolean;
       remote_desktop_unavailable_reason: string | null;
       video_encoders: string[];
-    }>('SELECT * FROM pc_capabilities WHERE pc_id = $1', [pcId]);
+      wake_address_known: boolean;
+    }>(
+      `SELECT c.*, (p.wake_mac_address IS NOT NULL) AS wake_address_known
+         FROM pc_capabilities c JOIN pcs p ON p.id = c.pc_id
+        WHERE c.pc_id = $1`,
+      [pcId],
+    );
     const row = rows[0];
     if (!row) return null;
     return {
@@ -284,6 +310,7 @@ export class PcRepository {
       remoteDesktopAvailable: row.remote_desktop_available,
       remoteDesktopUnavailableReason: row.remote_desktop_unavailable_reason,
       videoEncoders: row.video_encoders,
+      wakeAddressKnown: row.wake_address_known,
     };
   }
 

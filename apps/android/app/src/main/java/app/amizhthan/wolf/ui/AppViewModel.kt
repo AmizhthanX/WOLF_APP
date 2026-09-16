@@ -18,6 +18,7 @@ import app.amizhthan.wolf.api.TaskListResult
 import app.amizhthan.wolf.api.TaskRow
 import app.amizhthan.wolf.api.WolfApi
 import app.amizhthan.wolf.api.WolfApiException
+import app.amizhthan.wolf.api.Wake
 import app.amizhthan.wolf.api.WolfJson
 import app.amizhthan.wolf.api.WolfProblem
 import app.amizhthan.wolf.push.PushRegistrar
@@ -40,6 +41,8 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
 
 sealed interface Screen {
     data object Starting : Screen
@@ -65,9 +68,14 @@ sealed interface CommandPurpose {
     data object ListTasks : CommandPurpose
     data object ListStartup : CommandPurpose
     data class AutorunChanged(val name: String) : CommandPurpose
+    data class Wake(val sender: String, val target: String) : CommandPurpose
 }
 
-data class Confirmation(val pending: PendingCommand, val purpose: CommandPurpose)
+/**
+ * A command waiting for the owner. [via] is the session it goes through when that is not the open PC's —
+ * a wake is sent through the PC doing the waking.
+ */
+data class Confirmation(val pending: PendingCommand, val purpose: CommandPurpose, val via: PcSessionController? = null)
 
 data class UiState(
     val screen: Screen = Screen.Starting,
@@ -98,6 +106,9 @@ class AppViewModel(
 
     private var telemetryJob: Job? = null
     private var controller: PcSessionController? = null
+
+    /** A power-only session on the PC sending a wake, for as long as that one wake takes. */
+    private var waker: PcSessionController? = null
     private var remote: RemoteDesktopController? = null
 
     /** A notification was tapped before the app knew whether it was signed in. */
@@ -368,11 +379,11 @@ class AppViewModel(
 
     fun confirm(password: String?) {
         val confirmation = _state.value.confirmation ?: return
-        val active = controller ?: return
+        val active = confirmation.via ?: controller ?: return
         viewModelScope.launch {
             _state.update { it.copy(confirming = true, confirmationProblem = null) }
             try {
-                handle(active.confirm(confirmation.pending, password), confirmation.purpose)
+                handle(active.confirm(confirmation.pending, password), confirmation.purpose, confirmation.via)
             } catch (error: WolfApiException) {
                 // The dialog stays open: a mistyped password is corrected, not restarted.
                 _state.update { it.copy(confirmationProblem = error.problem) }
@@ -384,7 +395,42 @@ class AppViewModel(
         }
     }
 
-    fun cancelConfirmation() = _state.update { it.copy(confirmation = null, confirmationProblem = null, notice = "Cancelled. Nothing was sent to the PC.") }
+    fun cancelConfirmation() {
+        if (_state.value.confirmation?.via != null) closeWaker()
+        _state.update { it.copy(confirmation = null, confirmationProblem = null, notice = "Cancelled. Nothing was sent to the PC.") }
+    }
+
+    /**
+     * Wake the open PC by having [senderId] broadcast a wake packet. A session holding `power` and nothing else is
+     * opened on the sender for this, and ended when the wake is done.
+     */
+    fun wake(senderId: String) {
+        val targetId = (_state.value.screen as? Screen.Pc)?.id ?: return
+        val pcs = _state.value.pcs.orEmpty()
+        val target = pcs.firstOrNull { it.id == targetId } ?: return
+        val sender = pcs.firstOrNull { it.id == senderId } ?: return
+
+        closeWaker()
+        val via = PcSessionController(sender.id, api, session, capabilities = listOf("power")).also { waker = it }
+        launchBusy {
+            _state.update { it.copy(notice = null) }
+            try {
+                handle(
+                    via.run(Wake.command(target.id), "Wake ${target.name}", "${sender.name} will broadcast a Wake-on-LAN packet for ${target.name} on its local networks."),
+                    CommandPurpose.Wake(sender.name, target.name),
+                    via,
+                )
+            } catch (error: WolfApiException) {
+                closeWaker()
+                throw error
+            }
+        }
+    }
+
+    private fun closeWaker() {
+        waker?.let { closing -> viewModelScope.launch { closing.close() } }
+        waker = null
+    }
 
     fun dismissProblem() = _state.update { it.copy(problem = null, notice = null) }
 
@@ -433,13 +479,14 @@ class AppViewModel(
         send(command, title, description, purpose)
     }
 
-    private fun handle(outcome: CommandOutcome, purpose: CommandPurpose) {
+    private fun handle(outcome: CommandOutcome, purpose: CommandPurpose, via: PcSessionController? = null) {
         when (outcome) {
             is CommandOutcome.NeedsConfirmation -> _state.update {
-                it.copy(confirmation = Confirmation(outcome.pending, purpose), confirmationProblem = null)
+                it.copy(confirmation = Confirmation(outcome.pending, purpose, via), confirmationProblem = null)
             }
             is CommandOutcome.Done -> {
                 _state.update { it.copy(confirmation = null, confirmationProblem = null) }
+                if (via != null) closeWaker()
                 completed(outcome.command, purpose)
             }
         }
@@ -450,6 +497,12 @@ class AppViewModel(
         when {
             command.status == "completed" -> when (purpose) {
                 is CommandPurpose.Power -> _state.update { it.copy(notice = "${purpose.label} was accepted by Windows.") }
+                is CommandPurpose.Wake -> {
+                    val result = command.result as? JsonObject
+                    val sent = (result?.get("packetsSent") as? JsonPrimitive)?.intOrNull ?: 0
+                    val networks = (result?.get("networks") as? JsonPrimitive)?.intOrNull ?: 0
+                    _state.update { it.copy(notice = Wake.sentText(purpose.sender, purpose.target, sent, networks)) }
+                }
                 CommandPurpose.ListProcesses -> {
                     val result = try {
                         command.result?.let { WolfJson.decodeFromJsonElement(ProcessListResult.serializer(), it) }
@@ -540,6 +593,7 @@ class AppViewModel(
     }
 
     private fun leavePc() {
+        closeWaker()
         telemetryJob?.cancel()
         telemetryJob = null
         controller?.let { closing -> viewModelScope.launch { closing.close() } }

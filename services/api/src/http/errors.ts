@@ -104,6 +104,18 @@ export function pcOffline(pcName: string): WolfError {
   });
 }
 
+export function wakeAddressUnknown(pcName: string): WolfError {
+  return new WolfError({
+    code: 'pc.wake_address_unknown',
+    problem: `WOLF does not know an address to wake ${pcName} at.`,
+    cause: `${pcName} has never reported a wired network adapter. Wake-on-LAN needs one: almost no Wi-Fi adapter listens while its PC sleeps.`,
+    currentState: 'No wake packet was sent.',
+    recommendedAction: `Connect ${pcName} by Ethernet and let WOLF connect from it once; its adapter is recorded then.`,
+    area: 'AGENT',
+    httpStatus: 409,
+  });
+}
+
 export function killSwitchEngaged(pcName: string): WolfError {
   return new WolfError({
     code: 'pc.remote_access_disabled',

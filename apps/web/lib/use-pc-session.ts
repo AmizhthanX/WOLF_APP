@@ -85,7 +85,7 @@ const CAPABILITIES = [
   'configuration',
 ];
 
-export function usePcSession(pcId: string): PcSession {
+export function usePcSession(pcId: string, capabilities: readonly string[] = CAPABILITIES): PcSession {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<WolfProblem | null>(null);
@@ -108,7 +108,7 @@ export function usePcSession(pcId: string): PcSession {
   useEffect(() => {
     let cancelled = false;
 
-    void openSession(pcId, CAPABILITIES)
+    void openSession(pcId, [...capabilities])
       .then((grant) => {
         if (cancelled) return;
         setSessionId(grant.session.id);
@@ -123,7 +123,9 @@ export function usePcSession(pcId: string): PcSession {
     return () => {
       cancelled = true;
     };
-  }, [pcId]);
+    // The list's contents, not its identity: a caller passing a fresh array each render opens one session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pcId, capabilities.join(',')]);
 
   const send = useCallback(
     async (

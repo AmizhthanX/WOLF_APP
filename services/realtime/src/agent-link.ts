@@ -390,6 +390,8 @@ export class AgentLink implements AgentLinkHandle {
       videoEncoders: message.capabilities.videoEncoders,
     });
 
+    await repos.pcs.recordWakeAddress(this.pcId, message.capabilities.wakeMacAddress);
+
     await repos.pcs.upsertHardware(this.pcId, {
       cpuModel: message.info.cpuModel,
       cpuCores: message.info.cpuCores,

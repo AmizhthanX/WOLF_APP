@@ -83,6 +83,7 @@ public static class Program
         builder.Services.AddSingleton<ServiceCommandHandler>();
         builder.Services.AddSingleton<AutorunCommandHandler>();
         builder.Services.AddSingleton<DiagnosticsCommandHandler>();
+        builder.Services.AddSingleton<WakeCommandHandler>();
 
         // The router is built from the handlers, and the system handler needs to advertise
         // what the router ends up supporting — resolved lazily to break the cycle.
@@ -98,6 +99,7 @@ public static class Program
                 provider.GetRequiredService<ServiceCommandHandler>(),
                 provider.GetRequiredService<AutorunCommandHandler>(),
                 provider.GetRequiredService<DiagnosticsCommandHandler>(),
+                provider.GetRequiredService<WakeCommandHandler>(),
             };
 
             CommandRouter? router = null;

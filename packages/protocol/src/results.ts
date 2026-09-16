@@ -110,7 +110,22 @@ export const systemCapabilitiesResult = z.object({
   preferredVideoCodec: z.string().max(32).nullable(),
   displayCount: z.number().int().nonnegative(),
   audioCaptureAvailable: z.boolean(),
+  /**
+   * Whether Windows has armed a wired adapter on this PC to wake it — what `powercfg /devicequery
+   * wake_armed` lists. Not a promise the PC wakes: the firmware setting and the adapter's own
+   * magic-packet setting cannot be read without administrator, and both have to be on as well.
+   */
   wakeOnLanCapable: z.boolean(),
+  /**
+   * The hardware address of this PC's wired adapter, which another PC sends a wake packet for.
+   * Null with no wired adapter: Wake-on-LAN over Wi-Fi is not something WOLF offers, because
+   * almost no adapter keeps its radio listening while the machine sleeps.
+   */
+  wakeMacAddress: z
+    .string()
+    .regex(/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/)
+    .nullable()
+    .default(null),
   privilegedHelperAvailable: z.boolean(),
   /**
    * Whether this PC can capture the Windows secure desktop (lock and login screens).
@@ -188,6 +203,8 @@ export const powerWakeResult = z.object({
   targetPcId: wolfId,
   method: z.enum(['lan-broadcast', 'peer-agent', 'relay']),
   packetsSent: z.number().int().nonnegative(),
+  /** How many of the sending PC's networks the packet went out on. */
+  networks: z.number().int().nonnegative().default(0),
   sentAt: isoDateTime,
   /** Wake is fire-and-forget: whether the PC actually woke is confirmed by it reconnecting. */
   confirmationPending: z.literal(true),

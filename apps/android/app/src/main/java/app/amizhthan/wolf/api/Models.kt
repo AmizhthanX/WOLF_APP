@@ -100,6 +100,18 @@ data class PcSummary(
     val favorite: Boolean = false,
     val activeSessionCount: Int = 0,
     val pendingCommandCount: Int = 0,
+    /** Null until the PC's agent has connected once. */
+    val capabilities: PcCapabilitiesSummary? = null,
+)
+
+/** The parts of what a PC reported that the phone uses. */
+@Serializable
+data class PcCapabilitiesSummary(
+    /** Windows on the PC had armed its wired adapter to wake it, the last time it connected. */
+    val wakeOnLanCapable: Boolean = false,
+    /** WOLF has a wired adapter address to wake it at. The address itself never reaches the phone. */
+    val wakeAddressKnown: Boolean = false,
+    val supportedCommands: List<String> = emptyList(),
 )
 
 @Serializable

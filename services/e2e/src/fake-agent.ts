@@ -20,6 +20,8 @@ export interface FakeAgentOptions {
   readonly pcId: string;
   readonly keys: IdentityKeyPair;
   readonly supportedCommands: readonly string[];
+  /** Capability fields to report in place of the defaults. */
+  readonly capabilities?: Readonly<Record<string, unknown>>;
   /** Produce the result payload for a command, or throw to report a failure. */
   readonly onCommand?: (type: string, payload: unknown) => unknown;
   /** Called for every signaling envelope the cloud routes to this agent. */
@@ -141,6 +143,7 @@ export class FakeAgent {
         gpuVendors: ['Test'],
         windowsBuild: '26100.1',
         supportedCommands: [...this.options.supportedCommands],
+        ...this.options.capabilities,
       },
     });
   }

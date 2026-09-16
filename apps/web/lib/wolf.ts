@@ -19,7 +19,10 @@ export interface PcCapabilities {
   preferredVideoCodec: string | null;
   displayCount: number;
   audioCaptureAvailable: boolean;
+  /** Windows on the PC had armed its wired adapter to wake it, the last time it connected. */
   wakeOnLanCapable: boolean;
+  /** WOLF has a wired adapter address to wake the PC at. The address itself is never sent to clients. */
+  wakeAddressKnown: boolean;
   privilegedHelperAvailable: boolean;
   secureDesktopCaptureAvailable: boolean;
   remoteUnlockProvisioned: boolean;

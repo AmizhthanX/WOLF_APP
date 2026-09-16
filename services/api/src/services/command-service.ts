@@ -27,6 +27,7 @@ import {
   privilegedGrantRequired,
   reauthenticationRequired,
   unsupportedCommand,
+  wakeAddressUnknown,
 } from '../http/errors.js';
 
 /**
@@ -100,14 +101,16 @@ export class CommandService {
 
     if (!pc.remoteAccessEnabled) throw killSwitchEngaged(pc.name);
 
-    const command = parseOrThrow(agentCommandBody, input.command, {
+    const parsed = parseOrThrow(agentCommandBody, input.command, {
       area: 'CMD',
       what: 'The command',
     }) as AgentCommandBody;
 
-    if (!isKnownCommandType(command.type)) {
-      throw unsupportedCommand(command.type, pc.name);
+    if (!isKnownCommandType(parsed.type)) {
+      throw unsupportedCommand(parsed.type, pc.name);
     }
+
+    const command = parsed.type === 'power.wake' ? await this.resolveWake(input, pc, parsed) : parsed;
 
     const definition = COMMAND_REGISTRY[command.type];
     const riskLevel = classifyRisk(command);
@@ -404,6 +407,60 @@ export class CommandService {
     }
 
     return { ok: true, command: outcome.command };
+  }
+
+  /**
+   * A wake command, checked and addressed.
+   *
+   * It goes to a PC that is online and is about another that is not: one of the caller's own, not
+   * the sender itself, not switched off with the kill switch, and one WOLF has a wired address for.
+   * The address is the one that PC reported — whatever a client put in the payload is replaced, so a
+   * PC is never made to broadcast a wake for a machine WOLF does not know.
+   */
+  private async resolveWake(
+    input: DispatchInput,
+    sender: { id: string; name: string },
+    command: Extract<AgentCommandBody, { type: 'power.wake' }>,
+  ): Promise<AgentCommandBody> {
+    const { repos } = this.context;
+    const deny = async (code: string) => this.auditDenied(input, command.type, classifyRisk(command), code);
+
+    const target = await repos.pcs.findById(command.payload.targetPcId, input.auth.userId);
+    if (!target || target.registrationState === 'revoked') {
+      await deny('wake-target-unknown');
+      throw notFound('The PC to wake');
+    }
+
+    if (target.id === sender.id) {
+      await deny('wake-self');
+      throw conflict(
+        `${sender.name} cannot wake itself.`,
+        'A sleeping PC cannot hear a command; the wake packet has to come from another PC on its network.',
+        'Choose another of your PCs that is online on the same local network.',
+      );
+    }
+
+    if (!target.remoteAccessEnabled) {
+      await deny('kill-switch');
+      throw killSwitchEngaged(target.name);
+    }
+
+    if (target.status === 'online') {
+      await deny('wake-target-online');
+      throw conflict(
+        `${target.name} is already online.`,
+        'WOLF has a live connection from it.',
+        'Nothing needs waking. If it is unresponsive, restart it from its own Power section.',
+      );
+    }
+
+    const macAddress = await repos.pcs.wakeAddress(target.id, input.auth.userId);
+    if (!macAddress) {
+      await deny('wake-address-unknown');
+      throw wakeAddressUnknown(target.name);
+    }
+
+    return { type: 'power.wake', payload: { targetPcId: target.id, macAddress } };
   }
 
   private async privilegedGrantIsValid(input: {

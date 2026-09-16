@@ -7,6 +7,7 @@ using Microsoft.Win32;
 using Wolf.Agent.Core.Ipc;
 using Wolf.Agent.Core.Privileged;
 using Wolf.Agent.Core.Native;
+using Wolf.Agent.Core.Power;
 using Wolf.Agent.Core.Protocol;
 using Wolf.Agent.Core.Sessions;
 using Wolf.Agent.Core.Storage;
@@ -142,6 +143,8 @@ public sealed class MachineInfoProvider
             ? host.Encoders.Where(encoder => encoder.Hardware).Select(encoder => encoder.Id).ToList()
             : Array.Empty<string>();
 
+        WakeReport wake = WakeAdapter.Current();
+
         return new SystemCapabilitiesResult(
             HardwareVideoEncoders: encoders,
             PreferredVideoCodec: ChoosePreferredCodec(host),
@@ -149,7 +152,8 @@ public sealed class MachineInfoProvider
             // session 0 would always report zero, which is why this comes from the host.
             DisplayCount: host.Connected ? host.Displays.Count : ReadDisplayCount(),
             AudioCaptureAvailable: host.Connected && host.AudioCaptureAvailable,
-            WakeOnLanCapable: false,
+            // Armed by Windows, which is as far as can be read without administrator. See WakeAdapter.
+            WakeOnLanCapable: wake.Armed,
 
             // Asked at call time rather than assumed: the helper is a separate service and
             // can be stopped, and a PC that says it can do privileged work when it cannot is
@@ -166,7 +170,8 @@ public sealed class MachineInfoProvider
             SupportedCommands: supportedCommands,
             RemoteDesktopAvailable: available,
             RemoteDesktopUnavailableReason: reason,
-            VideoEncoders: host.Encoders.Select(encoder => encoder.Id).ToList());
+            VideoEncoders: host.Encoders.Select(encoder => encoder.Id).ToList(),
+            WakeMacAddress: wake.MacAddress);
     }
 
     /// <summary>
