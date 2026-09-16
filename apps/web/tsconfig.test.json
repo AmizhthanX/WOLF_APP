@@ -11,6 +11,8 @@
     "moduleResolution": "NodeNext",
     "jsx": "react-jsx",
     "incremental": false,
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
     "plugins": []
   },
   "include": [

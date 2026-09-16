@@ -4,7 +4,7 @@ import {
   type FileChunk,
   type FileInfo,
   type FileWritten,
-} from './remote-desktop.js';
+} from './remote-desktop.ts';
 
 /**
  * Moving one file between this tab and the PC, in a way that survives the connection dropping.
