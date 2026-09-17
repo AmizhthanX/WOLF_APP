@@ -76,8 +76,10 @@ function terraformOutputs() {
   const instance = value('instance');
   if (!registry || !instance) fail('terraform output is missing registry or instance. Run terraform apply again.');
   const project = registry.split('/')[1];
-  const domain = (value('dns_records')?.[0] ?? '').trim().split(/\s+/)[1];
-  return { registry, instance, project, domain };
+  const domain = value('domain');
+  const dashboard = value('dashboard');
+  if (!domain || !dashboard) fail('terraform output is missing domain or dashboard. Run terraform apply again.');
+  return { registry, instance, project, domain, dashboard };
 }
 
 function hasVersion(project, secret) {
@@ -126,7 +128,7 @@ function imageTag(allowUncommitted) {
 }
 
 function deploy(args) {
-  const { registry, instance, domain } = terraformOutputs();
+  const { registry, instance, domain, dashboard } = terraformOutputs();
   const tag = imageTag(args.includes('--allow-uncommitted'));
 
   if (run('docker', ['info'], { capture: true, allowFailure: true }).status !== 0) {
@@ -138,7 +140,7 @@ function deploy(args) {
   process.stdout.write(`\nBuilding the server image (${tag})…\n`);
   run('docker', ['build', '-f', 'infrastructure/docker/server.Dockerfile', '-t', `${registry}/server:${tag}`, '.']);
 
-  process.stdout.write(`\nBuilding the dashboard image for https://${domain}…\n`);
+  process.stdout.write(`\nBuilding the dashboard image for ${dashboard}…\n`);
   run('docker', [
     'build',
     '-f', 'infrastructure/docker/web.Dockerfile',
@@ -165,7 +167,7 @@ function deploy(args) {
     '--command=sudo google_metadata_script_runner startup',
   ]);
 
-  process.stdout.write(`\nDeployed ${tag}. Open https://${domain} (the first start takes a minute).\n`);
+  process.stdout.write(`\nDeployed ${tag}. Open ${dashboard} (the first start takes a minute).\n`);
 }
 
 function status() {

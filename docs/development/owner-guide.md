@@ -531,12 +531,13 @@ In a PowerShell window:
 ### 8d. Point your domain at it (Cloudflare)
 
 1. Go to **https://dash.cloudflare.com** → click **amizhthan.app** → left menu **DNS** → **Records**.
-2. If records named `amizhthan.app`, `api`, `relay` or `turn` already exist, tell me before changing them.
+2. Leave the records you already have (`amizhthan.app`, `www`, `*`, `control`, `pc`) exactly as they are. WOLF adds
+   four new names beside them. If `wolf`, `api`, `relay` or `turn` already exists, tell me first.
 3. Click **Add record** four times, one per line from step 8c:
 
    | Type | Name | IPv4 address | Proxy status |
    | --- | --- | --- | --- |
-   | A | `@` | the `ip_address` | **DNS only** (grey cloud — click the orange cloud to turn it grey) |
+   | A | `wolf` | the `ip_address` | **DNS only** (grey cloud — click the orange cloud to turn it grey) |
    | A | `api` | same address | **DNS only** |
    | A | `relay` | same address | **DNS only** |
    | A | `turn` | same address | **DNS only** |
@@ -564,7 +565,7 @@ give you 8f.
    ```
    Building takes 5–10 minutes the first time. At the end, a **PuTTY Security Alert** window may ask about the
    host key: click **Accept**. The first run on the VM also installs Docker there (2–3 minutes).
-2. ✅ It ends with `Deployed <tag>. Open https://amizhthan.app`.
+2. ✅ It ends with `Deployed <tag>. Open https://wolf.amizhthan.app`.
 
 ### 8g. Make your real owner account
 
@@ -580,7 +581,7 @@ The local test account does not exist here. This makes yours, on the VM:
 3. Type your email, your name, then a **new, long WOLF password** twice (nothing shows while typing — normal).
    Save it in your password manager. ✅ `Created WOLF owner account …`
 4. Type `exit` to leave the VM.
-5. Open **https://amizhthan.app** and sign in with that email and password.
+5. Open **https://wolf.amizhthan.app** and sign in with that email and password.
 
 ### 8h. Connect your PC to the real WOLF
 
@@ -594,7 +595,7 @@ The local test account does not exist here. This makes yours, on the VM:
    $env:Wolf__DataDirectory = "$env:LOCALAPPDATA\wolf-agent"
    .\apps\windows-agent\Wolf.Agent.Host\bin\Release\net9.0-windows10.0.22621.0\Wolf.Agent.exe
    ```
-3. ✅ `Cloud link established`, and the PC is **online** at https://amizhthan.app.
+3. ✅ `Cloud link established`, and the PC is **online** at https://wolf.amizhthan.app.
 4. On your phone, install the signed APK from Part 6 and sign in with the same account. The release app already
    talks to `https://api.amizhthan.app`; there is no server address to type.
 

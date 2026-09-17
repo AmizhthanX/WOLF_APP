@@ -6,10 +6,10 @@ this page is how it works.
 
 ```
                   Cloudflare DNS (DNS only)
-   amizhthan.app  api.  relay.  turn.   ──►  static IP
+   wolf.  api.  relay.  turn.  (amizhthan.app) ──►  static IP
                                               │
   ┌─────────────────────── VM "wolf" (e2-small, Debian 13) ───────────────────────┐
-  │  Caddy :80 :443 ── amizhthan.app ──► web       (Next.js standalone)           │
+  │  Caddy :80 :443 ── wolf.         ──► web       (Next.js standalone)           │
   │                 ── api.          ──► api       (services/api)                 │
   │                 ── relay.        ──► realtime  (services/realtime, WebSockets)│
   │  coturn :3478 udp/tcp, relay 49160–49200/udp   (host network)                 │
@@ -106,4 +106,5 @@ long-lived WebSockets and an in-memory registry of connected PCs, and TURN needs
 
 - One VM: a VM failure stops WOLF until it restarts (Compute Engine restarts it on host failure).
 - TURN over TLS (`turns:` on 443) is not offered, so a network that blocks UDP and port 3478 cannot relay.
-- The first certificate needs the four DNS records to point at the static IP, and Cloudflare's proxy **off**.
+- The dashboard is at `wolf.amizhthan.app` (Terraform `dashboard_host`), so the domain's own records stay the
+  owner's. The first certificate needs the four DNS records to point at the static IP, and Cloudflare's proxy **off**.

@@ -215,6 +215,7 @@ resource "google_compute_instance" "wolf" {
     wolf-compose           = replace(file("${path.module}/../docker/compose.yml"), "\r\n", "\n")
     wolf-caddyfile         = replace(file("${path.module}/../docker/Caddyfile"), "\r\n", "\n")
     wolf-domain            = var.domain
+    wolf-dashboard-host    = "${var.dashboard_host}.${var.domain}"
     wolf-acme-email        = var.acme_email
     wolf-registry          = local.registry
     wolf-fcm-project-id    = var.fcm_project_id

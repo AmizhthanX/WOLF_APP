@@ -17,7 +17,7 @@
 	# the relay's rate limiters read. Nothing here trusts a forwarded header from outside.
 }
 
-{$WOLF_DOMAIN} {
+{$WOLF_DASHBOARD_HOST} {
 	import common
 	reverse_proxy web:3000
 }

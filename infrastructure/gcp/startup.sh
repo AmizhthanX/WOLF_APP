@@ -56,6 +56,8 @@ compose() {
 # --- Configuration ------------------------------------------------------------------------------------------------
 
 DOMAIN="$(attribute wolf-domain)"
+DASHBOARD_HOST="$(attribute wolf-dashboard-host)"
+DASHBOARD_HOST="${DASHBOARD_HOST:-$DOMAIN}"
 REGISTRY="$(attribute wolf-registry)"
 IMAGE_TAG="$(attribute wolf-image-tag)"
 ACME_EMAIL="$(attribute wolf-acme-email)"
@@ -119,7 +121,7 @@ DATABASE_URL=postgres://wolf:${DATABASE_PASSWORD}@db:5432/wolf
 DATABASE_SSL=disable
 WOLF_TOKEN_SECRET=${TOKEN_SECRET}
 WOLF_TOKEN_ISSUER=https://api.${DOMAIN}
-WOLF_ALLOWED_ORIGINS=https://${DOMAIN}
+WOLF_ALLOWED_ORIGINS=https://${DASHBOARD_HOST}
 WOLF_STUN_URLS=stun:turn.${DOMAIN}:3478
 WOLF_TURN_URLS=turn:turn.${DOMAIN}:3478?transport=udp,turn:turn.${DOMAIN}:3478?transport=tcp
 WOLF_TURN_SECRET=${TURN_SECRET}
@@ -187,7 +189,7 @@ mkdir -p "$DOCKER_CONFIG"
 access_token | docker login -u oauth2accesstoken --password-stdin "https://${REGISTRY%%/*}" >/dev/null
 
 export WOLF_REGISTRY="$REGISTRY" WOLF_IMAGE_TAG="$IMAGE_TAG" WOLF_DOMAIN="$DOMAIN" WOLF_ACME_EMAIL="$ACME_EMAIL"
-export WOLF_RUNTIME_DIR="$RUN"
+export WOLF_DASHBOARD_HOST="$DASHBOARD_HOST" WOLF_RUNTIME_DIR="$RUN"
 
 # The same names for anyone who signs in to look: `cd /opt/wolf && sudo docker compose logs api`. No secret here.
 umask 022
@@ -195,6 +197,7 @@ cat > "$APP/.env" <<EOF
 WOLF_REGISTRY=${REGISTRY}
 WOLF_IMAGE_TAG=${IMAGE_TAG}
 WOLF_DOMAIN=${DOMAIN}
+WOLF_DASHBOARD_HOST=${DASHBOARD_HOST}
 WOLF_ACME_EMAIL=${ACME_EMAIL}
 WOLF_RUNTIME_DIR=${RUN}
 EOF
@@ -225,4 +228,4 @@ compose --profile turn pull --quiet
 compose --profile turn up -d --remove-orphans
 docker image prune -f >/dev/null 2>&1 || true
 
-log "WOLF ${IMAGE_TAG} is starting on https://${DOMAIN}"
+log "WOLF ${IMAGE_TAG} is starting on https://${DASHBOARD_HOST}"

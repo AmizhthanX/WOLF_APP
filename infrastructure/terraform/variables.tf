@@ -4,9 +4,15 @@ variable "project_id" {
 }
 
 variable "domain" {
-  description = "The owner's domain. The dashboard is served at it; api., relay. and turn. are made under it."
+  description = "The owner's domain. api., relay. and turn. are made under it."
   type        = string
   default     = "amizhthan.app"
+}
+
+variable "dashboard_host" {
+  description = "The name under the domain the dashboard is served at. \"wolf\" leaves the domain's own records alone."
+  type        = string
+  default     = "wolf"
 }
 
 variable "acme_email" {

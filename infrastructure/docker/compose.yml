@@ -9,7 +9,8 @@
 #
 # Variables (set by the startup script, or by compose.local.yml for a local run):
 #   WOLF_REGISTRY, WOLF_IMAGE_TAG   where the images come from
-#   WOLF_DOMAIN                     e.g. amizhthan.app
+#   WOLF_DOMAIN                     e.g. amizhthan.app (api., relay. and turn. are under it)
+#   WOLF_DASHBOARD_HOST             e.g. wolf.amizhthan.app
 #   WOLF_RUNTIME_DIR                where the secret env files are
 #
 # Logs stay on the machine, rotated, and are read with `docker compose logs`: WOLF logs metadata only, and a
@@ -111,6 +112,7 @@ services:
       - "443:443/udp"
     environment:
       WOLF_DOMAIN: ${WOLF_DOMAIN:-}
+      WOLF_DASHBOARD_HOST: ${WOLF_DASHBOARD_HOST:-}
       WOLF_ACME_EMAIL: ${WOLF_ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
