@@ -348,6 +348,47 @@ export interface StreamOptions {
   events: StreamEvents;
 }
 
+/**
+ * The H.264 profiles this browser says it decodes, in the names the PC chooses between.
+ *
+ * Without this the PC encodes High profile for every browser, and a browser that decodes only Constrained Baseline —
+ * Firefox's OpenH264, some Windows editions without media codecs — answers with the video refused, which reached the
+ * owner as "The client's answer could not be used: VideoIncompatible". The Android client already said which
+ * profiles it decodes; the dashboard now does the same, from `RTCRtpReceiver.getCapabilities`.
+ *
+ * A decoder for a profile also decodes the simpler ones: High covers Main and Constrained Baseline, Main covers
+ * Constrained Baseline. `profile-level-id` starts with the profile: 64 High, 4d Main, 42 Baseline family. Null when
+ * the browser does not say, so the PC keeps its default rather than being told "none".
+ */
+export function decodableH264Profiles(
+  codecs: readonly { mimeType: string; sdpFmtpLine?: string }[] | null = typeof RTCRtpReceiver !== 'undefined' &&
+  RTCRtpReceiver.getCapabilities
+    ? (RTCRtpReceiver.getCapabilities('video')?.codecs ?? null)
+    : null,
+): string[] | null {
+  if (!codecs) return null;
+
+  const accepted = new Set<string>();
+  for (const codec of codecs) {
+    if (codec.mimeType.toLowerCase() !== 'video/h264') continue;
+    const match = /profile-level-id=([0-9a-f]{2})/i.exec(codec.sdpFmtpLine ?? '');
+    switch (match?.[1]?.toLowerCase()) {
+      case '64':
+        accepted.add('high').add('main').add('constrained-baseline');
+        break;
+      case '4d':
+        accepted.add('main').add('constrained-baseline');
+        break;
+      case '42':
+        accepted.add('constrained-baseline');
+        break;
+    }
+  }
+
+  if (accepted.size === 0) return null;
+  return ['high', 'main', 'constrained-baseline'].filter((profile) => accepted.has(profile));
+}
+
 /** Codecs this browser can actually decode, in WOLF's preference order. */
 export function decodableCodecs(): string[] {
   const capabilities =
@@ -919,6 +960,7 @@ export class RemoteDesktopStream {
             profile: this.profile,
             clientCodecs: decodableCodecs(),
             requestAudio: this.options.requestAudio,
+            ...(decodableH264Profiles() ? { h264Profiles: decodableH264Profiles() } : {}),
           },
         });
         return;

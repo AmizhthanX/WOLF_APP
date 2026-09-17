@@ -1518,6 +1518,23 @@ test('file changes go to the PC on the data channel with only what each needs, a
   stream.stop();
 });
 
+test('the H.264 profiles a browser decodes are named, so the PC does not send one it would refuse', async () => {
+  const { decodableH264Profiles } = await import('./remote-desktop.js');
+  const h264 = (id: string) => ({ mimeType: 'video/H264', sdpFmtpLine: `level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=${id}` });
+
+  // Chrome on Windows: High, Main and the Baseline family.
+  assert.deepEqual(decodableH264Profiles([h264('42001f'), h264('42e01f'), h264('4d001f'), h264('64001f'), { mimeType: 'video/VP8' }]), [
+    'high',
+    'main',
+    'constrained-baseline',
+  ]);
+  // Firefox with OpenH264: Constrained Baseline only — the case that produced VideoIncompatible.
+  assert.deepEqual(decodableH264Profiles([h264('42e01f'), { mimeType: 'video/VP8' }]), ['constrained-baseline']);
+  // Nothing stated: left to the PC's default rather than claimed as "none".
+  assert.equal(decodableH264Profiles([{ mimeType: 'video/VP8' }]), null);
+  assert.equal(decodableH264Profiles(null), null);
+});
+
 test('a refusal from the PC becomes an error the caller cannot ignore', async () => {
   const { stream } = makeStream();
   await connectWithControlChannel(stream);

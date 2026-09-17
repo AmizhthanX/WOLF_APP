@@ -420,7 +420,14 @@ public sealed class WebRtcTransport : IDisposable
 
         if (result == SetDescriptionResultEnum.OK) return null;
 
-        _logger.LogWarning("The client's answer was refused: {Result}.", result);
+        // The format lines say why, and carry nothing but codec parameters: no address, key or name.
+        string formats = string.Join(" | ", sdp
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("m=", StringComparison.Ordinal) ||
+                           line.StartsWith("a=rtpmap:", StringComparison.Ordinal) ||
+                           line.StartsWith("a=fmtp:", StringComparison.Ordinal)));
+        _logger.LogWarning("The client's answer was refused: {Result}. Its media formats: {Formats}.", result, formats);
         return result.ToString();
     }
 
