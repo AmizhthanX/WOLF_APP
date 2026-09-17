@@ -121,6 +121,8 @@ resource "google_compute_subnetwork" "wolf" {
 resource "google_compute_address" "wolf" {
   name   = local.name
   region = var.region
+
+  depends_on = [google_project_service.services]
 }
 
 resource "google_compute_firewall" "web" {
@@ -238,6 +240,8 @@ resource "google_compute_instance" "wolf" {
 resource "google_compute_resource_policy" "nightly" {
   name   = "wolf-nightly-snapshot"
   region = var.region
+
+  depends_on = [google_project_service.services]
 
   snapshot_schedule_policy {
     schedule {
