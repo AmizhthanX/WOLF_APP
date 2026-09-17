@@ -38,9 +38,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,6 +83,8 @@ import app.amizhthan.wolf.remote.TouchpadCursor
 import app.amizhthan.wolf.remote.Typing
 import app.amizhthan.wolf.remote.Viewport
 import app.amizhthan.wolf.remote.VirtualKey
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import org.webrtc.SurfaceViewRenderer
 import kotlin.math.roundToInt
@@ -112,6 +117,11 @@ private enum class Panel { NONE, MENU, FILES, CLIPBOARD }
 
 private enum class MouseMode(val label: String) { TOUCHPAD("Touchpad"), DIRECT("Direct touch") }
 
+private const val MAX_RECONNECTS = 5
+private const val RECONNECT_BASE_MS = 2_000L
+private const val RECONNECT_MAX_MS = 30_000L
+private const val RECONNECT_STUCK_MS = 25_000L
+
 private val Overlay = Color(0xE6121212)
 private val OverlayText = Color(0xFFECECEC)
 
@@ -137,7 +147,11 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
     var cursor by remember { mutableStateOf(TouchpadCursor()) }
     val currentViewport = rememberUpdatedState(viewport)
     val currentCursor = rememberUpdatedState(cursor)
-    var askedForControl by remember { mutableStateOf(false) }
+    // Whether the owner wants the keyboard and mouse: true until they choose View only, and asked for again on every
+    // (re)connection while it is.
+    var wantControl by remember { mutableStateOf(true) }
+    var reconnects by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
 
     FullScreenLandscape()
 
@@ -148,9 +162,33 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
     // Opening a stream from this screen is asking to use the PC, so control is asked for once it is streaming, as
     // Parsec does. The cloud still decides, and a refusal is shown; "View only" in the menu gives it back.
     LaunchedEffect(streaming) {
-        if (streaming && !askedForControl) {
-            askedForControl = true
-            controller.requestControl()
+        if (streaming) {
+            reconnects = 0
+            if (wantControl) controller.requestControl()
+        }
+    }
+
+    // A stream that stopped for a reason that can pass — the connection to WOLF dropped, the network changed — starts
+    // again by itself, a few times and further apart, as Parsec does. Collected with the lifecycle, so this runs when
+    // the owner is looking, not while the app sits in the background.
+    LaunchedEffect(state.phase, state.failure) {
+        if (state.phase == StreamPhase.FAILED && state.failure?.retryable == true && reconnects < MAX_RECONNECTS) {
+            delay(minOf(RECONNECT_BASE_MS shl reconnects, RECONNECT_MAX_MS))
+            reconnects += 1
+            // Launched in the screen's scope, not run in this effect: restarting changes the phase this effect is
+            // keyed on, which would cancel the restart halfway — the first version stayed on "Connecting" forever.
+            scope.launch { runCatching { controller.restart() } }
+        }
+    }
+
+    // A reconnection that is still "connecting" after a while is treated as failed and tried again: a socket opened
+    // on a network that has just gone away can wait far longer than the owner will.
+    LaunchedEffect(state.phase, reconnects) {
+        val connecting = state.phase in setOf(StreamPhase.AUTHENTICATING, StreamPhase.REQUESTING, StreamPhase.NEGOTIATING, StreamPhase.CONNECTING)
+        if (connecting && reconnects in 1 until MAX_RECONNECTS) {
+            delay(RECONNECT_STUCK_MS)
+            reconnects += 1
+            scope.launch { runCatching { controller.restart() } }
         }
     }
 
@@ -160,20 +198,33 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
         val heightPx = with(density) { maxHeight.toPx() }
 
         Box(modifier = Modifier.fillMaxSize().clipToBounds()) {
-            AndroidView(
-                factory = { context -> SurfaceViewRenderer(context).also(controller::attachRenderer) },
-                // Zoom moves the picture view itself. Since Android 7 a SurfaceView scales and moves with its view.
-                update = { view ->
-                    view.pivotX = 0f
-                    view.pivotY = 0f
-                    view.scaleX = viewport.scale
-                    view.scaleY = viewport.scale
-                    view.translationX = viewport.offsetX
-                    view.translationY = viewport.offsetY
-                },
-                onRelease = controller::detachRenderer,
-                modifier = Modifier.fillMaxSize(),
-            )
+            // The picture view takes the PC picture's own shape, centred, rather than the whole screen. libwebrtc's
+            // renderer crops a frame to the shape of its view: filling a 19.5:9 phone with a 16:9 PC desktop cut off
+            // its top and bottom — the taskbar — on the owner's phone. Until the first frame says the shape, it fills.
+            val fit = PictureRect.of(widthPx, heightPx, state.frameWidth, state.frameHeight, Viewport.FIT)
+                ?: PictureRect(0f, 0f, widthPx, heightPx)
+            // Remade when the screen's size changes: made a moment before the turn to landscape, the renderer kept
+            // the surface it had sized for portrait.
+            key(widthPx.roundToInt(), heightPx.roundToInt()) {
+                AndroidView(
+                    factory = { context -> SurfaceViewRenderer(context).also(controller::attachRenderer) },
+                    // Zoom moves the picture view itself; since Android 7 a SurfaceView scales and moves with its
+                    // view. The viewport is in screen coordinates and the view sits at (left, top), so its own
+                    // translation carries that offset through the scale.
+                    update = { view ->
+                        view.pivotX = 0f
+                        view.pivotY = 0f
+                        view.scaleX = viewport.scale
+                        view.scaleY = viewport.scale
+                        view.translationX = fit.left * (viewport.scale - 1f) + viewport.offsetX
+                        view.translationY = fit.top * (viewport.scale - 1f) + viewport.offsetY
+                    },
+                    onRelease = controller::detachRenderer,
+                    modifier = Modifier
+                        .offset { IntOffset(fit.left.roundToInt(), fit.top.roundToInt()) }
+                        .size(with(density) { fit.width.toDp() }, with(density) { fit.height.toDp() }),
+                )
+            }
 
             val gestures = when (mouseMode) {
                 MouseMode.TOUCHPAD -> Modifier.touchpadGestures(
@@ -212,7 +263,18 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
             }
         }
 
-        if (!streaming || !state.pictureShown) StatusCard(state, onClose, modifier = Modifier.align(Alignment.Center))
+        if (!streaming || !state.pictureShown) {
+            StatusCard(
+                state,
+                reconnecting = state.phase == StreamPhase.FAILED && state.failure?.retryable == true && reconnects < MAX_RECONNECTS,
+                onReconnect = {
+                    reconnects = 0
+                    scope.launch { runCatching { controller.restart() } }
+                },
+                onClose = onClose,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
 
         state.inputRefusal?.let {
             Notice(it, modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
@@ -248,7 +310,10 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
                     onDisplay = controller::setDisplay,
                     onSound = { controller.setSoundOn(!state.soundOn) },
                     onFit = { viewport = Viewport.FIT },
-                    onControl = { if (controlling) controller.releaseControl() else controller.requestControl() },
+                    onControl = {
+                        wantControl = !controlling
+                        if (controlling) controller.releaseControl() else controller.requestControl()
+                    },
                     onFiles = { panel = Panel.FILES },
                     onClipboard = { panel = Panel.CLIPBOARD },
                     onClose = onClose,
@@ -305,8 +370,9 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 private fun MenuButton(onOpen: () -> Unit, maxX: Float, maxY: Float) {
     val density = LocalDensity.current
     val sizePx = with(density) { 44.dp.toPx() }
-    var x by remember { mutableFloatStateOf(Float.NaN) }
-    var y by remember { mutableFloatStateOf(Float.NaN) }
+    // Placed again when the screen's size changes: placed once, it kept where portrait put it after the turn to landscape.
+    var x by remember(maxX, maxY) { mutableFloatStateOf(Float.NaN) }
+    var y by remember(maxX, maxY) { mutableFloatStateOf(Float.NaN) }
     if (x.isNaN()) {
         x = maxX - sizePx - with(density) { 16.dp.toPx() }
         y = with(density) { 16.dp.toPx() }
@@ -448,7 +514,13 @@ private fun Choice(label: String, selected: Boolean, modifier: Modifier = Modifi
 
 /** While connecting, or when the stream stopped: what is happening, and a way out. */
 @Composable
-private fun StatusCard(state: RemoteDesktopUiState, onClose: () -> Unit, modifier: Modifier = Modifier) {
+private fun StatusCard(
+    state: RemoteDesktopUiState,
+    reconnecting: Boolean,
+    onReconnect: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(color = Overlay, contentColor = OverlayText, shape = RoundedCornerShape(12.dp), modifier = modifier.padding(24.dp)) {
         Column(modifier = Modifier.padding(16.dp).width(360.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
@@ -459,8 +531,11 @@ private fun StatusCard(state: RemoteDesktopUiState, onClose: () -> Unit, modifie
                 Text(it.message, color = Color(0xFFFF8A80))
                 Text(it.recommendedAction, style = MaterialTheme.typography.bodySmall)
             }
-            state.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            TextButton(onClick = onClose) { Text("Close") }
+            if (reconnecting) Text("Reconnecting by itself in a moment…", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.phase == StreamPhase.FAILED) TextButton(onClick = onReconnect) { Text("Reconnect now") }
+                TextButton(onClick = onClose) { Text("Close") }
+            }
         }
     }
 }
@@ -508,12 +583,12 @@ private fun KeyboardBar(enabled: Boolean, send: (List<JsonObject>) -> Unit, onHi
                         field = next
                         return@BasicTextField
                     }
-                    val edit = Typing.edit(next.text)
+                    val edit = Typing.edit(field.text, next.text)
                     if (enabled && (edit.deleted > 0 || edit.inserted.isNotEmpty())) {
                         send(Typing.events(edit, held))
                         if (held.any) held = HeldModifiers()
                     }
-                    field = resetField
+                    field = if (Typing.needsReset(next.text)) resetField else next
                 },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.None),
                 modifier = Modifier.size(1.dp).alpha(0f).focusRequester(focus),

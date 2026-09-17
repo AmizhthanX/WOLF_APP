@@ -100,18 +100,27 @@ data class HeldModifiers(
 /** What a phone keyboard typed, as input for the PC. */
 object Typing {
     /**
-     * The keyboard's field always holds [SENTINEL] with the cursor at its end. Whatever it holds after an edit says
-     * what the owner did: fewer characters are that many Backspaces, more are the characters typed. Phone keyboards
+     * The keyboard's field starts as [SENTINEL] with the cursor at its end, and each edit is read against what the
+     * field held just before it: characters that went are Backspaces, characters that came are typed. Phone keyboards
      * send Backspace as an edit, not a key, so a field that started empty could never report one.
+     *
+     * Read against the previous text, not against the sentinel. The first version put the sentinel back after every
+     * edit, and a keyboard typing faster than the screen redrew still held the old text: "hello wolf" reached the
+     * owner's PC as "o o wo wollf". The field is only put back to the sentinel once it grows long ([MAX_FIELD]) or
+     * the sentinel itself is deleted.
      */
     const val SENTINEL = "​​"
+    const val MAX_FIELD = 256
 
     data class Edit(val deleted: Int, val inserted: String)
 
-    fun edit(after: String): Edit {
-        val common = SENTINEL.commonPrefixWith(after).length
-        return Edit(deleted = SENTINEL.length - common, inserted = after.substring(common))
+    fun edit(before: String, after: String): Edit {
+        val common = before.commonPrefixWith(after).length
+        return Edit(deleted = before.length - common, inserted = after.substring(common))
     }
+
+    /** Whether the field should go back to just the sentinel after holding [text]. */
+    fun needsReset(text: String): Boolean = !text.startsWith(SENTINEL) || text.length > MAX_FIELD
 
     /**
      * The events for one edit.

@@ -641,7 +641,26 @@ class StreamSessionTest {
 
         peerEvents.onFailed()
         assertEquals("ice-failed", recorder.failures.single().code)
+        // A network change is the usual cause on a phone, so it is tried again.
+        assertTrue(recorder.failures.single().retryable)
+        // This stream was given STUN only: the advice names the missing relay.
         assertTrue(recorder.failures.single().recommendedAction.contains("TURN"))
+    }
+
+    @Test
+    fun a_failed_connection_through_a_configured_relay_does_not_ask_for_one() {
+        val relayed = StreamSession(
+            "session-token",
+            listOf(IceServerConfig(listOf("turn:turn.example.com:3478?transport=udp"), "user", "credential")),
+            StreamProfile.BALANCED.json, listOf("h264"), socket,
+            { _, events -> peerEvents = events; FakePeer().also { peers += it } }, scheduler, recorder,
+        )
+        relayed.onSocketOpen()
+        relayed.onSocketMessage(accepted())
+        relayed.onSocketMessage(signal("""{"type":"sdp.offer","sdp":"v=0 OFFER"}""", relayed.streamId))
+        peerEvents.onFailed()
+        assertTrue(recorder.failures.single().retryable)
+        assertFalse(recorder.failures.single().recommendedAction.contains("configure"))
     }
 
     @Test

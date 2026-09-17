@@ -63,11 +63,29 @@ class TouchpadTest {
     }
 
     @Test
-    fun the_phone_keyboard_field_reports_typing_and_backspace() {
-        assertEquals(Typing.Edit(0, "hé"), Typing.edit(Typing.SENTINEL + "hé"))
-        assertEquals(Typing.Edit(1, ""), Typing.edit(Typing.SENTINEL.dropLast(1)))
+    fun the_phone_keyboard_field_reports_typing_and_backspace_against_what_it_held_before() {
+        val s = Typing.SENTINEL
+        assertEquals(Typing.Edit(0, "hé"), Typing.edit(s, s + "hé"))
+        assertEquals(Typing.Edit(1, ""), Typing.edit(s, s.dropLast(1)))
         // Everything selected and replaced: both sentinel characters gone, the new text typed.
-        assertEquals(Typing.Edit(2, "x"), Typing.edit("x"))
+        assertEquals(Typing.Edit(2, "x"), Typing.edit(s, "x"))
+
+        // Typing faster than the screen redraws: each edit is read against the one before, so nothing is lost or
+        // doubled. Reading each against the bare sentinel turned "hello wolf" into "o o wo wollf".
+        var field = s
+        val typed = StringBuilder()
+        for (next in listOf("h", "he", "hel", "hell", "hello", "hello ", "hello w", "hello wo", "hello wol", "hello wolf")) {
+            val edit = Typing.edit(field, s + next)
+            assertEquals(0, edit.deleted)
+            typed.append(edit.inserted)
+            field = s + next
+        }
+        assertEquals("hello wolf", typed.toString())
+        assertEquals(Typing.Edit(1, ""), Typing.edit(s + "ab", s + "a"))
+
+        assertTrue(Typing.needsReset("x"))
+        assertTrue(Typing.needsReset(s + "a".repeat(Typing.MAX_FIELD)))
+        assertEquals(false, Typing.needsReset(s + "abc"))
     }
 
     @Test

@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
@@ -27,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.amizhthan.wolf.api.PcTools
@@ -255,6 +258,15 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                     "move" -> answer.isNotBlank()
                     else -> FileMessages.validName(answer.trim())
                 }
+                val submit = {
+                    val value = answer.trim()
+                    when (kind) {
+                        "rename" -> controller.change(FileMessages.rename(FileMessages.pathOf(folder, entry!!), value), "${entry.name} was renamed.")
+                        "move" -> controller.change(FileMessages.move(FileMessages.pathOf(folder, entry!!), value), "${entry.name} was moved.")
+                        else -> controller.change(FileMessages.createFolder(FileMessages.childPath(folder, value)), "The folder $value was made.")
+                    }
+                    close()
+                }
                 AlertDialog(
                     onDismissRequest = close,
                     title = {
@@ -273,6 +285,11 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                                 onValueChange = { answer = it },
                                 label = { Text(if (kind == "move") "Into the folder" else "Name") },
                                 singleLine = true,
+                                // The keyboard's own Done confirms. In landscape — the stream's orientation — the phone
+                                // keyboard covers the whole screen, and the dialog's button could not be reached
+                                // without closing the keyboard first; found on the owner's phone.
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = { if (valid) submit() }),
                             )
                             if (kind == "move") Text("A folder on the same drive. Nothing already there is replaced.", style = MaterialTheme.typography.bodySmall)
                             if (kind != "move" && answer.isNotEmpty() && !valid) {
@@ -283,15 +300,7 @@ fun FilesPanel(controller: RemoteDesktopController, streaming: Boolean, modifier
                     confirmButton = {
                         Button(
                             enabled = valid,
-                            onClick = {
-                                val value = answer.trim()
-                                when (kind) {
-                                    "rename" -> controller.change(FileMessages.rename(FileMessages.pathOf(folder, entry!!), value), "${entry.name} was renamed.")
-                                    "move" -> controller.change(FileMessages.move(FileMessages.pathOf(folder, entry!!), value), "${entry.name} was moved.")
-                                    else -> controller.change(FileMessages.createFolder(FileMessages.childPath(folder, value)), "The folder $value was made.")
-                                }
-                                close()
-                            },
+                            onClick = submit,
                         ) { Text(if (kind == "rename") "Rename" else if (kind == "move") "Move" else "Make folder") }
                     },
                     dismissButton = { TextButton(onClick = close) { Text("Cancel") } },

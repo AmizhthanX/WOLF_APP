@@ -168,6 +168,46 @@ class RemoteDesktopController(
         loadDisplays()
     }
 
+    /**
+     * Start again, at the same quality and sound, after the stream stopped — the connection to WOLF dropped or the
+     * network changed. The old stream is taken down on the stream thread first, so nothing it still reports can
+     * overwrite the new one's state.
+     *
+     * Found on the owner's phone: a few minutes in the background and Android cut the app's connection ("Software
+     * caused connection abort"); the stream stayed stopped until it was closed and opened again by hand.
+     */
+    suspend fun restart() {
+        val current = _state.value
+        suspendCancellableCoroutine { continuation ->
+            post {
+                renderer?.let { track?.removeSink(it) }
+                track = null
+                audioTrack = null
+                stream?.stop()
+                stream = null
+                continuation.resume(Unit)
+            }
+        }
+        try {
+            start(current.profile, current.soundRequested)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // No network yet, or WOLF unreachable: a failure the screen retries, not a silent "Connecting" forever.
+            _state.update {
+                it.copy(
+                    phase = StreamPhase.FAILED,
+                    failure = StreamFailure(
+                        "reconnect-failed",
+                        "WOLF could not be reached to reconnect${error.message?.let { message -> ": $message" } ?: "."}",
+                        retryable = true,
+                        "WOLF tries again by itself. Check this phone's connection.",
+                    ),
+                )
+            }
+        }
+    }
+
     fun requestControl() = post { stream?.requestControl() }
 
     fun releaseControl() = post { stream?.releaseControl() }

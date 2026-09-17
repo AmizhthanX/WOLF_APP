@@ -632,11 +632,19 @@ class StreamSession(
     }
 
     override fun onFailed() {
+        // Retryable: the usual cause on a phone is the network changing under the connection (Wi-Fi to mobile data),
+        // and a new attempt on the new network succeeds. Only a server with no TURN relay is told to configure one —
+        // on the owner's phone, whose server has TURN, the old advice named a fix that was already in place.
+        val relayed = iceServers.any { server -> server.urls.any { it.startsWith("turn:") || it.startsWith("turns:") } }
         fail(
             "ice-failed",
-            "The direct connection to this PC could not be established.",
-            retryable = false,
-            "On a different network this needs a TURN relay; configure one and try again.",
+            "The connection to this PC could not be established.",
+            retryable = true,
+            if (relayed) {
+                "WOLF tries again by itself. If it keeps failing, check this phone's connection and that the PC is online."
+            } else {
+                "On a different network this needs a TURN relay; configure one and try again."
+            },
         )
     }
 
