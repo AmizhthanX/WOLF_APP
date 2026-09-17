@@ -1,0 +1,34 @@
+# HTTPS in front of WOLF. Certificates come from Let's Encrypt automatically, which needs each name's DNS record to
+# point at this machine with no proxy in between (Cloudflare: "DNS only", the grey cloud).
+
+{
+	email {$WOLF_ACME_EMAIL}
+}
+
+(common) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# Health endpoints are for the machine, not the internet: the relay's also counts connected PCs and clients.
+	@health path /healthz
+	respond @health 404
+	# Caddy replaces any X-Forwarded-For a client sends with the address it actually saw, which is what the API's and
+	# the relay's rate limiters read. Nothing here trusts a forwarded header from outside.
+}
+
+{$WOLF_DOMAIN} {
+	import common
+	reverse_proxy web:3000
+}
+
+api.{$WOLF_DOMAIN} {
+	import common
+	reverse_proxy api:8080
+}
+
+relay.{$WOLF_DOMAIN} {
+	import common
+	# WebSockets for PCs (/agent) and clients (/client). Long-lived by design; Caddy does not time them out.
+	reverse_proxy realtime:8081
+}

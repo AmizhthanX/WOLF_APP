@@ -1,0 +1,36 @@
+# Run the production images on this PC, without Caddy or TURN — to check an image before
+# it is deployed.
+#
+#   node scripts/deploy-gcp.mjs local-secrets     (writes throwaway secrets to .wolf-local/, ignored by git)
+#   $env:WOLF_RUNTIME_DIR = "$PWD\.wolf-local"
+#   docker compose -f infrastructure/docker/compose.yml -f infrastructure/docker/compose.local.yml up --build
+#
+# Then the dashboard is http://localhost:3000, the API http://localhost:8080 and the relay ws://localhost:8081.
+
+services:
+  migrate:
+    build: &server-build
+      context: ../..
+      dockerfile: infrastructure/docker/server.Dockerfile
+
+  api:
+    build: *server-build
+    ports: ["127.0.0.1:8080:8080"]
+
+  realtime:
+    build: *server-build
+    ports: ["127.0.0.1:8081:8081"]
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_WOLF_API_URL: http://localhost:8080
+        NEXT_PUBLIC_WOLF_REALTIME_URL: ws://localhost:8081
+    ports: ["127.0.0.1:3000:3000"]
+
+  caddy:
+    profiles: [public]
+    environment:
+      WOLF_DOMAIN: localhost

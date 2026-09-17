@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (ignored by git) and fill in. None of these are secrets.
+project_id     = "your-project-id"
+domain         = "amizhthan.app"
+acme_email     = ""
+fcm_project_id = ""

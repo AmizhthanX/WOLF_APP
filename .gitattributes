@@ -1,0 +1,5 @@
+# Files a Linux machine reads as they are: a shell script checked out with Windows line endings does not run, and
+# Terraform sends these to the WOLF VM byte for byte.
+*.sh                              text eol=lf
+infrastructure/docker/*           text eol=lf
+infrastructure/gcp/*              text eol=lf

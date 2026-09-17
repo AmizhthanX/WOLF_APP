@@ -1,7 +1,19 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // The container image (infrastructure/docker/web.Dockerfile) runs Next's standalone server. Traced from the
+  // repository root, because the dashboard imports the workspace packages beside it. `next dev` and `next start`
+  // are unchanged.
+  ...(process.env.WOLF_WEB_STANDALONE === '1'
+    ? {
+        output: 'standalone',
+        outputFileTracingRoot: path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'),
+      }
+    : {}),
   async headers() {
     return [
       {

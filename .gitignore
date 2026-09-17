@@ -62,3 +62,6 @@ Thumbs.db
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+# Throwaway secrets for running the production images locally (scripts/deploy-gcp.mjs local-secrets)
+.wolf-local/

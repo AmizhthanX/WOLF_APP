@@ -1,0 +1,140 @@
+# WOLF on one machine: the dashboard, the API, the realtime relay, Postgres, TURN, and Caddy in front for HTTPS.
+#
+# Only Caddy (80, 443) and TURN (3478, and its relay ports) are reachable from outside. The API, the relay, the
+# dashboard and the database listen on the private `wolf` network, so every request from the internet passes
+# through Caddy, which also sets the client address the rate limiters trust.
+#
+# Secrets are never in this file or in an image. The VM's startup script reads them from Secret Manager into
+# ${WOLF_RUNTIME_DIR} — /run/wolf, which is memory, not disk — as env files and one credentials file.
+#
+# Variables (set by the startup script, or by compose.local.yml for a local run):
+#   WOLF_REGISTRY, WOLF_IMAGE_TAG   where the images come from
+#   WOLF_DOMAIN                     e.g. amizhthan.app
+#   WOLF_RUNTIME_DIR                where the secret env files are
+#
+# Logs stay on the machine, rotated, and are read with `docker compose logs`: WOLF logs metadata only, and a
+# personal deployment does not need them shipped anywhere else.
+
+name: wolf
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-server: &server
+  image: ${WOLF_REGISTRY:-wolf}/server:${WOLF_IMAGE_TAG:-local}
+  restart: unless-stopped
+  logging: *logging
+  networks: [wolf]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  env_file:
+    - ${WOLF_RUNTIME_DIR:-/run/wolf}/server.env
+
+services:
+  db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    logging: *logging
+    networks: [wolf]
+    environment:
+      POSTGRES_DB: wolf
+      POSTGRES_USER: wolf
+      POSTGRES_PASSWORD_FILE: /run/wolf/database-password
+    volumes:
+      - wolf-db:/var/lib/postgresql/data
+      - ${WOLF_RUNTIME_DIR:-/run/wolf}/database-password:/run/wolf/database-password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wolf -d wolf"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 128mb
+
+  # Applies pending migrations, then exits. The API and the relay start only after it succeeds, so neither ever
+  # serves against a schema older than its code.
+  migrate:
+    <<: *server
+    restart: "no"
+    command: ["node", "services/api/dist/cli/migrate.js"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *server
+    command: ["node", "services/api/dist/server.js"]
+    environment:
+      PORT: "8080"
+    volumes:
+      # The Firebase service account, when push is configured. A file, never an environment variable.
+      - ${WOLF_RUNTIME_DIR:-/run/wolf}/secrets:/run/secrets:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  realtime:
+    <<: *server
+    command: ["node", "services/realtime/dist/server.js"]
+    environment:
+      PORT: "8081"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    image: ${WOLF_REGISTRY:-wolf}/web:${WOLF_IMAGE_TAG:-local}
+    restart: unless-stopped
+    logging: *logging
+    networks: [wolf]
+    read_only: true
+    tmpfs: [/tmp, /app/apps/web/.next/cache]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # The dashboard's own server reaches the API privately; browsers use the public address baked into the image.
+      WOLF_API_URL: http://api:8080
+    depends_on: [api]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    logging: *logging
+    networks: [wolf]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      WOLF_DOMAIN: ${WOLF_DOMAIN:-}
+      WOLF_ACME_EMAIL: ${WOLF_ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [web, api, realtime]
+
+  # TURN, for streams between networks that cannot reach each other directly. On the host network because it
+  # relays UDP on a port range, which Docker's port publishing handles badly. Its configuration is built by the
+  # startup script, because it names this machine's addresses and carries the shared secret.
+  turn:
+    image: coturn/coturn:4.7
+    restart: unless-stopped
+    logging: *logging
+    network_mode: host
+    command: ["-c", "/run/wolf/turnserver.conf"]
+    volumes:
+      - ${WOLF_RUNTIME_DIR:-/run/wolf}/turnserver.conf:/run/wolf/turnserver.conf:ro
+    profiles: [turn]
+
+networks:
+  wolf: {}
+
+volumes:
+  wolf-db: {}
+  caddy-data: {}
+  caddy-config: {}

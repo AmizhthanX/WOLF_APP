@@ -457,32 +457,146 @@ the **Print Spooler**, the other turns one scheduled task off and back on.
 
 ---
 
-## Part 8 — Put WOLF on the internet (later; needs a decision from you)
+## Part 8 — Put WOLF on the internet (about 1 hour, split in two)
 
-The real deployment to Google Cloud is **not built yet**, because this PC has none of the tools it needs
-(Terraform, Docker, the Google Cloud CLI). To go ahead:
+WOLF runs on **one small Google Cloud VM** in Mumbai, paid by your free-trial credits. How it works:
+[deployment](../operations/deployment.md). When the trial ends, Google stops it by itself — nothing is charged unless
+you upgrade your billing account.
 
-1. Decide: **Google Cloud** (what WOLF was designed for) — this will cost money monthly once running.
-2. Create a Google Cloud account at **https://console.cloud.google.com** and turn on billing.
-3. Install the tools — in an **administrator** PowerShell:
+**Never paste a password, a secret or the contents of a key file into the chat.** Each one goes only where a
+step says.
 
+### 8a. Start Docker Desktop (once)
+
+1. Press the **Windows key**, type `Docker Desktop`, open it.
+2. The first time, it shows the **Docker Subscription Service Agreement**: read it, and click **Accept** if you
+   agree (personal use is free).
+3. Skip the sign-in (**Continue without signing in** / **Skip**) and any survey.
+4. Wait until the bottom-left corner says **Engine running** (green).
+
+### 8b. Sign gcloud in to your Google account (once)
+
+In a PowerShell window:
+
+1. ```powershell
+   cd H:\WOLF_APP
+   ```
+2. ```powershell
+   gcloud auth login
+   ```
+   A browser opens: choose the Google account with the free trial → **Allow**. Back in PowerShell it says
+   `You are now logged in as …`.
+3. ```powershell
+   gcloud auth application-default login
+   ```
+   The browser again: same account → **Allow**. (This one is for Terraform.)
+4. ```powershell
+   gcloud projects list
+   ```
+   A table appears. Find the project that uses your free trial (usually **My First Project**) and copy its
+   **PROJECT_ID** (the first column, like `my-project-123456`). Not the NAME, not the NUMBER.
+5. Replace `<PROJECT_ID>` and paste:
    ```powershell
-   winget install Google.CloudSDK
-   winget install Hashicorp.Terraform
-   winget install Docker.DockerDesktop
+   gcloud config set project <PROJECT_ID>
    ```
 
-   Restart the PC after Docker Desktop installs, and open Docker Desktop once to finish its setup.
-4. Tell me "Part 8 tools installed". I will write the infrastructure and deployment, and walk you through
-   `gcloud auth login` and the first deploy.
+### 8c. Make the cloud machine with Terraform
 
-When it runs, the server needs these from **Google Secret Manager** (never in files):
+1. ```powershell
+   Copy-Item infrastructure\terraform\terraform.tfvars.example infrastructure\terraform\terraform.tfvars
+   notepad infrastructure\terraform\terraform.tfvars
+   ```
+2. Notepad opens. Change the lines to (your values; keep the quotes):
+   ```
+   project_id     = "<PROJECT_ID>"
+   domain         = "amizhthan.app"
+   acme_email     = "<your email, for certificate warnings>"
+   fcm_project_id = "wolf-2740e"
+   ```
+   **Ctrl+S**, close Notepad. (Nothing in this file is a secret.)
+3. ```powershell
+   terraform -chdir=infrastructure\terraform init
+   ```
+   It downloads the Google provider. Wait for **Terraform has been successfully initialized!**
+4. ```powershell
+   terraform -chdir=infrastructure\terraform apply
+   ```
+   It lists about 25 things it will create and asks `Enter a value:`. Type `yes`, Enter. It takes 3–5 minutes.
+   - ✅ **Apply complete!** and below it `dns_records` and `ip_address`.
+   - ❌ An error saying an API "has not been used in project" or "is disabled": wait 2 minutes and run the same
+     `apply` again. Google needs a moment after turning an API on.
+   - ❌ Anything else: paste me the red text (it contains no secret).
+5. Keep the four `dns_records` lines on screen for the next step.
 
-| Secret | Make it with |
-| --- | --- |
-| `WOLF_TOKEN_SECRET` | `node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"` |
-| `WOLF_WEBHOOK_KEY` | the same command, run again (a different value) |
-| `WOLF_FCM_CREDENTIALS_FILE` | the `fcm.json` from Part 4d, as a mounted secret file |
+### 8d. Point your domain at it (Cloudflare)
+
+1. Go to **https://dash.cloudflare.com** → click **amizhthan.app** → left menu **DNS** → **Records**.
+2. If records named `amizhthan.app`, `api`, `relay` or `turn` already exist, tell me before changing them.
+3. Click **Add record** four times, one per line from step 8c:
+
+   | Type | Name | IPv4 address | Proxy status |
+   | --- | --- | --- | --- |
+   | A | `@` | the `ip_address` | **DNS only** (grey cloud — click the orange cloud to turn it grey) |
+   | A | `api` | same address | **DNS only** |
+   | A | `relay` | same address | **DNS only** |
+   | A | `turn` | same address | **DNS only** |
+
+   TTL: **Auto**. Click **Save** after each.
+4. Grey matters: the VM gets its own HTTPS certificates, and TURN cannot go through Cloudflare's proxy.
+
+### 8e. Make the secrets
+
+```powershell
+node scripts/deploy-gcp.mjs secrets --fcm C:\WOLF-secrets\fcm.json
+```
+
+It prints five lines ending in `made` or `stored`. The values went straight from your PC to Google's Secret Manager;
+nobody, including you and me, needs to see them. Running it again later is safe — it leaves existing ones alone.
+
+**Tell me "Part 8e done".** I will build and test the two WOLF images on your PC before anything is deployed, then
+give you 8f.
+
+### 8f. Deploy (after I say the images passed)
+
+1. Docker Desktop must say **Engine running**. Then:
+   ```powershell
+   node scripts/deploy-gcp.mjs deploy
+   ```
+   Building takes 5–10 minutes the first time. At the end, a **PuTTY Security Alert** window may ask about the
+   host key: click **Accept**. The first run on the VM also installs Docker there (2–3 minutes).
+2. ✅ It ends with `Deployed <tag>. Open https://amizhthan.app`.
+
+### 8g. Make your real owner account
+
+The local test account does not exist here. This makes yours, on the VM:
+
+1. ```powershell
+   gcloud compute ssh wolf --zone=asia-south1-a --tunnel-through-iap
+   ```
+   (Accept a PuTTY key alert if one appears.) You are now in a black window on the VM, ending in `$`.
+2. ```bash
+   sudo /opt/wolf/create-owner.sh
+   ```
+3. Type your email, your name, then a **new, long WOLF password** twice (nothing shows while typing — normal).
+   Save it in your password manager. ✅ `Created WOLF owner account …`
+4. Type `exit` to leave the VM.
+5. Open **https://amizhthan.app** and sign in with that email and password.
+
+### 8h. Connect your PC to the real WOLF
+
+1. In the dashboard: **Add a PC** → copy the enrollment token.
+2. In the agent window stop the local agent (**Ctrl+C**), then:
+   ```powershell
+   cd H:\WOLF_APP
+   $env:WOLF_ENROLLMENT_TOKEN = "<paste-token-here>"
+   $env:Wolf__ApiBaseUrl = "https://api.amizhthan.app"
+   $env:Wolf__RealtimeUrl = "wss://relay.amizhthan.app/agent"
+   $env:Wolf__DataDirectory = "$env:LOCALAPPDATA\wolf-agent"
+   .\apps\windows-agent\Wolf.Agent.Host\bin\Release\net9.0-windows10.0.22621.0\Wolf.Agent.exe
+   ```
+3. ✅ `Cloud link established`, and the PC is **online** at https://amizhthan.app.
+4. On your phone, install the signed APK from Part 6 and sign in with the same account. The release app already
+   talks to `https://api.amizhthan.app`; there is no server address to type.
 
 ---
 

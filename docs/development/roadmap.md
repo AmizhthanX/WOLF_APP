@@ -1062,6 +1062,9 @@ identity, signed APK through CI. See [the Android client](../architecture/androi
 
 ## Infrastructure
 
-- Terraform for GCP, behind the cloud-provider interface
+- Terraform for GCP, behind the cloud-provider interface — **first deployment built** (2026-09-17): one VM with
+  Caddy, the dashboard, API, relay, Postgres and TURN, secrets in Secret Manager, nightly snapshots
+  ([deployment](../operations/deployment.md)). Not yet run against a real project (owner guide, Part 8); managed
+  services (Cloud Run, Cloud SQL) are the later step
 - Staging and production pipelines with migrations and rollback
 - Signed agent packages, staged rollout, health check, and rollback on failure

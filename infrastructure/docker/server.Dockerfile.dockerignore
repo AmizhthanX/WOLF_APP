@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/dist-test
+**/.next
+**/*.tsbuildinfo
+.git
+apps/android
+apps/windows-agent
+windows
+docs
+infrastructure
+**/.env*
+**/*.jks
+**/*.keystore
+**/local.properties
