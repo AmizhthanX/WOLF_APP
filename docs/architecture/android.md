@@ -216,6 +216,26 @@ bar button), and the "Mobile data" profile — 720p, 3 Mbps — made text unread
 
 Ctrl+Alt+Delete and Win+L remain impossible from injected input, as on the web; the PC says so when asked.
 
+### Found testing on the owner's phone (Galaxy S24 Ultra, Android 16, production server)
+
+- **The picture takes its own shape.** libwebrtc's renderer crops a frame to its view: a full-screen view on a
+  19.5:9 phone cut the top and bottom (the taskbar) off a 16:9 desktop. The view is sized to the frame's aspect,
+  centred, and remade when the screen's size changes.
+- **A foreground service while a stream is open** (`remote/StreamForegroundService.kt`, type `specialUse`, with an
+  ongoing notification that names no PC). Android blocks background apps' network (`blocked=APP_BACKGROUND`), and
+  a moment behind the system file picker counts: choosing a file to send cut the relay connection five seconds
+  later and ended the upload. Two permissions, each in the release gate's list with its reason.
+- **Reconnects by itself.** A retryable failure (the relay socket closed, ICE failed after a network change) starts
+  the stream again after 2, 4, 8… seconds, up to five times, and a reconnection stuck connecting for 25 seconds is
+  tried again. Control is asked for again unless the owner chose View only. Tested by switching Wi-Fi off and on.
+- **Typing is read against the previous edit**, not a reset field: fast typing had lost and doubled characters.
+- **File dialogs confirm with the keyboard's Done key**: in landscape the keyboard covers the screen.
+- **Fragment 1.8.5** is a direct dependency: biometric's Fragment 1.2.5 crashed every Activity Result call
+  (notification permission, file save and pick, backup) with "Can only use lower 16 bits for requestCode".
+- **The `phoneTest` build type** installs the release app beside itself as "WOLF Test", debug-signed, for trying a
+  fix on a phone without the upload key: `node scripts/android.mjs :app:assemblePhoneTest`, then `adb install -r`.
+  Push does not reach it (its package is not the Firebase app).
+
 **Not yet:** a hardware keyboard's shortcuts, and on-screen stats (bitrate, latency, relay or direct).
 
 ## Files

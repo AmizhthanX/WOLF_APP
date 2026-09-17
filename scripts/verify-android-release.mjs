@@ -28,6 +28,8 @@ export const ALLOWED_PERMISSIONS = new Map([
   ['android.permission.POST_NOTIFICATIONS', 'notifications after a wake-up, when the owner allows them'],
   ['android.permission.USE_BIOMETRIC', "the app lock's fingerprint or face unlock, when the owner turns it on"],
   ['android.permission.WAKE_LOCK', 'Firebase Cloud Messaging, while it hands over a wake-up'],
+  ['android.permission.FOREGROUND_SERVICE', 'keeping an open remote desktop connected while another app is on screen'],
+  ['android.permission.FOREGROUND_SERVICE_SPECIAL_USE', 'the type of that foreground service: an open remote desktop session'],
   ['com.google.android.c2dm.permission.RECEIVE', 'Firebase Cloud Messaging, to receive a wake-up'],
   [`${PACKAGE_NAME}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, "AndroidX's guard on the app's own unexported receivers"],
 ]);

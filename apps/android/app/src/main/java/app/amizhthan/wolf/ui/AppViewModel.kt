@@ -293,6 +293,9 @@ class AppViewModel(
         stopRemote()
         _state.update { it.copy(screen = Screen.Pc(pcId)) }
         watchTelemetry(pcId)
+        // The PC's status is read again: the list was loaded before the stream, and a PC page showing "seen 7 min ago"
+        // for a PC that had just been streaming reads as a PC that went away.
+        loadPcs()
     }
 
     fun power(action: String, label: String, description: String) =

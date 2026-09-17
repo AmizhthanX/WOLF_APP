@@ -12,6 +12,11 @@
          declares USE_FINGERPRINT for Android 8 and older; this app starts at Android 9, where that permission is
          deprecated and unused, so it is removed rather than shipped. -->
     <uses-permission android:name="android.permission.USE_FINGERPRINT" tools:node="remove" />
+    <!-- Keeping a remote desktop stream connected while the owner is briefly in another app, such as the file picker.
+         Android cuts background apps' network access; a foreground service, with its notification, is the permitted
+         way to keep it. Only while a stream is open. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!--
         allowBackup is off and every domain is excluded from extraction: the refresh token blob
@@ -47,6 +52,15 @@
         </activity>
 
         <!-- Wake-ups. Not exported: only the platform's push delivery reaches it. -->
+        <service
+            android:name=".remote.StreamForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps an open remote desktop session to the owner's own PC connected while another app, such as the file picker, is on screen." />
+        </service>
+
         <service
             android:name=".push.WolfMessagingService"
             android:exported="false">

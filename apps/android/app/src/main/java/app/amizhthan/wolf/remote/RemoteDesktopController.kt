@@ -38,6 +38,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+private const val LOG_TAG = "WolfStream"
+
 data class RemoteDesktopUiState(
     val phase: StreamPhase = StreamPhase.IDLE,
     val detail: String? = null,
@@ -131,6 +133,7 @@ class RemoteDesktopController(
 
     /** Start streaming. Sound is asked for only when [sound] is true; the PC says what it settled on. */
     suspend fun start(profile: StreamProfile, sound: Boolean = false) {
+        StreamForegroundService.start(appContext)
         _state.update { RemoteDesktopUiState(phase = StreamPhase.AUTHENTICATING, profile = profile, soundRequested = sound) }
 
         val token = pcSession.sessionToken()
@@ -525,6 +528,7 @@ class RemoteDesktopController(
 
     /** Stop the stream and end its session on the server. Transfers in flight end with it; clipboard text is dropped. */
     suspend fun stop() {
+        StreamForegroundService.stop(appContext)
         transferStopped = true
         scope.cancel()
         post {
@@ -567,8 +571,15 @@ class RemoteDesktopController(
     }
 
     private val listener = object : StreamListener {
-        override fun onPhase(phase: StreamPhase, detail: String?) = _state.update { it.copy(phase = phase, detail = detail) }
-        override fun onFailure(failure: StreamFailure) = _state.update { it.copy(failure = failure, control = null) }
+        override fun onPhase(phase: StreamPhase, detail: String?) {
+            // Phases and failure codes only: never a path, a clipboard, a token or anything the owner typed.
+            android.util.Log.i(LOG_TAG, "stream phase $phase")
+            _state.update { it.copy(phase = phase, detail = detail) }
+        }
+        override fun onFailure(failure: StreamFailure) {
+            android.util.Log.w(LOG_TAG, "stream failed: ${failure.code} (retryable=${failure.retryable}): ${failure.message}")
+            _state.update { it.copy(failure = failure, control = null) }
+        }
         override fun onNegotiation(negotiation: Negotiation) = _state.update { it.copy(negotiation = negotiation) }
         override fun onInputControl(control: InputControl) = _state.update { it.copy(control = control, inputRefusal = null) }
         override fun onRemoteState(state: RemoteState) = _state.update { it.copy(remoteState = state) }

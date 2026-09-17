@@ -20,6 +20,8 @@ const BADGING = [
   "uses-permission: name='android.permission.ACCESS_NETWORK_STATE'",
   "uses-permission: name='android.permission.POST_NOTIFICATIONS'",
   "uses-permission: name='android.permission.USE_BIOMETRIC'",
+  "uses-permission: name='android.permission.FOREGROUND_SERVICE'",
+  "uses-permission: name='android.permission.FOREGROUND_SERVICE_SPECIAL_USE'",
   "uses-permission: name='android.permission.WAKE_LOCK'",
   "uses-permission: name='com.google.android.c2dm.permission.RECEIVE'",
   `uses-permission: name='${PACKAGE_NAME}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'`,
@@ -48,7 +50,7 @@ test('the tools output is read the same with Windows line endings', () => {
   assert.equal(badging.versionName, '0.2.0');
   assert.equal(badging.versionCode, '2000');
   assert.equal(badging.debuggable, false);
-  assert.equal(badging.permissions.length, 7);
+  assert.equal(badging.permissions.length, 9);
 
   const signer = parseSigner(SIGNED);
   assert.deepEqual(signer.schemes, ['v2', 'v3']);
