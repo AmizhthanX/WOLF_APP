@@ -8,7 +8,7 @@
  *   microphone — fails the release instead of shipping in it quietly.
  * - The package, and the version the pipeline meant to build.
  *
- *     node scripts/verify-android-release.mjs <apk> [--version-name 0.2.0] [--version-code 2000] [--summary notes.md]
+ *     node scripts/verify-android-release.mjs <apk> [--version-name 0.2.0] [--version-code 2000] [--summary notes.md] [--r8-usage usage.txt]
  *
  * Uses the newest build-tools under ANDROID_HOME (or ANDROID_SDK_ROOT). Prints the APK's SHA-256 and the signing
  * certificate's SHA-256 — public facts a person installing it can compare — and nothing about the key.
@@ -67,6 +67,27 @@ export function parseSigner(output) {
     certificateDn: dns[0] ?? null,
     certificateSha256: digests[0] ?? null,
   };
+}
+
+/** Packages native code finds by name. R8 cannot see those lookups, so it must never remove a class from them. */
+export const NATIVE_LOOKUP_PACKAGES = ['org.webrtc.', 'org.jni_zero.'];
+
+/**
+ * Classes R8 removed (its usage.txt) that native code looks up by name.
+ *
+ * A release missing one does not fail to build or install: it aborts natively the first time the library loads.
+ * The first signed release did exactly that on Start streaming, because org.jni_zero had no keep rule.
+ */
+export function removedNativeClasses(usage) {
+  return lines(usage)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    // A whole class: a line at the left margin with no trailing colon. `Name:` followed by indented members means
+    // only those members went (an empty static initializer, typically), and the class itself is still there.
+    .filter((line) => /^\S/.test(line) && !line.endsWith(':'))
+    // Synthetic helpers the compiler generates (`Outer-IA`, `$$ExternalSynthetic…`) are not what native code finds.
+    .filter((name) => !/-IA$|\$\$ExternalSynthetic|\$\$Lambda/.test(name))
+    .filter((name) => NATIVE_LOOKUP_PACKAGES.some((prefix) => name.startsWith(prefix)));
 }
 
 /** What is wrong with a release, in words. Empty when nothing is. */
@@ -161,7 +182,7 @@ function option(args, name) {
 function main(args) {
   const apk = args[0];
   if (!apk || apk.startsWith('--') || !existsSync(apk)) {
-    process.stderr.write('Usage: node scripts/verify-android-release.mjs <apk> [--version-name X] [--version-code N] [--summary file]\n');
+    process.stderr.write('Usage: node scripts/verify-android-release.mjs <apk> [--version-name X] [--version-code N] [--summary file] [--r8-usage file]\n');
     process.exit(2);
   }
 
@@ -176,13 +197,16 @@ function main(args) {
   const badging = parseBadging(dump.output);
   const signer = parseSigner(signing.output);
   const apkSha256 = createHash('sha256').update(readFileSync(apk)).digest('hex');
-  const findings = releaseFindings({
+  const usageFile = option(args, '--r8-usage');
+  const removed = usageFile ? removedNativeClasses(readFileSync(usageFile, 'utf8')) : [];
+  const findings = removed.map((name) => `R8 removed ${name}, which native code looks up by name: the app would crash.`);
+  findings.push(...releaseFindings({
     badging,
     signer,
     verified: signing.status === 0,
     expectedVersionName: option(args, '--version-name'),
     expectedVersionCode: option(args, '--version-code'),
-  });
+  }));
 
   process.stdout.write(
     [

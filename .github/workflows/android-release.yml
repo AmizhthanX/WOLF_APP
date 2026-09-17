@@ -129,7 +129,8 @@ jobs:
           mkdir -p dist
           cp apps/android/app/build/outputs/apk/release/app-release.apk "dist/wolf-android-$VERSION_NAME.apk"
           node scripts/verify-android-release.mjs "dist/wolf-android-$VERSION_NAME.apk" \
-            --version-name "$VERSION_NAME" --version-code "$VERSION_CODE" --summary dist/release-notes.md
+            --version-name "$VERSION_NAME" --version-code "$VERSION_CODE" --summary dist/release-notes.md \
+            --r8-usage apps/android/app/build/outputs/mapping/release/usage.txt
           (cd dist && sha256sum "wolf-android-$VERSION_NAME.apk" > SHA256SUMS)
 
       - name: Remove the upload key

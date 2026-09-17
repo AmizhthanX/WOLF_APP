@@ -7,6 +7,7 @@ import {
   parseSigner,
   releaseFindings,
   releaseSummary,
+  removedNativeClasses,
 } from './verify-android-release.mjs';
 
 /** What a release gate refuses, from the tools' own output. */
@@ -110,4 +111,23 @@ test('the release notes carry the fingerprints and a reason for every permission
   assert.match(summary, new RegExp(`APK SHA-256: \`${'ab'.repeat(32)}\``));
   for (const permission of ALLOWED_PERMISSIONS.keys()) assert.ok(summary.includes(permission));
   assert.doesNotMatch(summary, /undefined/);
+});
+
+test('a release whose shrinker removed a class native code looks up by name is refused', () => {
+  // What R8's usage.txt looked like for the release that crashed: the whole class gone.
+  assert.deepEqual(
+    removedNativeClasses(['androidx.compose.ui.Unused', 'org.jni_zero.JniInit', 'org.jni_zero_like.NotIt'].join('\r\n')),
+    ['org.jni_zero.JniInit'],
+  );
+
+  // And for the fixed one: only empty static initializers trimmed, and compiler-made helpers. Not a finding.
+  const fixed = [
+    'org.jni_zero.JniInit:',
+    '    static void <clinit>()',
+    'org.webrtc.RendererCommon:',
+    '    static void <clinit>()',
+    'org.webrtc.PeerConnection-IA',
+    'org.webrtc.Foo$$ExternalSyntheticLambda0',
+  ].join('\n');
+  assert.deepEqual(removedNativeClasses(fixed), []);
 });
