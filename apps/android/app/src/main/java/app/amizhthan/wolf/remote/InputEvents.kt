@@ -58,6 +58,28 @@ object VirtualKey {
     const val DOWN = 0x28
     const val INSERT = 0x2D
     const val DELETE = 0x2E
+    const val SHIFT = 0x10
+    const val CONTROL = 0x11
+    const val ALT = 0x12
+    const val SPACE = 0x20
+    const val PRINT_SCREEN = 0x2C
+    const val LEFT_WINDOWS = 0x5B
+    const val F1 = 0x70
+
+    /** F1..F12. */
+    fun function(number: Int): Int {
+        require(number in 1..12) { "No such function key: F$number" }
+        return F1 + number - 1
+    }
+
+    /** The key for a letter, digit or space, for shortcuts like Ctrl+C; null for anything else. */
+    fun forCharacter(character: Char): Int? = when (character) {
+        in 'a'..'z' -> 0x41 + (character - 'a')
+        in 'A'..'Z' -> 0x41 + (character - 'A')
+        in '0'..'9' -> 0x30 + (character - '0')
+        ' ' -> SPACE
+        else -> null
+    }
 
     /** The keys Windows only reads correctly with the extended flag — the same set `packages/protocol` lists. */
     private val EXTENDED = setOf(INSERT, DELETE, HOME, END, PAGE_UP, PAGE_DOWN, LEFT, UP, RIGHT, DOWN, 0x5B, 0x5C, 0x2C)
@@ -209,8 +231,9 @@ object DecoderCodecs {
 
 /** The built-in profiles a phone would pick, sent whole: the agent reads every field. */
 enum class StreamProfile(val label: String, val json: JsonObject) {
-    MOBILE_DATA("Mobile data", profile("Mobile Data — Low Bandwidth", maxWidth = 1280, maxHeight = 720, fps = 30, minBps = 400_000, maxBps = 3_000_000, bias = "performance")),
-    WIFI("Wi-Fi", profile("Internet — Balanced", maxWidth = null, maxHeight = null, fps = 60, minBps = 1_500_000, maxBps = 20_000_000, bias = "balanced")),
+    SHARP("Sharp", profile("Phone — Sharp", maxWidth = null, maxHeight = null, fps = 60, minBps = 2_000_000, maxBps = 20_000_000, bias = "quality")),
+    BALANCED("Balanced", profile("Phone — Balanced", maxWidth = 1920, maxHeight = 1080, fps = 60, minBps = 1_000_000, maxBps = 10_000_000, bias = "balanced")),
+    DATA_SAVER("Data saver", profile("Mobile Data — Low Bandwidth", maxWidth = 1280, maxHeight = 720, fps = 30, minBps = 400_000, maxBps = 3_000_000, bias = "performance")),
 }
 
 private fun profile(name: String, maxWidth: Int?, maxHeight: Int?, fps: Int, minBps: Int, maxBps: Int, bias: String): JsonObject = buildJsonObject {

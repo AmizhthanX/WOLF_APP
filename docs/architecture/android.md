@@ -123,7 +123,7 @@ relay and the session host are held to the protocol rather than to one client's 
    it, as on the web: sound only when asked for, clipboard text only on a tap, control and files each a lease.
 2. The relay socket (`/client`), authenticated with that session token in the first message. The token
    never goes in the URL, where proxies log it.
-3. `stream.request` with the Wi-Fi or mobile-data profile, the codecs the phone's decoders **report** and
+3. `stream.request` with the Sharp, Balanced or Data saver profile, the codecs the phone's decoders **report** and
    the H.264 profiles those decoders take. No codec is assumed: without a hardware H.264 decoder,
    libwebrtc on Android has none at all, so the web client's "every browser decodes H.264" floor would
    be a lie here.
@@ -189,8 +189,34 @@ of its packets, the phone asked for another 24 to 39 times, and none came until 
 session host now encodes the picture it already holds again when nothing new was captured
 ([remote desktop](remote-desktop.md#recovering-from-loss)), which fixes it for every client.
 
-**Not yet:** profile changes mid-stream from the phone, and a hardware keyboard's shortcuts. These exist in
-the protocol and the web client.
+### The full-screen stream (Parsec-style)
+
+After the first real stream over mobile data the owner asked for it to work like Parsec: the old screen put a
+toolbar, notices and a text field around a small picture, touch was direct (a fingertip cannot point at a title
+bar button), and the "Mobile data" profile — 720p, 3 Mbps — made text unreadable. `ui/RemoteDesktopScreen.kt` now:
+
+- **Fills the screen in landscape**, with the system bars hidden (a swipe shows them) and put back on leaving.
+  The activity handles orientation and keyboard changes itself, so rotating does not recreate it mid-stream.
+- **Asks for control once streaming** instead of opening view-only. The relay still grants or refuses it, the
+  refusal is shown, and "View only" in the menu releases it.
+- **A touchpad by default** (`remote/Touchpad.kt`, gestures in `ui/RemoteDesktopExtras.kt`): one finger moves the
+  cursor by its travel, accelerated up to three times for a flick; a tap clicks at the cursor; tap-then-slide or
+  hold-then-slide drags; a two-finger tap or a still hold is a right click; two fingers scroll; a pinch zooms, and
+  the zoomed picture follows the cursor. A ring drawn on the phone marks the cursor's hotspot at once, ahead of
+  the PC's own cursor in the video. Direct touch is still in the menu.
+- **One floating ☰ button**, draggable, opening a side panel: control, mouse mode, keyboard, picture quality,
+  display, sound, files and clipboard, disconnect.
+- **A keyboard bar**: the phone keyboard types straight to the PC (a password-type field, so each character goes
+  at once and the keyboard learns nothing), with Ctrl, Alt, Shift and Win held for the next key and always
+  released in the same batch, Esc, Tab, arrows, Delete, Home/End, Page Up/Down, Print Screen and F1–F12. With a
+  modifier held, letters and digits are sent as keys so Windows sees Ctrl+C as a shortcut. Backspace works
+  because the field keeps two zero-width characters and reports what was removed. A three-finger tap opens it.
+- **Quality presets, changed live** with `stream.set-profile`: Sharp (native resolution, 60 fps, up to 20 Mbps),
+  Balanced (1080p, 60 fps, up to 10 Mbps — the default for mobile data) and Data saver (720p, 30 fps, 3 Mbps).
+
+Ctrl+Alt+Delete and Win+L remain impossible from injected input, as on the web; the PC says so when asked.
+
+**Not yet:** a hardware keyboard's shortcuts, and on-screen stats (bitrate, latency, relay or direct).
 
 ## Files
 

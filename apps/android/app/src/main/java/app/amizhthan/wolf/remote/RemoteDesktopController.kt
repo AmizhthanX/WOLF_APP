@@ -50,7 +50,7 @@ data class RemoteDesktopUiState(
     val frameHeight: Int = 0,
     /** True once a decoded frame has actually been drawn, not when the connection came up. */
     val pictureShown: Boolean = false,
-    val profile: StreamProfile = StreamProfile.MOBILE_DATA,
+    val profile: StreamProfile = StreamProfile.BALANCED,
     /** Whether the owner asked to hear the PC. Whether it can be heard is the negotiation's audio codec. */
     val soundRequested: Boolean = false,
     /** Muted on this phone only; the PC keeps sending. */
@@ -178,6 +178,12 @@ class RemoteDesktopController(
 
     /** Look at another of the PC's displays, switched in place; the negotiation follows what the PC switched to. */
     fun setDisplay(displayId: String?) = post { stream?.setDisplay(displayId) }
+
+    /** Sharper or lighter picture, on the running stream. */
+    fun setQuality(quality: StreamQuality) {
+        _state.update { it.copy(profile = quality.profile) }
+        post { stream?.setProfile(quality.profile.json) }
+    }
 
     fun setSoundOn(on: Boolean) {
         _state.update { it.copy(soundOn = on) }

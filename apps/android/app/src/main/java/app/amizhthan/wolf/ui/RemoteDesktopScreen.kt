@@ -1,42 +1,88 @@
 package app.amizhthan.wolf.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.amizhthan.wolf.remote.HeldModifiers
 import app.amizhthan.wolf.remote.InputEvents
-import app.amizhthan.wolf.remote.NormalizedPoint
+import app.amizhthan.wolf.remote.PictureRect
 import app.amizhthan.wolf.remote.RemoteDesktopController
+import app.amizhthan.wolf.remote.RemoteDesktopUiState
 import app.amizhthan.wolf.remote.StreamPhase
+import app.amizhthan.wolf.remote.StreamQuality
+import app.amizhthan.wolf.remote.TouchpadCursor
+import app.amizhthan.wolf.remote.Typing
 import app.amizhthan.wolf.remote.Viewport
 import app.amizhthan.wolf.remote.VirtualKey
+import kotlinx.serialization.json.JsonObject
 import org.webrtc.SurfaceViewRenderer
+import kotlin.math.roundToInt
 
 /** What the stream is doing, in words. */
 internal fun phaseWords(phase: StreamPhase): String = when (phase) {
@@ -62,78 +108,58 @@ internal fun controlWords(reason: String?): String = when (reason) {
     else -> "View only."
 }
 
-private enum class Panel { NONE, FILES, CLIPBOARD }
+private enum class Panel { NONE, MENU, FILES, CLIPBOARD }
 
+private enum class MouseMode(val label: String) { TOUCHPAD("Touchpad"), DIRECT("Direct touch") }
+
+private val Overlay = Color(0xE6121212)
+private val OverlayText = Color(0xFFECECEC)
+
+/**
+ * The PC, full screen, in the way Parsec shows one: nothing but the picture, and a small button that can be dragged
+ * out of the way and opens everything else.
+ *
+ * Asked for by the owner after the first stream over mobile data. It keeps what the stream already had — control is
+ * still the cloud's to grant, files and clipboard still go only over the data channel — and changes how it is driven:
+ * a touchpad cursor by default, a keyboard with the keys a PC needs, and a picture quality that can be changed
+ * without starting again.
+ */
 @Composable
 fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit) {
     val state by controller.state.collectAsStateWithLifecycle()
     val controlling = state.control?.granted == true
     val streaming = state.phase == StreamPhase.STREAMING
-    var typed by remember { mutableStateOf("") }
+
     var panel by remember { mutableStateOf(Panel.NONE) }
+    var mouseMode by remember { mutableStateOf(MouseMode.TOUCHPAD) }
+    var keyboardOpen by remember { mutableStateOf(false) }
     var viewport by remember { mutableStateOf(Viewport.FIT) }
+    var cursor by remember { mutableStateOf(TouchpadCursor()) }
     val currentViewport = rememberUpdatedState(viewport)
+    val currentCursor = rememberUpdatedState(cursor)
+    var askedForControl by remember { mutableStateOf(false) }
+
+    FullScreenLandscape()
 
     // A picture of a different size is a different picture — another display, usually. A zoom into the old one
     // would leave the owner looking at, and touching, somewhere they did not choose.
     LaunchedEffect(state.frameWidth, state.frameHeight) { viewport = Viewport.FIT }
 
-    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row {
-            TextButton(onClick = onClose) { Text("Close") }
-            Column(modifier = Modifier.weight(1f).padding(top = 8.dp)) {
-                Text(phaseWords(state.phase), fontWeight = FontWeight.SemiBold)
-                val negotiation = state.negotiation
-                if (negotiation != null) {
-                    Text(
-                        "${negotiation.displayName} · ${negotiation.widthPixels}×${negotiation.heightPixels} · ${negotiation.videoCodec}${if (negotiation.hardwareEncoded) " (hardware)" else ""}${if (negotiation.audioCodec != null) " · sound" else ""}",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-            if (controlling) {
-                TextButton(onClick = controller::releaseControl) { Text("Release") }
-            } else {
-                TextButton(onClick = controller::requestControl, enabled = streaming) { Text("Take control") }
-            }
+    // Opening a stream from this screen is asking to use the PC, so control is asked for once it is streaming, as
+    // Parsec does. The cloud still decides, and a refusal is shown; "View only" in the menu gives it back.
+    LaunchedEffect(streaming) {
+        if (streaming && !askedForControl) {
+            askedForControl = true
+            controller.requestControl()
         }
+    }
 
-        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-            PanelToggle("Files", panel == Panel.FILES) { panel = if (panel == Panel.FILES) Panel.NONE else Panel.FILES }
-            PanelToggle("Clipboard", panel == Panel.CLIPBOARD) { panel = if (panel == Panel.CLIPBOARD) Panel.NONE else Panel.CLIPBOARD }
-            DisplayPicker(state, enabled = streaming, onSelect = controller::setDisplay)
-            // Only what the PC actually settled on: a stream with no audio track gets no sound button over silence.
-            if (state.negotiation?.audioCodec != null) {
-                TextButton(onClick = { controller.setSoundOn(!state.soundOn) }) { Text(if (state.soundOn) "Mute" else "Unmute") }
-            }
-            if (viewport.zoomed) TextButton(onClick = { viewport = Viewport.FIT }) { Text("Fit") }
-        }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
+        val heightPx = with(density) { maxHeight.toPx() }
 
-        state.failure?.let {
-            Text(it.message, color = MaterialTheme.colorScheme.error)
-            Text(it.recommendedAction, style = MaterialTheme.typography.bodySmall)
-        }
-        state.remoteState?.let { remote ->
-            if (remote.unavailableReason != null) Text("The PC reports: ${remote.detail ?: remote.unavailableReason}", style = MaterialTheme.typography.bodySmall)
-            if (remote.showing == "secure-desktop") Text("Showing the Windows lock or sign-in screen.", style = MaterialTheme.typography.bodySmall)
-        }
-        state.negotiation?.adjustments?.forEach { Text("The PC adjusted this stream: ${it.reason}", style = MaterialTheme.typography.bodySmall) }
-        state.displaysNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        if (streaming) {
-            // Connected is not the same as seeing the PC: the first decoded frame is what says so.
-            Text(
-                when {
-                    !state.pictureShown -> "Waiting for the first picture…"
-                    controlling -> "Tap to click, hold to right-click, drag to drag. Two fingers scroll; pinch to zoom."
-                    else -> "Picture received. Pinch to zoom."
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        if (!controlling && state.control != null) Text(controlWords(state.control?.reason), style = MaterialTheme.typography.bodySmall)
-        state.inputRefusal?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-
-        Box(modifier = Modifier.weight(if (panel == Panel.NONE) 1f else 0.35f).fillMaxWidth().clipToBounds().background(Color.Black)) {
+        Box(modifier = Modifier.fillMaxSize().clipToBounds()) {
             AndroidView(
                 factory = { context -> SurfaceViewRenderer(context).also(controller::attachRenderer) },
                 // Zoom moves the picture view itself. Since Android 7 a SurfaceView scales and moves with its view.
@@ -149,46 +175,394 @@ fun RemoteDesktopScreen(controller: RemoteDesktopController, onClose: () -> Unit
                 modifier = Modifier.fillMaxSize(),
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .remoteGestures(controlling, state.frameWidth, state.frameHeight, currentViewport, onViewport = { viewport = it }, send = controller::send),
-            )
-        }
+            val gestures = when (mouseMode) {
+                MouseMode.TOUCHPAD -> Modifier.touchpadGestures(
+                    controlling,
+                    state.frameWidth,
+                    state.frameHeight,
+                    currentViewport,
+                    currentCursor,
+                    onViewport = { viewport = it },
+                    onCursor = { cursor = it },
+                    send = controller::send,
+                    onThreeFingers = { keyboardOpen = !keyboardOpen },
+                )
+                MouseMode.DIRECT -> Modifier.remoteGestures(
+                    controlling,
+                    state.frameWidth,
+                    state.frameHeight,
+                    currentViewport,
+                    onViewport = { viewport = it },
+                    send = controller::send,
+                )
+            }
+            Box(modifier = Modifier.fillMaxSize().then(gestures))
 
-        when (panel) {
-            Panel.FILES -> FilesPanel(controller, streaming = streaming, modifier = Modifier.weight(0.65f).fillMaxWidth())
-            Panel.CLIPBOARD -> ClipboardPanel(
-                state,
-                streaming = streaming,
-                onSend = controller::sendPhoneClipboard,
-                onCopy = controller::copyPcClipboardToPhone,
-                onDismiss = controller::dismissPcClipboard,
-                modifier = Modifier.weight(0.65f).fillMaxWidth().padding(horizontal = 8.dp),
-            )
-            Panel.NONE -> if (controlling) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedTextField(
-                        value = typed,
-                        onValueChange = { typed = it },
-                        label = { Text("Type on the PC") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = {
-                        if (typed.isNotEmpty()) controller.send(InputEvents.text(typed))
-                        typed = ""
-                    }) { Text("Send") }
-                }
-                val centre = NormalizedPoint(0.5, 0.5)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf("Enter" to VirtualKey.ENTER, "⌫" to VirtualKey.BACKSPACE, "Esc" to VirtualKey.ESCAPE, "Tab" to VirtualKey.TAB).forEach { (label, key) ->
-                        OutlinedButton(onClick = { controller.send(InputEvents.keyPress(key)) }, modifier = Modifier.weight(1f)) { Text(label) }
+            // The cursor's hotspot, drawn at once on the phone. The PC's own cursor is in the picture too, but a
+            // frame or two behind the finger over mobile data; this ring says where a tap will click.
+            if (mouseMode == MouseMode.TOUCHPAD && controlling && state.pictureShown) {
+                val rect = PictureRect.of(widthPx, heightPx, state.frameWidth, state.frameHeight, viewport)
+                if (rect != null) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val (x, y) = rect.toScreen(cursor.point)
+                        drawCircle(Color.Black.copy(alpha = 0.6f), radius = 9.dp.toPx(), center = Offset(x, y), style = Stroke(3.dp.toPx()))
+                        drawCircle(Color.White, radius = 9.dp.toPx(), center = Offset(x, y), style = Stroke(1.5.dp.toPx()))
                     }
-                    OutlinedButton(onClick = { controller.send(listOf(InputEvents.scroll(centre, 3.0))) }, modifier = Modifier.weight(1f)) { Text("▲") }
-                    OutlinedButton(onClick = { controller.send(listOf(InputEvents.scroll(centre, -3.0))) }, modifier = Modifier.weight(1f)) { Text("▼") }
                 }
             }
         }
+
+        if (!streaming || !state.pictureShown) StatusCard(state, onClose, modifier = Modifier.align(Alignment.Center))
+
+        state.inputRefusal?.let {
+            Notice(it, modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
+        }
+
+        if (keyboardOpen && panel == Panel.NONE) {
+            KeyboardBar(
+                enabled = controlling,
+                send = controller::send,
+                onHide = { keyboardOpen = false },
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().imePadding(),
+            )
+        }
+
+        if (panel == Panel.NONE) {
+            MenuButton(onOpen = { panel = Panel.MENU }, maxX = widthPx, maxY = heightPx)
+        }
+
+        when (panel) {
+            Panel.MENU -> SidePanel(onDismiss = { panel = Panel.NONE }) {
+                StreamMenu(
+                    state = state,
+                    controlling = controlling,
+                    streaming = streaming,
+                    mouseMode = mouseMode,
+                    zoomed = viewport.zoomed,
+                    onMouseMode = { mouseMode = it },
+                    onKeyboard = {
+                        keyboardOpen = true
+                        panel = Panel.NONE
+                    },
+                    onQuality = controller::setQuality,
+                    onDisplay = controller::setDisplay,
+                    onSound = { controller.setSoundOn(!state.soundOn) },
+                    onFit = { viewport = Viewport.FIT },
+                    onControl = { if (controlling) controller.releaseControl() else controller.requestControl() },
+                    onFiles = { panel = Panel.FILES },
+                    onClipboard = { panel = Panel.CLIPBOARD },
+                    onClose = onClose,
+                )
+            }
+            Panel.FILES -> SidePanel(onDismiss = { panel = Panel.NONE }, wide = true) {
+                FilesPanel(controller, streaming = streaming, modifier = Modifier.fillMaxSize())
+            }
+            Panel.CLIPBOARD -> SidePanel(onDismiss = { panel = Panel.NONE }) {
+                ClipboardPanel(
+                    state,
+                    streaming = streaming,
+                    onSend = controller::sendPhoneClipboard,
+                    onCopy = controller::copyPcClipboardToPhone,
+                    onDismiss = controller::dismissPcClipboard,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            Panel.NONE -> Unit
+        }
+    }
+}
+
+/** Landscape, without the status and navigation bars, for as long as the stream is open; put back on leaving. */
+@Composable
+private fun FullScreenLandscape() {
+    val view = LocalView.current
+    DisposableEffect(Unit) {
+        val activity = view.context.findActivity()
+        if (activity == null) {
+            onDispose { }
+        } else {
+            val bars = WindowCompat.getInsetsController(activity.window, view)
+            val orientation = activity.requestedOrientation
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+            bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars.hide(WindowInsetsCompat.Type.systemBars())
+            onDispose {
+                bars.show(WindowInsetsCompat.Type.systemBars())
+                activity.requestedOrientation = orientation
+            }
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/** The small round button that opens the menu, dragged anywhere so it never covers what the owner needs. */
+@Composable
+private fun MenuButton(onOpen: () -> Unit, maxX: Float, maxY: Float) {
+    val density = LocalDensity.current
+    val sizePx = with(density) { 44.dp.toPx() }
+    var x by remember { mutableFloatStateOf(Float.NaN) }
+    var y by remember { mutableFloatStateOf(Float.NaN) }
+    if (x.isNaN()) {
+        x = maxX - sizePx - with(density) { 16.dp.toPx() }
+        y = with(density) { 16.dp.toPx() }
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(Color(0x99000000))
+            .border(1.dp, Color(0x66FFFFFF), CircleShape)
+            .pointerInput(maxX, maxY) {
+                detectDragGestures { change, amount ->
+                    change.consume()
+                    x = (x + amount.x).coerceIn(0f, (maxX - sizePx).coerceAtLeast(0f))
+                    y = (y + amount.y).coerceIn(0f, (maxY - sizePx).coerceAtLeast(0f))
+                }
+            }
+            .clickable(onClick = onOpen),
+    ) {
+        Text("☰", color = Color.White, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/** A panel on the right that leaves the picture visible; a tap outside closes it. */
+@Composable
+private fun SidePanel(onDismiss: () -> Unit, wide: Boolean = false, content: @Composable () -> Unit) {
+    Row(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.weight(1f).fillMaxHeight().clickable(onClick = onDismiss))
+        Surface(
+            color = Overlay,
+            contentColor = OverlayText,
+            modifier = Modifier.fillMaxHeight().width(if (wide) 460.dp else 320.dp),
+        ) {
+            Box(modifier = Modifier.padding(12.dp)) { content() }
+        }
+    }
+}
+
+@Composable
+private fun StreamMenu(
+    state: RemoteDesktopUiState,
+    controlling: Boolean,
+    streaming: Boolean,
+    mouseMode: MouseMode,
+    zoomed: Boolean,
+    onMouseMode: (MouseMode) -> Unit,
+    onKeyboard: () -> Unit,
+    onQuality: (StreamQuality) -> Unit,
+    onDisplay: (String) -> Unit,
+    onSound: () -> Unit,
+    onFit: () -> Unit,
+    onControl: () -> Unit,
+    onFiles: () -> Unit,
+    onClipboard: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(phaseWords(state.phase), fontWeight = FontWeight.SemiBold)
+        state.negotiation?.let { negotiation ->
+            Text(
+                "${negotiation.displayName} · ${negotiation.widthPixels}×${negotiation.heightPixels} · ${negotiation.videoCodec}${if (negotiation.hardwareEncoded) " (hardware)" else ""}",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            negotiation.adjustments.forEach { Text("The PC adjusted this stream: ${it.reason}", style = MaterialTheme.typography.labelSmall) }
+        }
+        if (!controlling && state.control != null) Text(controlWords(state.control.reason), style = MaterialTheme.typography.bodySmall)
+
+        OutlinedButton(onClick = onControl, enabled = streaming, modifier = Modifier.fillMaxWidth()) {
+            Text(if (controlling) "View only (release control)" else "Take control")
+        }
+
+        Section("Mouse")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MouseMode.entries.forEach { mode ->
+                Choice(mode.label, selected = mode == mouseMode, modifier = Modifier.weight(1f)) { onMouseMode(mode) }
+            }
+        }
+        Text(
+            if (mouseMode == MouseMode.TOUCHPAD) {
+                "Slide to move the pointer, tap to click. Two-finger tap or hold: right click. Tap then slide, or hold then slide: drag. Two fingers: scroll. Pinch: zoom. Three-finger tap: keyboard."
+            } else {
+                "Tap to click where you touch, hold to right-click, drag to drag. Two fingers scroll; pinch to zoom."
+            },
+            style = MaterialTheme.typography.labelSmall,
+        )
+
+        OutlinedButton(onClick = onKeyboard, enabled = controlling, modifier = Modifier.fillMaxWidth()) { Text("Keyboard") }
+
+        Section("Picture")
+        val current = StreamQuality.of(state.profile)
+        StreamQuality.entries.forEach { quality ->
+            Choice("${quality.label} — ${quality.description}", selected = quality == current, enabled = streaming, modifier = Modifier.fillMaxWidth()) {
+                onQuality(quality)
+            }
+        }
+        if (zoomed) OutlinedButton(onClick = onFit, modifier = Modifier.fillMaxWidth()) { Text("Fit to screen") }
+        DisplayPicker(state, enabled = streaming, onSelect = onDisplay)
+        // Only what the PC actually settled on: a stream with no audio track gets no sound button over silence.
+        if (state.negotiation?.audioCodec != null) {
+            OutlinedButton(onClick = onSound, modifier = Modifier.fillMaxWidth()) { Text(if (state.soundOn) "Mute sound" else "Unmute sound") }
+        }
+
+        Section("Transfer")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton(onClick = onFiles, modifier = Modifier.weight(1f)) { Text("Files") }
+            OutlinedButton(onClick = onClipboard, modifier = Modifier.weight(1f)) { Text("Clipboard") }
+        }
+
+        state.remoteState?.let { remote ->
+            if (remote.unavailableReason != null) Text("The PC reports: ${remote.detail ?: remote.unavailableReason}", style = MaterialTheme.typography.bodySmall)
+            if (remote.showing == "secure-desktop") Text("Showing the Windows lock or sign-in screen.", style = MaterialTheme.typography.bodySmall)
+        }
+        state.displaysNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Disconnect", color = Color(0xFFFF8A80)) }
+    }
+}
+
+@Composable
+private fun Section(title: String) {
+    Text(title.uppercase(), style = MaterialTheme.typography.labelSmall, color = Color(0xFF9E9E9E), modifier = Modifier.padding(top = 4.dp))
+}
+
+@Composable
+private fun Choice(label: String, selected: Boolean, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Color(0xFF2E5BFF) else Color(0x22FFFFFF))
+            .alpha(if (enabled) 1f else 0.5f)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = Color.White)
+    }
+}
+
+/** While connecting, or when the stream stopped: what is happening, and a way out. */
+@Composable
+private fun StatusCard(state: RemoteDesktopUiState, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(color = Overlay, contentColor = OverlayText, shape = RoundedCornerShape(12.dp), modifier = modifier.padding(24.dp)) {
+        Column(modifier = Modifier.padding(16.dp).width(360.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                if (state.phase == StreamPhase.STREAMING) "Waiting for the first picture…" else phaseWords(state.phase),
+                fontWeight = FontWeight.SemiBold,
+            )
+            state.failure?.let {
+                Text(it.message, color = Color(0xFFFF8A80))
+                Text(it.recommendedAction, style = MaterialTheme.typography.bodySmall)
+            }
+            state.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            TextButton(onClick = onClose) { Text("Close") }
+        }
+    }
+}
+
+@Composable
+private fun Notice(text: String, modifier: Modifier = Modifier) {
+    Surface(color = Overlay, contentColor = OverlayText, shape = RoundedCornerShape(8.dp), modifier = modifier) {
+        Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+    }
+}
+
+/**
+ * The phone keyboard, plus the keys a PC needs and a phone keyboard does not have.
+ *
+ * Ctrl, Alt, Shift and Win are held for the next key or character and then let go, like a phone keyboard's own
+ * Shift. Typing goes to the PC as it happens; nothing is kept on the phone. The field asks for a password-style
+ * keyboard, which types each character at once instead of holding a word for autocorrect, and does not learn what
+ * the owner types on the PC.
+ */
+@Composable
+private fun KeyboardBar(enabled: Boolean, send: (List<JsonObject>) -> Unit, onHide: () -> Unit, modifier: Modifier = Modifier) {
+    var held by remember { mutableStateOf(HeldModifiers()) }
+    val resetField = TextFieldValue(Typing.SENTINEL, TextRange(Typing.SENTINEL.length))
+    var field by remember { mutableStateOf(resetField) }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(Unit) {
+        focus.requestFocus()
+        keyboard?.show()
+    }
+
+    fun press(key: Int) {
+        if (!enabled) return
+        send(held.around(InputEvents.keyPress(key)))
+        held = HeldModifiers()
+    }
+
+    Surface(color = Overlay, contentColor = OverlayText, modifier = modifier) {
+        Column {
+            BasicTextField(
+                value = field,
+                onValueChange = { next ->
+                    if (next.composition != null) {
+                        field = next
+                        return@BasicTextField
+                    }
+                    val edit = Typing.edit(next.text)
+                    if (enabled && (edit.deleted > 0 || edit.inserted.isNotEmpty())) {
+                        send(Typing.events(edit, held))
+                        if (held.any) held = HeldModifiers()
+                    }
+                    field = resetField
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.None),
+                modifier = Modifier.size(1.dp).alpha(0f).focusRequester(focus),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Key("⌨ Hide") {
+                    keyboard?.hide()
+                    onHide()
+                }
+                Key("Show") {
+                    focus.requestFocus()
+                    keyboard?.show()
+                }
+                Key("Ctrl", held.control) { held = held.copy(control = !held.control) }
+                Key("Alt", held.alt) { held = held.copy(alt = !held.alt) }
+                Key("Shift", held.shift) { held = held.copy(shift = !held.shift) }
+                Key("Win", held.windows) { held = held.copy(windows = !held.windows) }
+                Key("Esc") { press(VirtualKey.ESCAPE) }
+                Key("Tab") { press(VirtualKey.TAB) }
+                Key("←") { press(VirtualKey.LEFT) }
+                Key("↑") { press(VirtualKey.UP) }
+                Key("↓") { press(VirtualKey.DOWN) }
+                Key("→") { press(VirtualKey.RIGHT) }
+                Key("Del") { press(VirtualKey.DELETE) }
+                Key("Home") { press(VirtualKey.HOME) }
+                Key("End") { press(VirtualKey.END) }
+                Key("PgUp") { press(VirtualKey.PAGE_UP) }
+                Key("PgDn") { press(VirtualKey.PAGE_DOWN) }
+                Key("PrtSc") { press(VirtualKey.PRINT_SCREEN) }
+                (1..12).forEach { number -> Key("F$number") { press(VirtualKey.function(number)) } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Key(label: String, active: Boolean = false, onClick: () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (active) Color(0xFF2E5BFF) else Color(0x33FFFFFF))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(label, color = Color.White, style = MaterialTheme.typography.bodyMedium)
     }
 }

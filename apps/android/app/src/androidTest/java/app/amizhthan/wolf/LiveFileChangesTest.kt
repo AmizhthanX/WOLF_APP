@@ -123,7 +123,7 @@ class LiveFileChangesTest {
                 created = StreamSession(
                     sessionToken = token,
                     iceServers = ice,
-                    profile = StreamProfile.WIFI.json,
+                    profile = StreamProfile.SHARP.json,
                     clientCodecs = DecoderCodecs.fromDecoderNames(rtc.decoderCodecNames),
                     socket = socket,
                     peers = WebRtcPeerFactory(rtc, post) { },

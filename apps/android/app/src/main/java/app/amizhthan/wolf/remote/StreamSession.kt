@@ -374,6 +374,20 @@ class StreamSession(
     }
 
     /**
+     * Change the picture's resolution, frame rate and bitrate on the running stream, the way the web viewer does.
+     * The PC answers with a fresh `stream.ready` saying what it applied.
+     */
+    fun setProfile(profile: JsonObject) {
+        if (closed) return
+        signal(
+            buildJsonObject {
+                put("type", "stream.set-profile")
+                put("profile", profile)
+            },
+        )
+    }
+
+    /**
      * Put text on the PC's clipboard, on the data channel and never through the cloud.
      *
      * Over the protocol's limit it is refused here, whole: a paste that arrives shortened is worse than one that

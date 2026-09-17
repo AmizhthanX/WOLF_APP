@@ -105,7 +105,7 @@ class StreamSessionTest {
         stream = StreamSession(
             sessionToken = "session-token",
             iceServers = listOf(IceServerConfig(listOf("stun:stun.example.com:3478"), null, null)),
-            profile = StreamProfile.MOBILE_DATA.json,
+            profile = StreamProfile.BALANCED.json,
             clientCodecs = listOf("h264", "vp8"),
             socket = socket,
             peers = { _, events -> peerEvents = events; FakePeer().also { peers += it } },
@@ -148,7 +148,7 @@ class StreamSessionTest {
         assertEquals("false", quiet["requestAudio"].toString())
 
         val listening = StreamSession(
-            "session-token", emptyList(), StreamProfile.WIFI.json, listOf("h264"), socket,
+            "session-token", emptyList(), StreamProfile.SHARP.json, listOf("h264"), socket,
             { _, events -> peerEvents = events; FakePeer().also { peers += it } }, scheduler, recorder,
             requestAudio = true,
         )
@@ -190,6 +190,15 @@ class StreamSessionTest {
 
         stream.setDisplay(null)
         assertEquals(JsonNull, payloads().last { it["type"]!!.jsonPrimitive.content == "stream.set-display" }["displayId"])
+    }
+
+    @Test
+    fun quality_changes_on_the_running_stream_without_a_restart() {
+        connect()
+        stream.setProfile(StreamProfile.SHARP.json)
+        val change = payloads().single { it["type"]!!.jsonPrimitive.content == "stream.set-profile" }
+        assertEquals(StreamProfile.SHARP.json, change["profile"])
+        assertFalse(types().contains("stream.stop"))
     }
 
     @Test
@@ -495,7 +504,7 @@ class StreamSessionTest {
         val declining = StreamSession(
             sessionToken = "session-token",
             iceServers = emptyList(),
-            profile = StreamProfile.WIFI.json,
+            profile = StreamProfile.SHARP.json,
             clientCodecs = listOf("h264"),
             socket = socket,
             peers = { _, events ->

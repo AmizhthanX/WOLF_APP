@@ -35,8 +35,10 @@ import app.amizhthan.wolf.remote.Displays
 import app.amizhthan.wolf.remote.InputEvents
 import app.amizhthan.wolf.remote.NormalizedPoint
 import app.amizhthan.wolf.remote.Picture
+import app.amizhthan.wolf.remote.PictureRect
 import app.amizhthan.wolf.remote.RemoteDesktopUiState
 import app.amizhthan.wolf.remote.ScrollAccumulator
+import app.amizhthan.wolf.remote.TouchpadCursor
 import app.amizhthan.wolf.remote.TwoFingerClassifier
 import app.amizhthan.wolf.remote.TwoFingerIntent
 import app.amizhthan.wolf.remote.Viewport
@@ -148,6 +150,148 @@ internal fun Modifier.remoteGestures(
                     onViewport(viewport.value.panBy(moved.x, moved.y, width, height))
                 }
                 else -> Unit
+            }
+            finger.consume()
+        }
+    }
+}
+
+/**
+ * The phone as a touchpad, the way Parsec drives a PC from a phone.
+ *
+ * - One finger moves the cursor by how far it travels (faster for a flick); a tap clicks where the cursor is.
+ * - Tap, then touch again and move: drag with the left button held. Hold still, then move: the same.
+ * - Hold still and lift without moving, or tap with two fingers: right click.
+ * - Two fingers moving together scroll; two fingers pinching zoom the picture, which then follows the cursor.
+ * - Three fingers tap: [onThreeFingers] (the keyboard).
+ *
+ * Without control, nothing reaches the PC: a pinch still zooms and two fingers move around the zoomed picture.
+ */
+internal fun Modifier.touchpadGestures(
+    controlling: Boolean,
+    frameWidth: Int,
+    frameHeight: Int,
+    viewport: State<Viewport>,
+    cursor: State<TouchpadCursor>,
+    onViewport: (Viewport) -> Unit,
+    onCursor: (TouchpadCursor) -> Unit,
+    send: (List<JsonObject>) -> Unit,
+    onThreeFingers: () -> Unit,
+): Modifier = pointerInput(controlling, frameWidth, frameHeight) {
+    var lastTapUptime = Long.MIN_VALUE / 2
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val width = size.width.toFloat()
+        val height = size.height.toFloat()
+        val slop = viewConfiguration.touchSlop
+        val margin = 48.dp.toPx()
+
+        val classifier = TwoFingerClassifier(slop)
+        val scroll = ScrollAccumulator()
+        var fingers = 1
+        var moved = false
+        var twoFingerUsed = false
+        var holding = false
+        var dragging = controlling && down.uptimeMillis - lastTapUptime < viewConfiguration.doubleTapTimeoutMillis
+
+        if (dragging) send(listOf(InputEvents.button("left", "down", cursor.value.point)))
+
+        fun moveCursor(dx: Float, dy: Float) {
+            val rect = PictureRect.of(width, height, frameWidth, frameHeight, viewport.value) ?: return
+            val next = cursor.value.moveBy(dx, dy, rect.width, rect.height)
+            if (next == cursor.value) return
+            onCursor(next)
+            if (controlling) send(listOf(InputEvents.move(next.point)))
+
+            // Zoomed in, the picture follows the cursor so it never walks off the screen.
+            if (viewport.value.zoomed) {
+                val (x, y) = rect.toScreen(next.point)
+                val panX = when {
+                    x < margin -> margin - x
+                    x > width - margin -> width - margin - x
+                    else -> 0f
+                }
+                val panY = when {
+                    y < margin -> margin - y
+                    y > height - margin -> height - margin - y
+                    else -> 0f
+                }
+                if (panX != 0f || panY != 0f) onViewport(viewport.value.panBy(panX, panY, width, height))
+            }
+        }
+
+        var pending: PointerEvent? = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) { awaitStillFingerMoves(down.position, slop) }
+        if (pending == null && !dragging) holding = true
+
+        while (true) {
+            val event = pending ?: awaitPointerEvent()
+            pending = null
+            fingers = maxOf(fingers, event.changes.size)
+            val pressed = event.changes.filter { it.pressed }
+
+            if (pressed.isEmpty()) {
+                val point = cursor.value.point
+                when {
+                    // Always released, wherever the gesture ended: a button left down is a stuck drag.
+                    dragging -> send(listOf(InputEvents.button("left", "up", point)))
+                    fingers >= 3 -> if (!twoFingerUsed) onThreeFingers()
+                    fingers == 2 -> if (controlling && !twoFingerUsed) send(InputEvents.longPress(point))
+                    moved -> Unit
+                    holding -> if (controlling) send(InputEvents.longPress(point))
+                    controlling -> {
+                        send(InputEvents.tap(point))
+                        lastTapUptime = event.changes.first().uptimeMillis
+                    }
+                }
+                break
+            }
+
+            if (pressed.size >= 2) {
+                if (dragging) {
+                    send(listOf(InputEvents.button("left", "up", cursor.value.point)))
+                    dragging = false
+                }
+                if (pressed.size == 2) {
+                    val zoom = event.calculateZoom()
+                    val pan = event.calculatePan()
+                    val centroid = event.calculateCentroid(useCurrent = true)
+                    when (classifier.update(zoom, pan.x, pan.y, event.calculateCentroidSize(useCurrent = true))) {
+                        TwoFingerIntent.ZOOM -> {
+                            twoFingerUsed = true
+                            onViewport(viewport.value.zoomBy(zoom, centroid.x, centroid.y, width, height).panBy(pan.x, pan.y, width, height))
+                        }
+                        TwoFingerIntent.SCROLL -> {
+                            twoFingerUsed = true
+                            if (controlling) {
+                                scroll.add(pan.x, pan.y)?.let { (deltaX, deltaY) ->
+                                    send(listOf(InputEvents.scroll(cursor.value.point, deltaY, deltaX)))
+                                }
+                            } else {
+                                onViewport(viewport.value.panBy(pan.x, pan.y, width, height))
+                            }
+                        }
+                        null -> Unit
+                    }
+                }
+                event.changes.forEach { it.consume() }
+                continue
+            }
+
+            // One finger left after two or three: nothing more until every finger lifts.
+            if (fingers >= 2) continue
+
+            val finger = pressed.first()
+            if (!moved && (finger.position - down.position).getDistance() > slop) {
+                moved = true
+                // Held still first, then moved: a drag.
+                if (holding && controlling && !dragging) {
+                    dragging = true
+                    send(listOf(InputEvents.button("left", "down", cursor.value.point)))
+                }
+            }
+            if (moved || dragging) {
+                val travel = finger.position - finger.previousPosition
+                moveCursor(travel.x, travel.y)
             }
             finger.consume()
         }

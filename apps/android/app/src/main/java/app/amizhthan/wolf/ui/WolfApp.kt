@@ -79,7 +79,13 @@ fun WolfApp(
 
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
         Surface(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // The stream is the whole screen, edge to edge, without the padding and safe-area margins every other
+            // screen keeps.
+            val streamScreen = state.screen as? Screen.RemoteDesktop
+            if (streamScreen != null) {
+                BackHandler(onBack = viewModel::closeRemoteDesktop)
+                viewModel.remoteDesktop()?.let { RemoteDesktopScreen(it, onClose = viewModel::closeRemoteDesktop) }
+            } else Column(modifier = Modifier.safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 state.problem?.let { ProblemCard(it, onDismiss = viewModel::dismissProblem) }
 
                 when (val screen = state.screen) {
@@ -144,10 +150,8 @@ fun WolfApp(
                             onSetStartupEnabled = viewModel::setStartupEnabled,
                         )
                     }
-                    is Screen.RemoteDesktop -> {
-                        BackHandler(onBack = viewModel::closeRemoteDesktop)
-                        viewModel.remoteDesktop()?.let { RemoteDesktopScreen(it, onClose = viewModel::closeRemoteDesktop) }
-                    }
+                    // Drawn full screen above, outside this padded column.
+                    is Screen.RemoteDesktop -> Unit
                     Screen.Alerts -> {
                         BackHandler(onBack = viewModel::home)
                         DisposableEffect(Unit) {
@@ -548,7 +552,7 @@ private fun PcScreen(
                         }
                     }
                     Text(
-                        "Opens view-only. Take control to touch, type and scroll on the PC. The picture, sound and clipboard never pass through the WOLF cloud. Sound is what the PC plays, never its microphone.",
+                        "Opens full screen and asks for control. Sharp needs a fast connection; Balanced suits 4G and 5G; Data saver keeps usage low. Change it any time from the ☰ button. The picture, sound and clipboard never pass through the WOLF cloud. Sound is what the PC plays, never its microphone.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

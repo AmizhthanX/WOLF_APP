@@ -166,7 +166,7 @@ class LiveRemoteDesktopTest {
                 created = StreamSession(
                     sessionToken = token,
                     iceServers = ice,
-                    profile = StreamProfile.WIFI.json,
+                    profile = StreamProfile.SHARP.json,
                     clientCodecs = codecs,
                     socket = socket,
                     peers = recordingPeers,
