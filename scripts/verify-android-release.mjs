@@ -26,6 +26,7 @@ export const ALLOWED_PERMISSIONS = new Map([
   ['android.permission.INTERNET', 'the WOLF API and the stream'],
   ['android.permission.ACCESS_NETWORK_STATE', 'WebRTC following a move between Wi-Fi and mobile data'],
   ['android.permission.POST_NOTIFICATIONS', 'notifications after a wake-up, when the owner allows them'],
+  ['android.permission.USE_BIOMETRIC', "the app lock's fingerprint or face unlock, when the owner turns it on"],
   ['android.permission.WAKE_LOCK', 'Firebase Cloud Messaging, while it hands over a wake-up'],
   ['com.google.android.c2dm.permission.RECEIVE', 'Firebase Cloud Messaging, to receive a wake-up'],
   [`${PACKAGE_NAME}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, "AndroidX's guard on the app's own unexported receivers"],
@@ -47,14 +48,24 @@ export function parseBadging(output) {
   };
 }
 
-/** `apksigner verify --verbose --print-certs`, as the facts the checks need. */
+/**
+ * `apksigner verify --verbose --print-certs`, as the facts the checks need.
+ *
+ * A signer is named `Signer #1` by build-tools 36.0.0 and `Signer (minSdkVersion=…, maxSdkVersion=…)` by versions that
+ * sign for SDK ranges. Reading only the first form made a correctly signed release report "0 signers" on a runner
+ * whose newest build-tools printed the second. The pipeline also pins the build-tools it installed.
+ */
 export function parseSigner(output) {
-  const text = lines(output);
+  const text = lines(output).replace(/[ \t]+$/gm, '');
+  const signer = String.raw`Signer (?:#\d+|\([^)\n]*\))`;
+  const dns = [...text.matchAll(new RegExp(`^${signer} certificate DN: (.+)$`, 'gm'))].map((match) => match[1]);
+  const digests = [...text.matchAll(new RegExp(`^${signer} certificate SHA-256 digest: ([0-9a-f]+)$`, 'gm'))].map((match) => match[1]);
   return {
     schemes: [...text.matchAll(/^Verified using (v[\d.]+) scheme[^:\n]*: true$/gm)].map((match) => match[1]),
-    signers: [...text.matchAll(/^Signer #\d+ certificate DN:/gm)].length,
-    certificateDn: text.match(/^Signer #1 certificate DN: (.+)$/m)?.[1] ?? null,
-    certificateSha256: text.match(/^Signer #1 certificate SHA-256 digest: ([0-9a-f]+)$/m)?.[1] ?? null,
+    // Distinct certificates: one key listed once per SDK range is still one signer.
+    signers: new Set(digests).size || dns.length,
+    certificateDn: dns[0] ?? null,
+    certificateSha256: digests[0] ?? null,
   };
 }
 
@@ -111,6 +122,12 @@ function newestBuildTools() {
   const sdk = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT;
   if (!sdk) throw new Error('Set ANDROID_HOME to the Android SDK.');
   const root = path.join(sdk, 'build-tools');
+  // The version the pipeline installed, rather than whatever else the machine happens to carry.
+  const pinned = process.env.WOLF_ANDROID_BUILD_TOOLS;
+  if (pinned) {
+    if (!existsSync(path.join(root, pinned))) throw new Error(`build-tools ${pinned} is not installed under ${root}.`);
+    return path.join(root, pinned);
+  }
   const versions = existsSync(root) ? readdirSync(root).filter((name) => /^\d+\.\d+\.\d+$/.test(name)) : [];
   if (versions.length === 0) throw new Error(`No build-tools under ${root}.`);
   const numeric = (version) => version.split('.').map(Number);
@@ -178,6 +195,13 @@ function main(args) {
       '',
     ].join('\n'),
   );
+
+  if (signer.signers === 0) {
+    // What apksigner said about signers, so a format it changed again can be read from the log. Certificate names and
+    // digests are public: they are what the release notes publish.
+    const said = lines(signing.output).split('\n').filter((line) => /signer/i.test(line));
+    process.stderr.write(`apksigner's signer lines:\n${said.map((line) => `  ${line}`).join('\n') || '  (none)'}\n`);
+  }
 
   const summary = option(args, '--summary');
   if (summary) writeFileSync(summary, releaseSummary({ badging, signer, apkSha256 }), 'utf8');

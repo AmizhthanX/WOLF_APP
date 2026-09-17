@@ -18,6 +18,7 @@ const BADGING = [
   "uses-permission: name='android.permission.INTERNET'",
   "uses-permission: name='android.permission.ACCESS_NETWORK_STATE'",
   "uses-permission: name='android.permission.POST_NOTIFICATIONS'",
+  "uses-permission: name='android.permission.USE_BIOMETRIC'",
   "uses-permission: name='android.permission.WAKE_LOCK'",
   "uses-permission: name='com.google.android.c2dm.permission.RECEIVE'",
   `uses-permission: name='${PACKAGE_NAME}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'`,
@@ -46,12 +47,30 @@ test('the tools output is read the same with Windows line endings', () => {
   assert.equal(badging.versionName, '0.2.0');
   assert.equal(badging.versionCode, '2000');
   assert.equal(badging.debuggable, false);
-  assert.equal(badging.permissions.length, 6);
+  assert.equal(badging.permissions.length, 7);
 
   const signer = parseSigner(SIGNED);
   assert.deepEqual(signer.schemes, ['v2', 'v3']);
   assert.equal(signer.signers, 1);
   assert.match(signer.certificateSha256, /^[0-9a-f]{64}$/);
+});
+
+test('a signer named by SDK range is read as the one signer it is', () => {
+  const ranged = parseSigner(
+    [
+      'Verifies',
+      'Verified using v2 scheme (APK Signature Scheme v2): true',
+      'Number of signers: 1',
+      'Signer (minSdkVersion=28, maxSdkVersion=2147483647) certificate DN: CN=WOLF release, O=Amizhthan',
+      'Signer (minSdkVersion=28, maxSdkVersion=2147483647) certificate SHA-256 digest: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0  ',
+    ].join('\n'),
+  );
+  assert.equal(ranged.signers, 1);
+  assert.equal(ranged.certificateDn, 'CN=WOLF release, O=Amizhthan');
+  assert.match(ranged.certificateSha256, /^[0-9a-f]{64}$/);
+
+  const twoKeys = parseSigner(`${SIGNED}\r\nSigner #2 certificate DN: CN=Someone else\r\nSigner #2 certificate SHA-256 digest: ${'ab'.repeat(32)}`);
+  assert.equal(twoKeys.signers, 2);
 });
 
 test('a properly signed release with the permissions WOLF chose is releasable', () => {

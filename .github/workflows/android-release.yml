@@ -121,6 +121,7 @@ jobs:
 
       - name: Verify the APK
         env:
+          WOLF_ANDROID_BUILD_TOOLS: 36.0.0
           VERSION_NAME: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
         run: |

@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Showing a notification after a wake-up. Asked for from the Alerts screen, when the owner chooses. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The app lock's fingerprint or face unlock, through AndroidX Biometric, which declares USE_BIOMETRIC. It also
+         declares USE_FINGERPRINT for Android 8 and older; this app starts at Android 9, where that permission is
+         deprecated and unused, so it is removed rather than shipped. -->
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" tools:node="remove" />
 
     <!--
         allowBackup is off and every domain is excluded from extraction: the refresh token blob
