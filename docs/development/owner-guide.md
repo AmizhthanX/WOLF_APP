@@ -320,9 +320,13 @@ WOLF's phone app is woken through Google's Firebase. I cannot create accounts, s
 
 ### 4e. Try it
 
-1. In the cloud window, before `npm run dev:cloud`, add three lines (replace the project id):
+1. Go to the PowerShell window that is already running `npm run dev:cloud` and press **Ctrl+C** to stop it
+   (only one cloud can run at a time — a second one fails because port 8080 is taken). Then, in that same
+   window, paste these lines. Replace `<project_id value>` with your real project id, **without** the `<` `>`:
 
    ```powershell
+   cd H:\WOLF_APP
+   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
    $env:WOLF_PUSH_PROVIDER = "fcm"
    $env:WOLF_FCM_PROJECT_ID = "<project_id value>"
    $env:WOLF_FCM_CREDENTIALS_FILE = "C:\WOLF-secrets\fcm.json"
