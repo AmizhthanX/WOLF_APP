@@ -422,7 +422,10 @@ This repository has **no GitHub remote yet**, so CI and the release pipeline hav
    & "C:\Program Files\JetBrains\PyCharm 2026.2.1\jbr\bin\keytool.exe" -list -v -keystore C:\WOLF-secrets\wolf-upload.jks -alias wolf-upload
    ```
 
-   Type the keystore password. The **SHA256** line must match the release page.
+   Type the keystore password. The **SHA256** line must match the line **Signing certificate SHA-256** written in
+   the release page's text. keytool prints it in capitals with colons (`56:E4:…`); the page prints the same digits
+   in lower case without colons (`56e4…`). The `SHA256SUMS` file is something else: the fingerprint of the APK
+   file itself, for checking a download (`Get-FileHash <the .apk>` must show the same value).
 
 ---
 
