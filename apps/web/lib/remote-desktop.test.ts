@@ -140,7 +140,7 @@ globals['WebSocket'] = FakeWebSocket;
 globals['RTCPeerConnection'] = FakePeerConnection;
 globals['performance'] ??= { now: () => Date.now() };
 
-const { RemoteDesktopStream, decodableCodecs, MAX_TERMINAL_CHUNK } = await import(
+const { RemoteDesktopStream, decodableCodecs, controlText, MAX_TERMINAL_CHUNK } = await import(
   './remote-desktop.js'
 );
 
@@ -1368,6 +1368,28 @@ test('a listing goes on the data channel and comes back to the caller that asked
   // Names never touch the cloud either. `Divorce settlement.docx` is a fact about somebody
   // whether or not the file is opened.
   assert.equal(signalsOfType('file.list').length, 0, 'a listing reached the cloud');
+
+  stream.stop();
+});
+
+test('an answer the PC sends as bytes is read as the JSON it is', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const pending = stream.listFiles(null);
+  const asked = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+
+  // How the PC's WebRTC stack actually sends: binary, which a browser delivers as an
+  // ArrayBuffer. Read with String() it was "[object ArrayBuffer]" and the answer was lost.
+  const bytes = new TextEncoder().encode(
+    JSON.stringify({ kind: 'file.listing', requestId: asked['requestId'], path: null, entries: [], truncated: false }),
+  );
+  for (const handler of channelListeners) handler({ data: bytes.buffer as unknown as string });
+
+  assert.equal((await pending).entries.length, 0);
+  assert.equal(controlText(new TextEncoder().encode('{"kind":"x"}')), '{"kind":"x"}');
+  assert.equal(controlText('{"kind":"x"}'), '{"kind":"x"}');
 
   stream.stop();
 });

@@ -378,6 +378,21 @@ export interface StreamOptions {
 }
 
 /**
+ * One message from the PC's data channel, as the JSON text it is.
+ *
+ * The PC sends its messages as bytes, not as a WebRTC string, so the browser hands over an ArrayBuffer. Read with
+ * `String()` that became "[object ArrayBuffer]", which is not JSON: every answer the PC gave — file listings,
+ * terminal output, clipboard text, input refusals — was dropped, and the owner saw "The PC did not answer in time"
+ * from a PC that had answered. The Android client always decoded the bytes, which is why its files worked.
+ */
+export function controlText(data: unknown): string {
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data);
+  return '';
+}
+
+/**
  * The H.264 profiles this browser says it decodes, in the names the PC chooses between.
  *
  * Without this the PC encodes High profile for every browser, and a browser that decodes only Constrained Baseline —
@@ -1228,8 +1243,9 @@ export class RemoteDesktopStream {
     // rather than creating one — a channel added here would need a second negotiation.
     peer.addEventListener('datachannel', (event) => {
       this.control = event.channel;
+      this.control.binaryType = 'arraybuffer';
       this.control.addEventListener('message', (message) => {
-        this.handleControlMessage(String(message.data));
+        this.handleControlMessage(controlText(message.data));
       });
       this.control.addEventListener('open', () => this.flushUnsentFiles());
       this.flushUnsentFiles();
