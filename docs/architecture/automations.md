@@ -43,7 +43,9 @@ use up the next hour.
 - **Metric** — the latest telemetry above or below a value. Telemetry older than two minutes is not
   "idle", it is unknown, and the condition is not met. With no device named, every device reporting
   the metric must satisfy it.
-- **Nobody connected** — no active remote session on the PC.
+- **Nobody connected** — nobody is streaming the PC or holding its keyboard, terminal or files. A session opened only
+  to show the PC's page does not count: it stays open for up to an hour, and counting it made the condition false
+  whenever the owner had just looked at the PC.
 
 ## Actions
 

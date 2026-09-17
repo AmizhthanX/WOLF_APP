@@ -45,6 +45,7 @@ android {
         versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        manifestPlaceholders["appLabel"] = "WOLF"
         resValue("string", "wolf_firebase_application_id", wolfSetting("wolf.firebase.applicationId"))
         resValue("string", "wolf_firebase_project_id", wolfSetting("wolf.firebase.projectId"))
         resValue("string", "wolf_firebase_api_key", wolfSetting("wolf.firebase.apiKey"))
@@ -66,7 +67,19 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
+        // The release app exactly — shrunk, talking to the production API — installed beside it as "WOLF Test" and
+        // signed with the debug key, so a fix can be tried on the owner's phone without their upload key or a
+        // published release. Never distributed; the release pipeline builds only `release`.
+        create("phoneTest") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            manifestPlaceholders["appLabel"] = "WOLF Test"
+        }
     }
+
 
     buildFeatures {
         compose = true
@@ -102,6 +115,7 @@ dependencies {
     implementation(libs.webrtc)
     implementation(libs.firebase.messaging)
     implementation(libs.androidx.biometric)
+    implementation(libs.androidx.fragment)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

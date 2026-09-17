@@ -123,7 +123,7 @@ export class AutomationExecutor {
     if (automation.conditions.length > 0) {
       const [latest, activeSessions] = await Promise.all([
         repos.telemetry.latestSample(pcId),
-        repos.sessions.countActiveForPc(pcId),
+        repos.sessions.countInUseForPc(pcId),
       ]);
       const verdict = evaluateConditions(automation.conditions, { now, latest, activeSessions });
       if (!verdict.met) {

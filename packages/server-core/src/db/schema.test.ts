@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { newId } from '@wolf/shared-types';
+import { newId, type SessionCapability } from '@wolf/shared-types';
+import { BUILT_IN_PROFILES } from '@wolf/protocol';
 import { migrate } from './migrate.js';
 import { createRepositories, type Repositories } from './repositories/index.js';
 import { createTestDatabase, type TestDatabase } from '../testing/pglite.js';
@@ -376,6 +377,32 @@ test('an exclusive resource is held by one session at a time', async () => {
     expiresAt: new Date(Date.now() + 60_000),
   });
   assert.equal(afterRelease.acquired, true);
+});
+
+test('a PC is in use only while a session streams or holds a lease, not while one merely stays open', async () => {
+  const pcId = await createPc('InUse');
+  const deviceId = await createDevice();
+  const open = (capabilities: SessionCapability[]) =>
+    repos.sessions.create({ id: newId(), userId, deviceId, pcId, mode: 'control', capabilities, route: 'lan', expiresAt: new Date(Date.now() + 3_600_000) });
+
+  // The session a phone opens to show the PC's page.
+  const browsing = await open(['power']);
+  assert.equal(await repos.sessions.countActiveForPc(pcId), 1);
+  assert.equal(await repos.sessions.countInUseForPc(pcId), 0, 'looking at a PC is not using it');
+
+  const watching = await open(['screen']);
+  const stream = await repos.remoteDesktop.createStream({
+    id: newId(), sessionId: watching.id, pcId, userId, deviceId, displayId: null, audioEnabled: false,
+    requestedProfile: BUILT_IN_PROFILES['lan-maximum-quality']!,
+  });
+  assert.equal(await repos.sessions.countInUseForPc(pcId), 1);
+  await repos.remoteDesktop.endStream(stream.id, 'client-closed');
+  assert.equal(await repos.sessions.countInUseForPc(pcId), 0);
+
+  await repos.sessions.acquireResource({ pcId, resource: 'terminal', sessionId: browsing.id, expiresAt: new Date(Date.now() + 60_000) });
+  assert.equal(await repos.sessions.countInUseForPc(pcId), 1, 'a held terminal is somebody at the PC');
+  await repos.sessions.releaseResource(pcId, 'terminal', browsing.id);
+  assert.equal(await repos.sessions.countInUseForPc(pcId), 0);
 });
 
 test('an expired lease can be taken over without an explicit release', async () => {

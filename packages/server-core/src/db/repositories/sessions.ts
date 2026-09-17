@@ -133,6 +133,28 @@ export class SessionRepository {
     return rows[0]?.count ?? 0;
   }
 
+  /**
+   * Sessions somebody is actually using this PC through: watching a stream, or holding the keyboard, a terminal
+   * or its files.
+   *
+   * Not every open session. The phone and the dashboard open one to show a PC's page and run commands, and it stays
+   * open until it expires — up to an hour — so counting those made "nobody is connected" false for an hour after
+   * the owner merely looked at the PC, and an automation run by hand from that page always skipped itself. Found
+   * testing the Android app on the owner's phone.
+   */
+  async countInUseForPc(pcId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM sessions s
+        WHERE s.pc_id = $1 AND s.ended_at IS NULL AND s.expires_at > now()
+          AND (
+            EXISTS (SELECT 1 FROM stream_sessions st WHERE st.session_id = s.id AND st.ended_at IS NULL)
+            OR EXISTS (SELECT 1 FROM session_resource_leases l WHERE l.session_id = s.id AND l.expires_at > now())
+          )`,
+      [pcId],
+    );
+    return rows[0]?.count ?? 0;
+  }
+
   async touch(id: string, at: Date, state?: ConnectionState, route?: ConnectionRoute): Promise<void> {
     await this.db.query(
       `UPDATE sessions
