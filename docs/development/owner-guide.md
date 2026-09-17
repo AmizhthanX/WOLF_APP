@@ -563,8 +563,11 @@ give you 8f.
    ```powershell
    node scripts/deploy-gcp.mjs deploy
    ```
-   Building takes 5–10 minutes the first time. At the end, a **PuTTY Security Alert** window may ask about the
-   host key: click **Accept**. The first run on the VM also installs Docker there (2–3 minutes).
+   Building takes 5–10 minutes the first time. The first time it connects to the VM it may ask
+   `Store key in cache? (y/n …)` in the same window: type `y` and press Enter (or a **PuTTY Security Alert** window:
+   click **Accept**). The first run on the VM also installs Docker there (2–3 minutes).
+   A last line `Cannot connect to cloud logging … logging.logEntries.create` is harmless: Google's agent could not
+   copy the startup log to Cloud Logging, which WOLF does not use.
 2. ✅ It ends with `Deployed <tag>. Open https://wolf.amizhthan.app`.
 
 ### 8g. Make your real owner account
