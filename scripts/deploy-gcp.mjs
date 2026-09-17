@@ -119,7 +119,13 @@ function secrets(args) {
 }
 
 function imageTag(allowUncommitted) {
-  const dirty = run('git', ['status', '--porcelain', '--untracked-files=no'], { capture: true }).stdout.trim();
+  // next-env.d.ts is rewritten by Next.js itself on every `next dev` and `next build`, and the image build writes
+  // its own; a difference there is not a change to what gets deployed.
+  const generated = new Set(['apps/web/next-env.d.ts']);
+  const dirty = run('git', ['status', '--porcelain', '--untracked-files=no'], { capture: true })
+    .stdout.split('\n')
+    .filter((line) => line.trim() && !generated.has(line.slice(3).trim()))
+    .join('\n');
   if (dirty && !allowUncommitted) {
     fail('There are uncommitted changes. A deployed image names the commit it was built from; commit first, or pass --allow-uncommitted.');
   }
