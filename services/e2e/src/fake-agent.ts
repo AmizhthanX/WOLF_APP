@@ -221,6 +221,28 @@ export class FakeAgent {
     });
   }
 
+  /** Report capabilities again after the hello, as a real agent does when its session host arrives. */
+  sendCapabilities(capabilities: Record<string, unknown>): void {
+    this.send({
+      kind: 'agent.capabilities',
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {
+        hardwareVideoEncoders: [],
+        preferredVideoCodec: null,
+        displayCount: 1,
+        audioCaptureAvailable: false,
+        wakeOnLanCapable: false,
+        privilegedHelperAvailable: false,
+        secureDesktopCaptureAvailable: false,
+        remoteUnlockProvisioned: false,
+        gpuVendors: ['Test'],
+        windowsBuild: '26100.1',
+        supportedCommands: [...this.options.supportedCommands],
+        ...capabilities,
+      },
+    });
+  }
+
   /** Send a signaling payload back towards the client. */
   sendSignal(sessionId: string, streamId: string, payload: SignalPayload): void {
     this.send({

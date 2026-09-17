@@ -87,6 +87,20 @@ export const agentHeartbeatMessage = z.object({
   activeSessionCount: z.number().int().nonnegative(),
 });
 
+/**
+ * Agent -> cloud: what this PC can do, again, because it changed after the hello.
+ *
+ * The session host starts beside the agent and usually connects a moment after the agent reaches the cloud. A
+ * hello sent in that moment says "no session host", and without this message the dashboard kept saying remote
+ * desktop was unavailable for as long as the agent stayed connected. Found the first time the owner followed the
+ * setup guide.
+ */
+export const agentCapabilitiesMessage = z.object({
+  kind: z.literal('agent.capabilities'),
+  protocolVersion: z.literal(PROTOCOL_VERSION),
+  capabilities: systemCapabilitiesResult,
+});
+
 export const agentTelemetryMessage = z.object({
   kind: z.literal('agent.telemetry'),
   protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -145,6 +159,7 @@ export const agentMessage = z.discriminatedUnion('kind', [
   agentAuthMessage,
   agentHelloMessage,
   agentHeartbeatMessage,
+  agentCapabilitiesMessage,
   agentTelemetryMessage,
   agentCommandResultMessage,
   agentCommandProgressMessage,

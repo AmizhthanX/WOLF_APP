@@ -27,7 +27,7 @@ namespace Wolf.Agent.Core.Cloud;
 /// the cloud is unreachable.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class CloudLink
+public sealed class CloudLink : IDisposable
 {
     private const int ReceiveBufferBytes = 64 * 1024;
     private const int TelemetryBatchSize = 120;
@@ -45,6 +45,18 @@ public sealed class CloudLink
 
     private ClientWebSocket? _socket;
     private string _lastReportedSessionState = "unknown";
+
+    /// <summary>What the cloud was last told about streaming, so a change is reported once.</summary>
+    private string _lastReportedStreaming = string.Empty;
+
+    /// <summary>
+    /// One send at a time. A WebSocket refuses a second send while one is in flight, and signaling, telemetry,
+    /// heartbeats and capability reports all go out on this socket from different loops.
+    /// </summary>
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+
+    /// <summary>How often to look whether what this PC can stream has changed since the cloud was told.</summary>
+    private static readonly TimeSpan CapabilityCheckInterval = TimeSpan.FromSeconds(2);
 
     public CloudLink(
         AgentOptions options,
@@ -181,6 +193,7 @@ public sealed class CloudLink
         Task? heartbeat = null;
         Task? telemetry = null;
         Task? pendingSweep = null;
+        Task? capabilityWatch = null;
 
         try
         {
@@ -204,6 +217,7 @@ public sealed class CloudLink
                             heartbeat ??= HeartbeatLoopAsync(socket, sessionCts.Token);
                             telemetry ??= TelemetryLoopAsync(socket, sessionCts.Token);
                             pendingSweep ??= SweepPendingStreamsAsync(sessionCts.Token);
+                            capabilityWatch ??= CapabilityWatchLoopAsync(socket, sessionCts.Token);
                             break;
 
                         case "cloud.auth-rejected":
@@ -241,6 +255,7 @@ public sealed class CloudLink
             await AwaitQuietly(heartbeat).ConfigureAwait(false);
             await AwaitQuietly(telemetry).ConfigureAwait(false);
             await AwaitQuietly(pendingSweep).ConfigureAwait(false);
+            await AwaitQuietly(capabilityWatch).ConfigureAwait(false);
 
             // The link is going down, so nothing forwarded is going to be answered over it.
             // Cleared rather than carried into the next session: those stream ids belong to
@@ -297,6 +312,7 @@ public sealed class CloudLink
     {
         SystemSessionStateResult session = _sessions.Query();
         _lastReportedSessionState = session.State;
+        _lastReportedStreaming = StreamingFingerprint(session.State);
 
         await SendAsync(
             socket,
@@ -759,11 +775,81 @@ public sealed class CloudLink
     // Transport
     // -----------------------------------------------------------------------
 
-    private static async Task SendAsync<T>(ClientWebSocket socket, T message, CancellationToken cancellationToken)
+    public void Dispose()
+    {
+        _sessionHost.SignalReceived -= OnHostSignalAsync;
+        _sessionHost.HostLost -= OnHostLostAsync;
+        _sendGate.Dispose();
+    }
+
+    private async Task SendAsync<T>(ClientWebSocket socket, T message, CancellationToken cancellationToken)
     {
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(message, WolfProtocol.Json);
-        await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken)
-            .ConfigureAwait(false);
+        await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The parts of this PC's capabilities that move while the agent stays connected: whether a session host is
+    /// there, why not, what it can encode and show, and the Windows session state that decides whether it may.
+    /// Cheap to compute — read from the supervisor's state, no WMI — so it can be checked every two seconds.
+    /// </summary>
+    private string StreamingFingerprint(string sessionState)
+    {
+        SessionHostState host = _sessionHost.State;
+        return string.Join('|',
+            host.Connected,
+            host.UnavailableReason ?? string.Empty,
+            host.Encoders.Count,
+            host.Displays.Count,
+            host.AudioCaptureAvailable,
+            host.TransportAvailable,
+            _store.KillSwitchEngaged,
+            sessionState);
+    }
+
+    /// <summary>
+    /// Tell the cloud again what this PC can do whenever the streaming part of it changes.
+    ///
+    /// The session host usually connects a moment after the agent reaches the cloud, so the hello often says there
+    /// is no host. Without this the dashboard kept saying remote desktop was unavailable until the agent reconnected.
+    /// </summary>
+    private async Task CapabilityWatchLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(CapabilityCheckInterval, cancellationToken).ConfigureAwait(false);
+
+                SystemSessionStateResult session = _sessions.Query();
+                string now = StreamingFingerprint(session.State);
+                if (string.Equals(now, _lastReportedStreaming, StringComparison.Ordinal)) continue;
+
+                await SendAsync(
+                    socket,
+                    new AgentCapabilitiesMessage(_machine.DescribeCapabilities(_router.SupportedTypes, session.State)),
+                    cancellationToken).ConfigureAwait(false);
+                _lastReportedStreaming = now;
+                _logger.LogInformation("Told the cloud this PC's capabilities changed (session host connected: {Connected}).", _sessionHost.State.Connected);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or InvalidOperationException)
+            {
+                return;
+            }
+        }
     }
 
     private static async IAsyncEnumerable<JsonDocument> ReadMessagesAsync(

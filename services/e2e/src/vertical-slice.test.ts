@@ -333,6 +333,21 @@ test('the agent connects, authenticates, and reports its capabilities', async ()
   );
 });
 
+test('capabilities that change after the hello reach the dashboard', async () => {
+  const read = async () => {
+    const response = await app.inject({ method: 'GET', url: `/api/v1/pcs/${pcId}`, headers: { authorization: `Bearer ${accessToken}` } });
+    return ((await json(response))['pc'] as unknown as { capabilities: { remoteDesktopAvailable: boolean; remoteDesktopUnavailableReason: string | null } }).capabilities;
+  };
+
+  // The session host arrives a moment after the hello, which said there was none.
+  agent.sendCapabilities({ remoteDesktopAvailable: false, remoteDesktopUnavailableReason: 'no-session-host' });
+  await waitFor(async () => (await read()).remoteDesktopUnavailableReason === 'no-session-host');
+
+  agent.sendCapabilities({ remoteDesktopAvailable: true, remoteDesktopUnavailableReason: null, videoEncoders: ['h264-hardware'] });
+  await waitFor(async () => (await read()).remoteDesktopAvailable === true);
+  assert.equal((await read()).remoteDesktopUnavailableReason, null);
+});
+
 test('an impostor cannot connect with the right PC id but the wrong key', async () => {
   const impostor = new FakeAgent({
     url: agentUrl,

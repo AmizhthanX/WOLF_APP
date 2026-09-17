@@ -102,7 +102,7 @@ public sealed class AgentWorker : BackgroundService
             return;
         }
 
-        var link = new CloudLink(
+        using var link = new CloudLink(
             _options,
             identity,
             _router,

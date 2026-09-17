@@ -156,6 +156,11 @@ export class AgentLink implements AgentLinkHandle {
       case 'agent.heartbeat':
         await this.handleHeartbeat(message);
         return;
+      case 'agent.capabilities':
+        // Only after the hello: before it, this link has not said which PC it is ready as.
+        if (this.state !== 'ready') return;
+        await this.storeCapabilities(message.capabilities);
+        return;
       case 'agent.telemetry':
         await this.handleTelemetry(message);
         return;
@@ -415,24 +420,7 @@ export class AgentLink implements AgentLinkHandle {
     const { repos } = this.context;
     const now = this.context.now();
 
-    await repos.pcs.upsertCapabilities(this.pcId, {
-      hardwareVideoEncoders: message.capabilities.hardwareVideoEncoders,
-      preferredVideoCodec: message.capabilities.preferredVideoCodec,
-      displayCount: message.capabilities.displayCount,
-      audioCaptureAvailable: message.capabilities.audioCaptureAvailable,
-      wakeOnLanCapable: message.capabilities.wakeOnLanCapable,
-      privilegedHelperAvailable: message.capabilities.privilegedHelperAvailable,
-      secureDesktopCaptureAvailable: message.capabilities.secureDesktopCaptureAvailable,
-      remoteUnlockProvisioned: message.capabilities.remoteUnlockProvisioned,
-      gpuVendors: message.capabilities.gpuVendors,
-      windowsBuild: message.capabilities.windowsBuild,
-      supportedCommands: message.capabilities.supportedCommands,
-      remoteDesktopAvailable: message.capabilities.remoteDesktopAvailable,
-      remoteDesktopUnavailableReason: message.capabilities.remoteDesktopUnavailableReason,
-      videoEncoders: message.capabilities.videoEncoders,
-    });
-
-    await repos.pcs.recordWakeAddress(this.pcId, message.capabilities.wakeMacAddress);
+    await this.storeCapabilities(message.capabilities);
 
     await repos.pcs.upsertHardware(this.pcId, {
       cpuModel: message.info.cpuModel,
@@ -476,6 +464,28 @@ export class AgentLink implements AgentLinkHandle {
 
     this.context.agents.add(this);
     await this.deliverPending();
+  }
+
+  /** What the agent says this PC can do: at the hello, and whenever it changes after. */
+  private async storeCapabilities(capabilities: Extract<AgentMessage, { kind: 'agent.hello' }>['capabilities']): Promise<void> {
+    const { repos } = this.context;
+    await repos.pcs.upsertCapabilities(this.pcId, {
+      hardwareVideoEncoders: capabilities.hardwareVideoEncoders,
+      preferredVideoCodec: capabilities.preferredVideoCodec,
+      displayCount: capabilities.displayCount,
+      audioCaptureAvailable: capabilities.audioCaptureAvailable,
+      wakeOnLanCapable: capabilities.wakeOnLanCapable,
+      privilegedHelperAvailable: capabilities.privilegedHelperAvailable,
+      secureDesktopCaptureAvailable: capabilities.secureDesktopCaptureAvailable,
+      remoteUnlockProvisioned: capabilities.remoteUnlockProvisioned,
+      gpuVendors: capabilities.gpuVendors,
+      windowsBuild: capabilities.windowsBuild,
+      supportedCommands: capabilities.supportedCommands,
+      remoteDesktopAvailable: capabilities.remoteDesktopAvailable,
+      remoteDesktopUnavailableReason: capabilities.remoteDesktopUnavailableReason,
+      videoEncoders: capabilities.videoEncoders,
+    });
+    await repos.pcs.recordWakeAddress(this.pcId, capabilities.wakeMacAddress);
   }
 
   private async handleHeartbeat(
