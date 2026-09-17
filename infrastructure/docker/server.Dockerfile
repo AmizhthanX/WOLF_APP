@@ -23,7 +23,7 @@ RUN npx tsc -b services/api services/realtime
 RUN mkdir /out \
  && cp package.json package-lock.json /out/ \
  && for dir in packages/* services/* apps/web; do \
-      mkdir -p "/out/$dir" && cp "$dir/package.json" "/out/$dir/"; \
+      if [ -f "$dir/package.json" ]; then mkdir -p "/out/$dir" && cp "$dir/package.json" "/out/$dir/"; fi; \
     done \
  && for dir in packages/* services/api services/realtime; do \
       if [ -d "$dir/dist" ]; then cp -r "$dir/dist" "/out/$dir/"; fi; \
