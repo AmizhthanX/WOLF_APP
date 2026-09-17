@@ -12,6 +12,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import java.time.Duration
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
@@ -165,7 +166,10 @@ class StreamSession(
     /** File requests asked for before the data channel opened, by request id, sent once it does. */
     private val unsentFiles = ArrayDeque<Pair<String, String>>()
 
-    private class PendingFile(val reply: (Result<JsonObject>) -> Unit, val timeout: Cancellable)
+    private class PendingFile(val reply: (Result<JsonObject>) -> Unit, val timeout: Cancellable, val text: String)
+
+    /** When this app was last told it holds the file lease; see [FILE_LEASE_SETTLE_MS]. */
+    private var filesGrantedAt: Instant = Instant.EPOCH
 
     /**
      * File requests waiting for their answer, by request id. Correlated by id rather than by order, because
@@ -215,8 +219,8 @@ class StreamSession(
             timeout.cancel()
             pendingFiles.remove(requestId)?.reply?.invoke(Result.failure(fileFailure("failed", "The PC did not answer in time.")))
         }
-        pendingFiles[requestId] = PendingFile(reply, timeout)
         val text = JsonObject(message + ("requestId" to JsonPrimitive(requestId))).toString()
+        pendingFiles[requestId] = PendingFile(reply, timeout, text)
 
         // The lease can be granted before the PC's data channel has finished opening. Found by the first live
         // run: the stream was connected, access granted, and the channel still opening. The request waits for
@@ -451,7 +455,9 @@ class StreamSession(
             }
 
             "file.control" -> {
+                val wasHeld = hasFiles
                 hasFiles = payload["granted"].bool() == true
+                if (hasFiles && !wasHeld) filesGrantedAt = clock()
                 if (!hasFiles) stopRenewingFiles()
                 listener.onFileControl(InputControl(hasFiles, payload.str("reason"), payload.str("expiresAt")))
             }
@@ -552,7 +558,11 @@ class StreamSession(
             }
             // Handed to whoever asked and nowhere else; nothing here keeps a listing or a chunk.
             "file.listing", "file.info", "file.chunk", "file.written", "file.done" -> settleFile(message.str("requestId"), Result.success(message))
-            "file.refused" -> settleFile(message.str("requestId"), Result.failure(FileRefusalException(FileMessages.refusal(message))))
+            "file.refused" -> {
+                val requestId = message.str("requestId")
+                if (message.str("reason") == "not-permitted" && askAgainAfterGrant(requestId)) return
+                settleFile(requestId, Result.failure(FileRefusalException(FileMessages.refusal(message))))
+            }
             "clipboard.content" -> {
                 val text = message.str("text") ?: return
                 // Text only, as the protocol says. Anything claiming another format is not read as text.
@@ -570,6 +580,25 @@ class StreamSession(
                 ClipboardEvent.Notice("The PC's clipboard holds ${message.str("describes") ?: "something"}, which WOLF does not carry."),
             )
         }
+    }
+
+    /**
+     * The PC refusing a request as having no lease, just after this app was granted one: the cloud tells both at
+     * once, but the PC hears through the agent and its session host while the request goes straight down the
+     * data channel, and on a LAN the request can win. Found by the owner in the web dashboard, whose Files panel
+     * stayed empty. Asked again shortly, under the request's own timeout; after that the PC's answer stands.
+     */
+    private fun askAgainAfterGrant(requestId: String?): Boolean {
+        val pending = pendingFiles[requestId ?: return false] ?: return false
+        if (!hasFiles || Duration.between(filesGrantedAt, clock()).toMillis() >= FILE_LEASE_SETTLE_MS) return false
+
+        lateinit var retry: Cancellable
+        retry = scheduler.every(FILE_LEASE_RETRY_DELAY_MS) {
+            retry.cancel()
+            val link = peer
+            if (!closed && link != null && pendingFiles[requestId] === pending) sendFile(link, requestId, pending.text)
+        }
+        return true
     }
 
     private fun settleFile(requestId: String?, result: Result<JsonObject>) {
@@ -669,6 +698,10 @@ class StreamSession(
 
         /** A file answer is one chunk read or written; far longer than that means the PC is not answering. */
         const val FILE_REPLY_TIMEOUT_MS = 30_000L
+
+        /** How long after a grant a "not permitted" from the PC is read as the PC not having heard yet. */
+        const val FILE_LEASE_SETTLE_MS = 5_000L
+        const val FILE_LEASE_RETRY_DELAY_MS = 250L
 
         /** The protocol's clipboard limit, in UTF-16 units — what the relay's schema and the PC both count. */
         const val MAX_CLIPBOARD_TEXT = 256 * 1024

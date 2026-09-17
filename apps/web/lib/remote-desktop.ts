@@ -33,6 +33,27 @@ const MAX_CLIPBOARD_TEXT = 256 * 1024;
  */
 const RENEW_INTERVAL_MS = 45_000;
 
+/**
+ * How long one file request waits for the PC before it is answered as unanswered.
+ *
+ * Includes any wait for the data channel to open. Without a bound a request the PC never
+ * saw is a file manager showing a spinner until the tab is closed.
+ */
+const FILE_REPLY_TIMEOUT_MS = 30_000;
+
+/**
+ * How long after the file lease is granted a "not permitted" from the PC is read as the PC
+ * not having heard yet, and asked again.
+ *
+ * The cloud tells this browser and the PC at the same moment, but the PC hears through the
+ * agent and then the session host, and the browser's first listing goes straight down the
+ * data channel. On a LAN the listing can win: the PC refuses it as having no lease, and the
+ * Files panel stays empty. The PC still decides; this only asks it again once it has had
+ * time to hear.
+ */
+const FILE_LEASE_SETTLE_MS = 5_000;
+const FILE_LEASE_RETRY_DELAY_MS = 250;
+
 /** The protocol's ceiling on one batch. */
 const MAX_EVENTS_PER_BATCH = 128;
 
@@ -151,6 +172,14 @@ export interface FileWritten {
   readonly bytesWritten: number;
   readonly sha256: string | null;
   readonly complete: boolean;
+}
+
+/** One file request on its way to the PC: kept whole so it can be sent once the channel opens, or again. */
+interface PendingFile {
+  readonly resolve: (message: Record<string, unknown>) => void;
+  readonly reject: (error: Error) => void;
+  readonly text: string;
+  readonly timeout: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -438,10 +467,13 @@ export class RemoteDesktopStream {
    * a transfer chunk can be in flight together, and a client that assumed order would hand
    * one the other's answer.
    */
-  private readonly pendingFiles = new Map<
-    string,
-    { resolve: (message: Record<string, unknown>) => void; reject: (error: Error) => void }
-  >();
+  private readonly pendingFiles = new Map<string, PendingFile>();
+
+  /** File requests asked for while the PC's data channel was still opening, sent once it opens. */
+  private readonly unsentFiles: string[] = [];
+
+  /** When this browser was last told it holds the file lease. */
+  private filesGrantedAt = 0;
 
   private readonly options: StreamOptions;
   private readonly streamId = newId();
@@ -758,18 +790,49 @@ export class RemoteDesktopStream {
       );
     }
 
-    if (this.control?.readyState !== 'open') {
+    const state = this.control?.readyState;
+    if (state === 'closing' || state === 'closed' || this.peer === null) {
       return Promise.reject(
         new FileRefusal('interrupted', 'The connection to this PC is not ready.', false),
       );
     }
 
     const requestId = newId();
+    const text = JSON.stringify({ ...message, requestId });
 
     return new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.pendingFiles.set(requestId, { resolve, reject });
-      this.control!.send(JSON.stringify({ ...message, requestId }));
+      const timeout = setTimeout(() => {
+        if (!this.pendingFiles.delete(requestId)) return;
+        reject(
+          new FileRefusal(
+            'failed',
+            'The PC did not answer in time. Check that WOLF is still running on it, then try again.',
+            false,
+          ),
+        );
+      }, FILE_REPLY_TIMEOUT_MS);
+
+      this.pendingFiles.set(requestId, { resolve, reject, text, timeout });
+
+      // The lease can be granted while the PC's data channel is still opening. The request
+      // waits for it, bounded by its timeout, rather than failing as though the PC refused.
+      if (this.control?.readyState === 'open') {
+        this.control.send(text);
+      } else {
+        this.unsentFiles.push(requestId);
+      }
     });
+  }
+
+  /** Send the file requests that were waiting for the data channel to open. */
+  private flushUnsentFiles(): void {
+    if (this.control?.readyState !== 'open') return;
+
+    for (const requestId of this.unsentFiles.splice(0)) {
+      // One that timed out while waiting has already been answered.
+      const pending = this.pendingFiles.get(requestId);
+      if (pending) this.control.send(pending.text);
+    }
   }
 
   private stopRenewingFiles(): void {
@@ -861,11 +924,13 @@ export class RemoteDesktopStream {
     // Nothing is coming back for these. Left hanging they would be promises the caller awaits
     // forever, which is a file manager that shows a spinner until the tab is closed.
     for (const pending of this.pendingFiles.values()) {
+      clearTimeout(pending.timeout);
       // "interrupted", not "failed": nothing on the PC went wrong, and a transfer can carry on
       // from where it was once there is a connection again.
       pending.reject(new FileRefusal('interrupted', 'The connection to this PC ended.', false));
     }
     this.pendingFiles.clear();
+    this.unsentFiles.length = 0;
   }
 
   /**
@@ -1058,7 +1123,9 @@ export class RemoteDesktopStream {
       }
 
       case 'file.control': {
+        const wasHeld = this.hasFiles;
         this.hasFiles = payload['granted'] === true;
+        if (this.hasFiles && !wasHeld) this.filesGrantedAt = Date.now();
         if (!this.hasFiles) this.stopRenewingFiles();
 
         this.options.events.onFileControl({
@@ -1164,6 +1231,8 @@ export class RemoteDesktopStream {
       this.control.addEventListener('message', (message) => {
         this.handleControlMessage(String(message.data));
       });
+      this.control.addEventListener('open', () => this.flushUnsentFiles());
+      this.flushUnsentFiles();
     });
 
     peer.addEventListener('icecandidate', (event) => {
@@ -1299,15 +1368,33 @@ export class RemoteDesktopStream {
         if (!pending) return;
 
         this.pendingFiles.delete(String(message['requestId']));
+        clearTimeout(pending.timeout);
         pending.resolve(message);
         return;
       }
 
       case 'file.refused': {
-        const pending = this.pendingFiles.get(String(message['requestId'] ?? ''));
+        const requestId = String(message['requestId'] ?? '');
+        const pending = this.pendingFiles.get(requestId);
         if (!pending) return;
 
-        this.pendingFiles.delete(String(message['requestId']));
+        // The PC not having heard yet about a lease this browser was just given. Asked again
+        // shortly, still under the request's own timeout; after that the PC's answer stands.
+        if (
+          message['reason'] === 'not-permitted' &&
+          this.hasFiles &&
+          Date.now() - this.filesGrantedAt < FILE_LEASE_SETTLE_MS
+        ) {
+          setTimeout(() => {
+            if (this.pendingFiles.has(requestId) && this.control?.readyState === 'open') {
+              this.control.send(pending.text);
+            }
+          }, FILE_LEASE_RETRY_DELAY_MS);
+          return;
+        }
+
+        this.pendingFiles.delete(requestId);
+        clearTimeout(pending.timeout);
         pending.reject(
           new FileRefusal(
             String(message['reason'] ?? 'failed'),

@@ -511,6 +511,16 @@ export function FilePanel({ view }: { view: ReturnType<typeof useRemoteDesktop> 
           </div>
         ) : null}
 
+        {holdsLease && entries === null && !busy ? (
+          // A first listing that failed left nothing to click — no folder, no Up — so the panel
+          // looked dead. The notice above says why; this is the way on.
+          <div className="row">
+            <button type="button" onClick={() => void browse(null)}>
+              Try again
+            </button>
+          </div>
+        ) : null}
+
         {holdsLease && entries !== null ? (
           entries.length === 0 ? (
             <Empty>This folder is empty.</Empty>

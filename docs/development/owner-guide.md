@@ -147,6 +147,10 @@ This runs the whole of WOLF on this computer: a pretend cloud, the dashboard, an
 9. Click the **Audit log** tab on the PC page: you will see `file.create-folder`, `file.upload`, `file.rename`,
    `file.delete` — and **no file names**. That is the privacy promise working.
 
+> **If the Files box stays empty after "Ask for file access":** refresh the page (Ctrl+F5) so it picks up the
+> latest dashboard, start the stream again, and ask again. If a grey box shows a message, click **Try again**.
+> If it still fails, copy the words in the grey box (they never contain a password) and send them to Claude.
+
 ### 2e. Try a webhook to your own Discord or Slack (optional)
 
 **Discord** — you need a Discord server where you are an admin:

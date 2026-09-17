@@ -342,6 +342,26 @@ class StreamSessionTest {
     }
 
     @Test
+    fun a_pc_that_has_not_yet_heard_about_a_just_granted_lease_is_asked_again() {
+        connect()
+        grantFiles()
+        var result: Result<JsonObject>? = null
+
+        stream.askFiles(FileMessages.list(null)) { result = it }
+        val requestId = peers.single().control.single()["requestId"]!!.jsonPrimitive.content
+
+        // The cloud tells the phone and the PC at once; the PC hears through the agent and its session host.
+        peerEvents.onControlMessage("""{"kind":"file.refused","requestId":"$requestId","reason":"not-permitted","detail":"The file lease has expired or is held by another session."}""")
+        assertNull(result)
+
+        scheduler.tasks.single { it.first == StreamSession.FILE_LEASE_RETRY_DELAY_MS }.second()
+        assertEquals(listOf(requestId, requestId), peers.single().control.map { it["requestId"]!!.jsonPrimitive.content })
+
+        peerEvents.onControlMessage("""{"kind":"file.listing","requestId":"$requestId","path":null,"entries":[],"truncated":false}""")
+        assertEquals("file.listing", result!!.getOrThrow()["kind"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun a_file_request_the_pc_never_answers_is_timed_out_once() {
         connect()
         grantFiles()

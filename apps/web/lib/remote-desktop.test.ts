@@ -98,14 +98,30 @@ class FakePeerConnection {
    * it the same way the real peer connection would.
    */
   openControlChannel(): void {
+    this.announceControlChannel()();
+  }
+
+  /**
+   * Deliver the control channel still opening, the way a real one can arrive; the returned
+   * function opens it.
+   */
+  announceControlChannel(): () => void {
+    const openHandlers: (() => void)[] = [];
     const channel = {
-      readyState: 'open',
+      readyState: 'connecting',
       send: (data: string) => sentOnChannel.push(data),
-      addEventListener: (_name: string, handler: (event: { data: string }) => void) =>
-        channelListeners.push(handler),
+      addEventListener: (name: string, handler: (event: { data: string }) => void) => {
+        if (name === 'open') openHandlers.push(handler as () => void);
+        else channelListeners.push(handler);
+      },
     };
 
     for (const handler of peerHandlers['datachannel'] ?? []) handler({ channel });
+
+    return () => {
+      channel.readyState = 'open';
+      for (const handler of openHandlers) handler();
+    };
   }
 }
 
@@ -1354,6 +1370,81 @@ test('a listing goes on the data channel and comes back to the caller that asked
   assert.equal(signalsOfType('file.list').length, 0, 'a listing reached the cloud');
 
   stream.stop();
+});
+
+test('a file request asked for while the data channel is still opening is sent when it opens', async () => {
+  const { stream } = makeStream();
+  await authenticate(stream);
+  socketMessage({
+    kind: 'cloud.signal',
+    envelope: { streamId: stream.id, payload: { type: 'sdp.offer', sdp: OFFER_SDP } },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const open = peers.at(-1)!.announceControlChannel();
+  grantFiles(stream.id);
+
+  // The lease can arrive first. Refusing here as "not ready" left the Files panel empty.
+  const pending = stream.listFiles(null);
+  assert.equal(sentOnChannel.length, 0, 'sent on a channel that was not open');
+
+  open();
+  assert.equal(JSON.parse(sentOnChannel.at(-1)!)['kind'], 'file.list');
+
+  answerFile({ kind: 'file.listing', path: null, entries: [], truncated: false });
+  assert.equal((await pending).entries.length, 0);
+
+  stream.stop();
+});
+
+test('a PC that has not yet heard about a just-granted lease is asked again, and its later answer stands', async () => {
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  const pending = stream.listFiles(null);
+  const first = JSON.parse(sentOnChannel.at(-1)!) as Record<string, unknown>;
+
+  // The cloud told this browser and the PC at once; the PC hears through the agent and its
+  // session host, so the listing can reach it first.
+  deliverControl({
+    kind: 'file.refused',
+    requestId: first['requestId'],
+    reason: 'not-permitted',
+    detail: 'The file lease has expired or is held by another session.',
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(sentOnChannel.length, 2, 'the listing was not asked for again');
+  assert.equal(JSON.parse(sentOnChannel.at(-1)!)['requestId'], first['requestId']);
+
+  answerFile({
+    kind: 'file.listing',
+    path: null,
+    entries: [{ name: 'C:\\', kind: 'drive', sizeBytes: null }],
+    truncated: false,
+  });
+  assert.equal((await pending).entries.length, 1);
+
+  stream.stop();
+});
+
+test('a "not permitted" long after the grant is the PC’s answer, not a race', async () => {
+  const realNow = Date.now;
+  const { stream } = makeStream();
+  await connectWithControlChannel(stream);
+  grantFiles(stream.id);
+
+  try {
+    Date.now = () => realNow() + 60_000;
+    const pending = stream.listFiles(null);
+    answerFile({ kind: 'file.refused', reason: 'not-permitted', detail: 'The file lease has expired.' });
+    await assert.rejects(pending, /expired/);
+    assert.equal(sentOnChannel.length, 1);
+  } finally {
+    Date.now = realNow;
+    stream.stop();
+  }
 });
 
 test('two file requests in flight get their own answers', async () => {
