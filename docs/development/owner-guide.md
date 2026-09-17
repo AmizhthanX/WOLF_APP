@@ -110,6 +110,11 @@ This runs the whole of WOLF on this computer: a pretend cloud, the dashboard, an
 
    (These only exist in this pretend local cloud.)
 
+6. **Stuck on "Restoring your session…"?** That was a bug in the dashboard's security settings, fixed on
+   2026-09-17. In the web window press **Ctrl+C**, then paste `git pull` only if you use GitHub (otherwise skip it),
+   and run `npm run dev:web` again. Then in the browser press **Ctrl+Shift+R** to reload without the old copy.
+   Still stuck after 15 seconds? Press **F12**, click **Console**, and tell me the red lines.
+
 ### 2c. Connect this PC as a WOLF PC
 
 1. In the dashboard, click **Add a PC**. A long **enrollment token** appears. Click it and copy it

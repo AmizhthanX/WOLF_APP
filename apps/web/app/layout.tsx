@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { connection } from 'next/server';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -19,7 +20,11 @@ export const viewport: Viewport = {
   viewportFit: 'cover',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Rendered per request, never at build time: the nonce in the security policy is new for every request, and a
+  // page built in advance would carry scripts without it, which the browser would refuse to run.
+  await connection();
+
   return (
     <html lang="en">
       <body>{children}</body>
